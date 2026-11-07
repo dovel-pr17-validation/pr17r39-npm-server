@@ -1,0 +1,160 @@
+@if (sideBarHeader) {
+  <div class="sidebar-component-title app-top-menu-tool-bar justify-content-between position-relative">
+    <div class="sidebar-component-title-side"></div>
+    <div class="sidebar-component-title-label" l10nTranslate>Navigation</div>
+    <div class="sidebar-component-title-side">
+      <button (click)="onRefresh()"
+              class="btn btn-default"
+              type="button">
+        <svg [lucideIcon]="icons.LucideRotateCw"></svg>
+      </button>
+    </div>
+  </div>
+}
+@if (copyMoveOn) {
+  @let files = store.filesSelection();
+  @let destination = destinationLocation;
+  <div #copyMovePanel class="bg-white p-2 fs-sm">
+    <div class="d-flex">
+      <div class="d-flex flex-column align-items-center me-2 text-muted">
+        <span class="copy-move-location-icon border rounded-circle d-flex align-items-center justify-content-center lh-1">
+          @if (files.length) {
+            <svg [lucideIcon]="files.length === 1 ? (files[0].isDir ? icons.LucideFolder : icons.LucideFile) : icons.LucideFiles"></svg>
+          } @else {
+            <span class="fs-md">?</span>
+          }
+        </span>
+        <span class="copy-move-connector border-start flex-grow-1"></span>
+      </div>
+      <div class="flex-grow-1 overflow-hidden pb-2">
+        <div class="copy-move-location-label text-muted mb-1">
+          <span l10nTranslate>Source</span>
+          @if (files.length === 1) {
+            <span class="mx-1 lh-1 text-muted">•</span>
+            @if (files[0].isDir) {
+              @let directorySize = getSizeLazy(files[0]) | async;
+              @if (directorySize === null) {
+                <svg [lucideIcon]="icons.LucideLoader" class="icon-spin-pulse"></svg>
+              } @else if (directorySize === undefined) {
+                <span class="fs-md">?</span>
+              } @else {
+                <span>{{ directorySize | toBytes:0:true }}</span>
+              }
+            } @else {
+              <span>{{ files[0].hSize }}</span>
+            }
+          } @else {
+            <span class="mx-1 lh-1 text-muted">•</span>
+            <span>{{ files.length }}</span>&nbsp;<span l10nTranslate>items</span>
+          }
+        </div>
+        @switch (files.length) {
+          @case (1) {
+            <div class="app-small-card files-summary-card border rounded d-flex align-items-center px-2 py-2">
+              <span class="text-truncate">{{ files[0].name }}</span>
+            </div>
+          }
+          @case (0) {
+            <div class="app-small-card files-summary-card border rounded d-flex justify-content-center align-items-center px-2 py-2">
+              <span class="fs-md text-muted">?</span>
+            </div>
+          }
+          @default {
+            <app-files-summary [files]="files"></app-files-summary>
+          }
+        }
+        @if (errorMsg && !srcAllowed) {
+          <div class="text-danger mt-1" l10nTranslate>{{ errorMsg }}</div>
+        }
+      </div>
+    </div>
+
+    <div class="d-flex">
+      <div class="d-flex flex-column align-items-center me-2 text-muted">
+        <span class="copy-move-location-icon border rounded-circle d-flex align-items-center justify-content-center lh-1">
+          @if (destination?.icon; as destinationIcon) {
+            <svg [lucideIcon]="destinationIcon"></svg>
+          } @else {
+            <span class="fs-md">?</span>
+          }
+        </span>
+      </div>
+      <div class="flex-grow-1 overflow-hidden">
+        <div class="copy-move-location-label text-muted mb-1 overflow-hidden">
+          <span class="flex-shrink-0" l10nTranslate>Destination</span>
+          @if (selection && dstAllowed && destination?.relativePath) {
+            <span class="mx-1 lh-1 text-muted">•</span>
+            <span class="text-truncate">{{ destination.relativePath }}</span>
+          }
+        </div>
+        <div class="app-small-card files-summary-card border rounded d-flex align-items-center px-2 py-2">
+          @if (selection && dstAllowed) {
+            <span class="text-bold text-truncate">{{ selection.data.name }}</span>
+          } @else {
+            <span class="text-muted mx-auto">?</span>
+          }
+        </div>
+        @if (errorMsg && !dstAllowed) {
+          <div class="text-danger mt-2" l10nTranslate>{{ errorMsg }}</div>
+        }
+      </div>
+    </div>
+
+    <div class="d-flex gap-2 w-100 mt-3">
+      <button (click)="actionMove()"
+              [disabled]="!selection || !files.length || !srcAllowed || !dstAllowed"
+              class="btn btn-sm btn-warning flex-fill"
+              type="button"
+              l10nTranslate>
+        <svg [lucideIcon]="icons.LucideMove"></svg>
+        Move
+      </button>
+      <button (click)="actionCopy()"
+              [disabled]="!selection || !files.length || !dstAllowed"
+              class="btn btn-sm btn-primary flex-fill"
+              type="button"
+              l10nTranslate>
+        <svg [lucideIcon]="icons.LucideCopy"></svg>
+        Copy
+      </button>
+      <button (click)="actionCancel()"
+              class="btn btn-sm btn-secondary flex-fill"
+              type="button"
+              l10nTranslate>
+        <svg [lucideIcon]="icons.LucideX"></svg>
+        Cancel
+      </button>
+    </div>
+  </div>
+  <hr class="mx-0 my-0">
+}
+<div appAutoResize [overFlowX]="'auto'" [resizeOffset]="treeResizeOffset" [useMaxHeight]="false">
+  <tree-root #tree [nodes]="nodes" [options]="options">
+    <ng-template #treeNodeWrapperTemplate let-index="index" let-node>
+      <div (click)="node.mouseAction('click', $event)"
+           (appTap)="node.mouseAction('dblClick', $event)"
+           [enableDoubleTap]="true"
+           [class.tree-selected]="node.isActive"
+           [class.tree-disabled]="!node.data.enabled"
+           [style.padding-left]="node.getNodePadding()"
+           class="node-wrapper">
+        <tree-node-expander [class.active]="node.isActive"
+                            [class.toggle-children-file]="!node.data.isDir"
+                            [class.toggle-children-shared]="node.data.inShare"
+                            [class.tree-root-personal]="node.data.id === 0"
+                            [class.tree-root-shares]="node.data.id === -2"
+                            [class.tree-root-spaces]="node.data.id === -1"
+                            [node]="node">
+        </tree-node-expander>
+        <div [class.node-content-wrapper-active]="node.isActive" class="node-content-wrapper">
+          <tree-node-content [index]="index" [node]="node"></tree-node-content>
+        </div>
+      </div>
+    </ng-template>
+    <ng-template #loadingTemplate>
+      <span>
+        <svg [lucideIcon]="icons.LucideLoader" class="text-bold icon-spin"></svg>
+      </span>
+    </ng-template>
+  </tree-root>
+</div>

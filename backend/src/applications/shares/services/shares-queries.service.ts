@@ -1,0 +1,1114 @@
+import { toErrorMessage } from '../../../common/errors.js'
+import { Inject, Injectable, Logger } from '@nestjs/common'
+import { and, count, eq, inArray, isNotNull, isNull, ne, or, SQL, sql } from 'drizzle-orm'
+import { alias, MySqlSelectDynamic, type SelectedFields, union } from 'drizzle-orm/mysql-core'
+import { MySql2PreparedQuery, MySqlQueryResult } from 'drizzle-orm/mysql2'
+import { ACTION } from '../../../common/constants.js'
+import { type ConvertedDiffUpdate, uniquePermissions } from '../../../common/functions.js'
+import { popFromObject } from '../../../common/shared.js'
+import { CacheDecorator } from '../../../infrastructure/cache/cache.decorator.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { DB_TOKEN_PROVIDER } from '../../../infrastructure/database/constants.js'
+import type { DBSchema } from '../../../infrastructure/database/interfaces/database.interface.js'
+import {
+  concatDistinctObjectsInArray,
+  convertToWhere,
+  dateTimeUTC,
+  dbCheckAffectedRows,
+  dbGetInsertedId,
+  dbParseJson
+} from '../../../infrastructure/database/utils.js'
+import { fileHasCommentsSubquerySQL } from '../../comments/schemas/comments.schema.js'
+import type { FileProps } from '../../files/interfaces/file-props.interface.js'
+import type { FileSpace } from '../../files/interfaces/file-space.interface.js'
+import { filesFavorites } from '../../files/schemas/files-favorites.schema.js'
+import { childPathMatch, filePathSQL, files, replacePathPrefix } from '../../files/schemas/files.schema.js'
+import { links } from '../../links/schemas/links.schema.js'
+import type { SpaceBrowseDetails } from '../../spaces/interfaces/space-files.interface.js'
+import { SpaceEnv } from '../../spaces/models/space-env.model.js'
+import { spacesRoots } from '../../spaces/schemas/spaces-roots.schema.js'
+import { spaceGroupConcatPermissions, spaces } from '../../spaces/schemas/spaces.schema.js'
+import { syncClients } from '../../sync/schemas/sync-clients.schema.js'
+import { syncPaths } from '../../sync/schemas/sync-paths.schema.js'
+import { GROUP_TYPE } from '../../users/constants/group.js'
+import { MEMBER_TYPE } from '../../users/constants/member.js'
+import { USER_ROLE } from '../../users/constants/user.js'
+import type { Owner } from '../../users/interfaces/owner.interface.js'
+import type { UserModel } from '../../users/models/user.model.js'
+import { groups } from '../../users/schemas/groups.schema.js'
+import { usersGroups } from '../../users/schemas/users-groups.schema.js'
+import { userFullNameSQL, users } from '../../users/schemas/users.schema.js'
+import { SHARE_ALL_OPERATIONS, SHARE_TYPE } from '../constants/shares.js'
+import type { ShareMemberDto } from '../dto/create-or-update-share.dto.js'
+import type { ShareChildMember, ShareChildQuery } from '../interfaces/share-child.interface.js'
+import type { ShareEnv } from '../interfaces/share-env.interface.js'
+import type { ShareFile } from '../interfaces/share-file.interface.js'
+import type { ShareLink } from '../interfaces/share-link.interface.js'
+import type { ShareProps } from '../interfaces/share-props.interface.js'
+import { ShareChild } from '../models/share-child.model.js'
+import type { ShareMembers } from '../schemas/share-members.interface.js'
+import type { Share } from '../schemas/share.interface.js'
+import type { ShareOwnerIdentity, ShareSelection } from '../interfaces/share-identity.interface.js'
+import { sharesMembers } from '../schemas/shares-members.schema.js'
+import { shares } from '../schemas/shares.schema.js'
+import { externalShareScopeSQL } from '../utils/external-share-scope.sql.js'
+
+@Injectable()
+export class SharesQueries {
+  private readonly logger = new Logger(SharesQueries.name)
+  private sharesListQuery: MySql2PreparedQuery<any> | null = null
+  private shareIdentitiesQuery: MySql2PreparedQuery<any> | null = null
+  private shareLinksListQuery: MySql2PreparedQuery<any> | null = null
+  private shareWithMembersQuery: MySql2PreparedQuery<any> | null = null
+  private sharePermissionsQuery: MySql2PreparedQuery<any> | null = null
+  private shareRootFilesQuery: MySql2PreparedQuery<any> | null = null
+
+  constructor(
+    @Inject(DB_TOKEN_PROVIDER) private readonly db: DBSchema,
+    public readonly cache: Cache
+  ) {}
+
+  shareExistsForOwner(userId: number, shareId: number) {
+    return this.db.query.shares.findFirst({ columns: { id: true }, where: and(eq(shares.id, shareId), eq(shares.ownerId, userId)) })
+  }
+
+  async childExistsForShareOwner(userId: number, shareId: number, childId: number, isAdmin: boolean = false): Promise<number | null> {
+    const childShare: any = alias(shares, 'childShare')
+    const withChildren: any = sql`
+      WITH RECURSIVE child (id, parentId) AS
+                       (SELECT ${shares.id},
+                               ${shares.parentId}
+                        FROM ${shares}
+                        WHERE ${shares.id} = ${shareId}
+                          AND (${shares.ownerId} = ${userId} OR (${shares.ownerId} IS NULL AND ${+isAdmin} = 1))
+                        UNION
+                        SELECT ${childShare.id},
+                               ${childShare.parentId}
+                        FROM ${shares} AS childShare
+                               INNER JOIN child AS cs ON ${childShare.parentId} = cs.id)
+      SELECT child.id
+      FROM child
+      WHERE child.id = ${childId}
+      LIMIT 1
+    `
+    const [r]: { id: number }[][] = (await this.db.execute(withChildren)) as MySqlQueryResult
+    return r.length ? r[0].id : null
+  }
+
+  async findHighestParentShare(childShareId: number): Promise<number | null> {
+    const parentShare: any = alias(shares, 'parentShare')
+    const withParents: any = sql`
+      WITH RECURSIVE parent (id, parentId) AS
+                       (SELECT ${shares.id},
+                               ${shares.parentId}
+                        FROM ${shares}
+                        WHERE ${shares.id} = ${childShareId}
+                        UNION
+                        SELECT ${parentShare.id},
+                               ${parentShare.parentId}
+                        FROM ${shares} AS parentShare
+                               INNER JOIN parent AS cs ON ${parentShare.id} = cs.parentId)
+      SELECT parent.id
+      FROM parent
+      WHERE parent.parentId is NULL
+      LIMIT 1
+    `
+    const [r]: { id: number }[][] = (await this.db.execute(withParents)) as MySqlQueryResult
+    return r.length ? r[0].id : null
+  }
+
+  selectShares(props: Partial<Record<keyof Share, any>>): Promise<ShareSelection[]> {
+    const where: SQL[] = convertToWhere(shares, props)
+    return this.db
+      .select({ id: shares.id, ownerId: shares.ownerId, alias: shares.alias, name: shares.name })
+      .from(shares)
+      .where(and(...where))
+  }
+
+  selectParentSharesFromSpaceId(spaceId: number, ownerIds?: number[]): Promise<ShareOwnerIdentity[]> {
+    const where: SQL[] = [eq(shares.spaceId, spaceId), isNull(shares.spaceRootId), isNull(shares.parentId)]
+    if (ownerIds && ownerIds.length) {
+      where.push(inArray(shares.ownerId, ownerIds))
+    }
+    return this.db
+      .select({ id: shares.id, ownerId: shares.ownerId })
+      .from(shares)
+      .where(and(...where))
+  }
+
+  sharesQuotaExternalPaths(shareId?: number): Promise<(Pick<Share, 'id' | 'alias' | 'storageUsage' | 'storageQuota'> & { externalPath: string })[]> {
+    return this.db
+      .select({
+        id: shares.id,
+        alias: shares.alias,
+        storageUsage: shares.storageUsage,
+        storageQuota: shares.storageQuota,
+        externalPath: shares.externalPath
+      })
+      .from(shares)
+      .where(and(isNotNull(shares.externalPath), shareId ? eq(shares.id, shareId) : undefined)) as Promise<
+      (Pick<Share, 'id' | 'alias' | 'storageUsage' | 'storageQuota'> & { externalPath: string })[]
+    >
+  }
+
+  async listShareLinks(user: UserModel, shareId: number, asAdmin?: boolean): Promise<ShareLink | null>
+  async listShareLinks(user: UserModel, shareId?: number, asAdmin?: boolean): Promise<ShareLink[]>
+  async listShareLinks(user: UserModel, shareId?: number, asAdmin: boolean = false): Promise<ShareLink[] | ShareLink | null> {
+    if (!this.shareLinksListQuery) {
+      const [selectFile, shareRootFile, parentShare, parentShareFile, childShareFromRoot, shareMembers] = this.shareFileSelect()
+      const linkGuest: any = alias(users, 'linkGuest')
+      const select = {
+        id: shares.id,
+        ownerId: shares.ownerId,
+        alias: shares.alias,
+        name: shares.name,
+        externalPath: sql`IF (${shares.externalPath} IS NOT NULL AND ${shares.ownerId} IS NOT NULL, '.', ${shares.externalPath})`,
+        description: shares.description,
+        parent: {
+          id: parentShare.id,
+          ownerId: parentShare.ownerId,
+          alias: parentShare.alias,
+          name: parentShare.name
+        },
+        file: selectFile,
+        link: {
+          id: links.id,
+          name: links.name,
+          email: links.email,
+          uuid: links.uuid,
+          requireAuth: links.requireAuth,
+          nbAccess: links.nbAccess,
+          limitAccess: links.limitAccess,
+          permissions: shareMembers.permissions,
+          isActive: linkGuest.isActive,
+          language: linkGuest.language,
+          expiresAt: links.expiresAt,
+          createdAt: links.createdAt,
+          currentAccess: linkGuest.currentAccess,
+          lastAccess: linkGuest.lastAccess,
+          currentIp: linkGuest.currentIp,
+          lastIp: linkGuest.lastIp
+        }
+      } satisfies Record<keyof ShareLink, any>
+      this.shareLinksListQuery = this.shareFileJoin(select, shareRootFile, parentShare, parentShareFile, childShareFromRoot, shareMembers)
+        .innerJoin(links, eq(links.id, shareMembers.linkId))
+        .innerJoin(linkGuest, eq(linkGuest.id, links.userId))
+        .where(
+          and(
+            eq(shares.type, SHARE_TYPE.LINK),
+            or(eq(sql.placeholder('shareId'), 0), eq(shares.id, sql.placeholder('shareId'))),
+            or(
+              eq(sql.placeholder('asAdmin'), 1),
+              eq(shares.ownerId, sql.placeholder('userId')),
+              and(eq(sql.placeholder('isAdmin'), 1), isNull(shares.ownerId))
+            )
+          )
+        )
+        .prepare()
+    }
+    const shareLinks: ShareLink[] = await this.shareLinksListQuery!.execute({
+      userId: user.id,
+      shareId: shareId || 0,
+      isAdmin: +user.isAdmin,
+      asAdmin: +asAdmin
+    })
+    if (shareId) {
+      return shareLinks.length ? shareLinks[0] : null
+    }
+    return shareLinks
+  }
+
+  async getShareWithMembers(user: UserModel, shareId: number, asAdmin = false): Promise<ShareProps | null> {
+    // asAdmin : true if the user is the owner of the parent share or if the share is requested from the administration
+    if (!this.shareWithMembersQuery) {
+      const [selectFile, shareRootFile, parentShare, parentShareFile, childShareFromRoot, shareMembers] = this.shareFileSelect()
+      const linkUsers: any = alias(users, 'linkUsers')
+      const select = {
+        id: shares.id,
+        ownerId: shares.ownerId,
+        alias: shares.alias,
+        name: shares.name,
+        externalPath: sql`IF (${shares.externalPath} IS NOT NULL AND ${shares.ownerId} IS NOT NULL, '.', ${shares.externalPath})`,
+        enabled: shares.enabled,
+        description: shares.description,
+        storageUsage: shares.storageUsage,
+        storageQuota: shares.storageQuota,
+        storageIndexing: shares.storageIndexing,
+        createdAt: shares.createdAt,
+        modifiedAt: shares.modifiedAt,
+        disabledAt: shares.disabledAt,
+        parent: {
+          id: parentShare.id,
+          ownerId: parentShare.ownerId,
+          alias: parentShare.alias,
+          name: parentShare.name
+        },
+        file: selectFile,
+        users: concatDistinctObjectsInArray(users.id, {
+          id: users.id,
+          login: users.login,
+          name: userFullNameSQL(users),
+          type: sql`IF (${users.role} = ${USER_ROLE.GUEST}, ${MEMBER_TYPE.GUEST}, ${MEMBER_TYPE.USER})`,
+          description: users.email,
+          permissions: shareMembers.permissions,
+          createdAt: dateTimeUTC(shareMembers.createdAt)
+        }),
+        groups: concatDistinctObjectsInArray(groups.id, {
+          id: groups.id,
+          name: groups.name,
+          type: sql`IF (${groups.type} = ${GROUP_TYPE.PERSONAL}, ${MEMBER_TYPE.PGROUP}, ${MEMBER_TYPE.GROUP})`,
+          description: groups.description,
+          permissions: shareMembers.permissions,
+          createdAt: dateTimeUTC(shareMembers.createdAt)
+        }),
+        links: concatDistinctObjectsInArray(linkUsers.id, {
+          id: linkUsers.id,
+          linkId: links.id,
+          login: linkUsers.login,
+          name: links.name,
+          type: sql`${MEMBER_TYPE.USER}`,
+          description: links.email,
+          permissions: shareMembers.permissions,
+          createdAt: dateTimeUTC(shareMembers.createdAt)
+        })
+      } satisfies SelectedFields
+      this.shareWithMembersQuery = this.shareFileJoin(select, shareRootFile, parentShare, parentShareFile, childShareFromRoot, shareMembers)
+        .leftJoin(users, and(isNull(shareMembers.linkId), eq(users.id, shareMembers.userId)))
+        .leftJoin(groups, eq(groups.id, shareMembers.groupId))
+        .leftJoin(linkUsers, and(isNotNull(shareMembers.linkId), eq(linkUsers.id, shareMembers.userId)))
+        .leftJoin(links, and(eq(links.userId, linkUsers.id), eq(links.id, shareMembers.linkId)))
+        .where(
+          and(
+            eq(shares.id, sql.placeholder('shareId')),
+            or(
+              eq(sql.placeholder('asAdmin'), 1),
+              eq(shares.ownerId, sql.placeholder('userId')),
+              and(eq(sql.placeholder('isAdmin'), 1), isNull(shares.ownerId))
+            )
+          )
+        )
+        .groupBy(shares.id)
+        .limit(1)
+        .prepare()
+    }
+    const [share] = await this.shareWithMembersQuery!.execute({ userId: user.id, shareId, isAdmin: +user.isAdmin, asAdmin: +asAdmin })
+    if (!share) return null
+    // merge members
+    share.members = [...popFromObject('users', share), ...popFromObject('links', share), ...popFromObject('groups', share)]
+    return share as ShareProps
+  }
+
+  async createShare(share: Partial<Share>): Promise<number> {
+    return dbGetInsertedId(await this.db.insert(shares).values(share as Share))
+  }
+
+  async updateShare(id: number, set: Partial<Record<keyof Share, any>>): Promise<boolean> {
+    try {
+      dbCheckAffectedRows(await this.db.update(shares).set(set).where(eq(shares.id, id)).limit(1), 1)
+      this.logger.verbose({ tag: this.updateShare.name, msg: `share (${id}) was updated : ${JSON.stringify(set)}` })
+      return true
+    } catch (e) {
+      this.logger.error({ tag: this.updateShare.name, msg: `share (${id}) was not updated : ${JSON.stringify(set)} : ${toErrorMessage(e)}` })
+      return false
+    }
+  }
+
+  async deleteShare(shareId: number): Promise<boolean> {
+    return dbCheckAffectedRows(await this.db.delete(shares).where(eq(shares.id, shareId)), 1)
+  }
+
+  async updateMember(set: Partial<Record<keyof ShareMembers, any>>, filters: Partial<Record<keyof ShareMembers, any>>): Promise<boolean> {
+    const where: SQL[] = convertToWhere(sharesMembers, filters)
+    try {
+      dbCheckAffectedRows(
+        await this.db
+          .update(sharesMembers)
+          .set(set)
+          .where(and(...where))
+          .limit(1),
+        1
+      )
+      this.logger.debug({ tag: this.updateMember.name, msg: `${JSON.stringify(filters)} was updated : ${JSON.stringify(set)}` })
+      return true
+    } catch (e) {
+      this.logger.error({
+        tag: this.updateMember.name,
+        msg: `${JSON.stringify(filters)} was not updated : ${JSON.stringify(set)} : ${toErrorMessage(e)}`
+      })
+      return false
+    }
+  }
+
+  async updateMembers(
+    shareId: number,
+    add: ShareMemberDto[],
+    update: ConvertedDiffUpdate<ShareMemberDto, 'permissions'>[],
+    remove: ShareMemberDto[]
+  ): Promise<Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, { userIds: number[]; groupIds: number[] }>> {
+    // store status
+    const status: Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, { userIds: number[]; groupIds: number[] }> = {
+      [ACTION.ADD]: { userIds: [], groupIds: [] },
+      [ACTION.UPDATE]: { userIds: [], groupIds: [] },
+      [ACTION.DELETE]: { userIds: [], groupIds: [] }
+    }
+    // add
+    for (const m of add) {
+      try {
+        dbCheckAffectedRows(
+          await this.db.insert(sharesMembers).values({
+            shareId: shareId,
+            ...(m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? { userId: m.id } : { groupId: m.id }),
+            permissions: m.permissions
+          } as ShareMembers),
+          1
+        )
+        status[ACTION.ADD][`${m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? 'userIds' : 'groupIds'}`].push(m.id)
+        this.logger.debug({ tag: this.updateMembers.name, msg: `${m.type} (${m.id}) added to the share (${shareId})` })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateMembers.name,
+          msg: `${m.type} (${m.id}) was not added to the share (${shareId}) ->  : ${toErrorMessage(e)}`
+        })
+      }
+    }
+    // update
+    for (const props of update) {
+      const m: ShareMemberDto = popFromObject('object', props)
+      try {
+        dbCheckAffectedRows(
+          await this.db
+            .update(sharesMembers)
+            .set(props)
+            .where(
+              and(
+                eq(sharesMembers.shareId, shareId),
+                eq(m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? sharesMembers.userId : sharesMembers.groupId, m.id)
+              )
+            )
+            .limit(1),
+          1
+        )
+        status[ACTION.UPDATE][`${m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? 'userIds' : 'groupIds'}`].push(m.id)
+        this.logger.debug({ tag: this.updateMembers.name, msg: `${m.type} (${m.id}) was updated on share (${shareId}) : ${JSON.stringify(props)}` })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateMembers.name,
+          msg: `${m.type} (${m.id}) was not updated on share (${shareId}) : ${JSON.stringify(props)} : ${toErrorMessage(e)}`
+        })
+      }
+    }
+    // remove
+    for (const m of remove) {
+      try {
+        dbCheckAffectedRows(
+          await this.db
+            .delete(sharesMembers)
+            .where(
+              and(
+                eq(sharesMembers.shareId, shareId),
+                eq(m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? sharesMembers.userId : sharesMembers.groupId, m.id)
+              )
+            ),
+          1
+        )
+        status[ACTION.DELETE][`${m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? 'userIds' : 'groupIds'}`].push(m.id)
+        this.logger.debug({ tag: this.updateMembers.name, msg: `${m.type} (${m.id}) removed from share (${shareId})` })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateMembers.name,
+          msg: `${m.type} (${m.id}) was not removed from share (${shareId}) : ${toErrorMessage(e)}`
+        })
+      }
+    }
+    return status
+  }
+
+  async shareEnv(shareId: number): Promise<Partial<ShareEnv>> {
+    const shareSpaceRoot: any = alias(spacesRoots, 'shareSpaceRoot')
+    const select: any = {
+      id: shares.id,
+      alias: shares.alias,
+      enabled: shares.enabled,
+      fileId: shares.fileId,
+      spaceId: shares.spaceId,
+      spaceRootId: shares.spaceRootId,
+      inSharesRepository: sql`${1}`.mapWith(Boolean),
+      root: {
+        id: files.id,
+        owner: { id: users.id, login: users.login },
+        file: {
+          path: sql`IF (${files.id} IS NOT NULL, ${filePathSQL(files)}, NULL)`,
+          inTrash: files.inTrash,
+          space: { id: spaces.id, alias: spaces.alias },
+          root: {
+            id: sql`IF (${spacesRoots.id} IS NULL, ${shareSpaceRoot.id}, ${spacesRoots.id})`,
+            externalPath: sql`IF (${spacesRoots.externalPath} IS NULL,
+                                  ${shareSpaceRoot.externalPath}, ${spacesRoots.externalPath})`
+          }
+        },
+        externalPath: shares.externalPath
+      }
+    } satisfies { [K in keyof ShareEnv]: any }
+    const [shareEnv] = await this.db
+      .select(select)
+      .from(shares)
+      .leftJoin(shareSpaceRoot, and(isNull(shares.externalPath), isNull(shares.fileId), eq(shareSpaceRoot.id, shares.spaceRootId)))
+      .leftJoin(
+        files,
+        and(
+          isNull(shares.externalPath),
+          or(and(isNotNull(shares.fileId), eq(files.id, shares.fileId)), and(isNotNull(shareSpaceRoot.fileId), eq(files.id, shareSpaceRoot.fileId)))
+        )
+      )
+      .leftJoin(
+        spaces,
+        and(
+          isNull(shares.externalPath),
+          or(
+            and(isNotNull(files.spaceId), eq(spaces.id, files.spaceId)),
+            and(isNotNull(shareSpaceRoot.spaceId), eq(spaces.id, shareSpaceRoot.spaceId))
+          )
+        )
+      )
+      .leftJoin(spacesRoots, and(isNull(shares.externalPath), isNotNull(files.spaceExternalRootId), eq(spacesRoots.id, files.spaceExternalRootId)))
+      .leftJoin(users, eq(users.id, files.ownerId))
+      .where(eq(shares.id, shareId))
+      .execute()
+    return shareEnv
+  }
+
+  @CacheDecorator()
+  async shareIdentities(userId: number, isAdmin: number): Promise<Pick<Share, 'id' | 'alias' | 'name'>[]> {
+    if (!this.shareIdentitiesQuery) {
+      const select = { id: shares.id, alias: shares.alias, name: shares.name }
+      const unionAlias = union(this.fromUserQuery(select), this.fromGroupsQuery(select), this.fromAdminSharesQuery(select)).as('unionAlias')
+      this.shareIdentitiesQuery = this.db
+        .select({ id: unionAlias.id, alias: unionAlias.alias, name: unionAlias.name })
+        .from(unionAlias)
+        .groupBy(unionAlias.id, unionAlias.alias, unionAlias.name)
+        .prepare()
+    }
+    return this.shareIdentitiesQuery.execute({ userId: userId, isAdmin: +isAdmin })
+  }
+
+  async listShares(user: UserModel): Promise<ShareFile[]> {
+    if (!this.sharesListQuery) {
+      const [selectFile, shareRootFile, parentShare, parentShareFile, childShareFromRoot, shareMembers] = this.shareFileSelect()
+      const select = {
+        id: shares.id,
+        name: shares.name,
+        alias: shares.alias,
+        externalPath: sql`IF (${shares.externalPath} IS NOT NULL, 1, 0)`.mapWith(Boolean),
+        description: shares.description,
+        enabled: shares.enabled,
+        createdAt: shares.createdAt,
+        modifiedAt: shares.modifiedAt,
+        parent: {
+          id: isNotNull(parentShare.id),
+          alias: parentShare.alias,
+          name: parentShare.name
+        },
+        file: selectFile,
+        hasComments: fileHasCommentsSubquerySQL(
+          sql`IF (${shares.fileId} IS NULL AND ${shareRootFile.id} IS NOT NULL, ${shareRootFile.id}, ${files.id})`
+        ),
+        counts: {
+          users: count(sql`CASE WHEN ${shareMembers.userId} IS NOT NULL AND ${shareMembers.linkId} IS NULL THEN 1 END`),
+          groups: count(shareMembers.groupId),
+          links: count(shareMembers.linkId)
+        }
+      } satisfies Record<keyof Omit<ShareFile, 'syncs'>, any>
+      this.sharesListQuery = this.shareFileJoin(select, shareRootFile, parentShare, parentShareFile, childShareFromRoot, shareMembers)
+        .where(
+          and(
+            eq(shares.type, sql.placeholder('shareType')),
+            or(eq(shares.ownerId, sql.placeholder('userId')), and(eq(sql.placeholder('isAdmin'), 1), isNull(shares.ownerId)))
+          )
+        )
+        .groupBy(shares.id)
+        .prepare()
+    }
+    const r: ShareFile[] = await this.sharesListQuery!.execute({ userId: user.id, shareType: SHARE_TYPE.COMMON, isAdmin: +user.isAdmin })
+    await this.setShareCounts(r)
+    return r
+  }
+
+  async listChildShares(userId: number, shareId: number, isAdmin: number): Promise<ShareChild[]> {
+    const childShare: any = alias(shares, 'childShare')
+    const withChildren: any = sql`
+      WITH RECURSIVE child (id, parentId, ownerId, type, name, alias, fileId) AS
+                       (SELECT ${shares.id},
+                               ${shares.parentId},
+                               ${shares.ownerId},
+                               ${shares.type},
+                               ${shares.name},
+                               ${shares.alias},
+                               ${shares.fileId}
+                        FROM ${shares}
+                        WHERE ${shares.id} = ${shareId}
+                          AND (${shares.ownerId} = ${userId} OR (${isAdmin} = 1 AND ${shares.ownerId} IS NULL))
+                        UNION
+                        SELECT ${childShare.id},
+                               ${childShare.parentId},
+                               ${childShare.ownerId},
+                               ${childShare.type},
+                               ${childShare.name},
+                               ${childShare.alias},
+                               ${childShare.fileId}
+                        FROM ${shares} AS childShare
+                               INNER JOIN child AS cs ON ${childShare.parentId} = cs.id)
+      SELECT child.id,
+             child.alias,
+             child.name,
+             child.type,
+             child.parentId,
+             ${users.login}            AS ownerLogin,
+             ${userFullNameSQL(users)} AS ownerFullName,
+             ${users.email}            AS ownerEmail,
+             ${files.mime}             AS fileMime
+      FROM child
+             LEFT JOIN ${users} ON child.ownerId = ${users.id}
+             LEFT JOIN ${files} ON child.fileId = ${files.id}
+      WHERE child.id != ${shareId}
+    `
+    const [r]: ShareChildQuery[][] = (await this.db.execute(withChildren)) as MySqlQueryResult
+    return r.map((s) => new ShareChild(s))
+  }
+
+  async listSpaceShares(spaceId: number): Promise<ShareChild[]> {
+    const childShare: any = alias(shares, 'childShare')
+    const shareSpaceRoot: any = alias(spacesRoots, 'shareSpaceRoot')
+    const childShareSpaceRoot: any = alias(spacesRoots, 'childShareSpaceRoot')
+    const withChildren: any = sql`
+      WITH RECURSIVE child (id, parentId, ownerId, type, name, alias, fileId) AS
+                       (SELECT ${shares.id},
+                               ${shares.parentId},
+                               ${shares.ownerId},
+                               ${shares.type},
+                               ${shares.name},
+                               ${shares.alias},
+                               COALESCE(${shares.fileId}, ${shareSpaceRoot.fileId}) AS fileId
+                        FROM ${shares}
+                               LEFT JOIN ${spacesRoots} AS shareSpaceRoot ON ${shares.spaceRootId} = ${shareSpaceRoot.id}
+                        WHERE ${shares.spaceId} = ${spaceId}
+                        UNION
+                        SELECT ${childShare.id},
+                               ${childShare.parentId},
+                               ${childShare.ownerId},
+                               ${childShare.type},
+                               ${childShare.name},
+                               ${childShare.alias},
+                               COALESCE(${childShare.fileId}, ${childShareSpaceRoot.fileId}) AS fileId
+                        FROM ${shares} AS childShare
+                               INNER JOIN child AS cs ON ${childShare.parentId} = cs.id
+                               LEFT JOIN ${spacesRoots} AS childShareSpaceRoot ON ${childShare.spaceRootId} = ${childShareSpaceRoot.id})
+      SELECT child.id,
+             child.alias,
+             child.name,
+             child.type,
+             child.parentId,
+             ${users.login}            AS ownerLogin,
+             ${userFullNameSQL(users)} AS ownerFullName,
+             ${users.email}            AS ownerEmail,
+             ${files.mime}             AS fileMime
+      FROM child
+             LEFT JOIN ${users} ON child.ownerId = ${users.id}
+             LEFT JOIN ${files} ON child.fileId = ${files.id}
+    `
+    const [r]: ShareChildQuery[][] = (await this.db.execute(withChildren)) as MySqlQueryResult
+    return r.map((s) => new ShareChild(s))
+  }
+
+  async membersFromChildSharesPermissions(
+    shareId: number,
+    userIds: number[] | 'all',
+    matchPermRegexp?: string,
+    asParent: boolean = true
+  ): Promise<ShareChildMember[]> {
+    const childShare: any = alias(shares, 'childShare')
+    const withChildren: any = sql`
+      WITH RECURSIVE children (id, alias, name) AS
+                       (SELECT ${shares.id}, ${shares.alias}, ${shares.name}
+                        FROM ${shares}
+                        WHERE ${asParent ? shares.parentId : shares.id} = ${shareId}
+                          AND ${userIds === 'all' ? 1 : inArray(shares.ownerId, userIds)}
+                        UNION
+                        SELECT ${childShare.id}, ${childShare.alias}, ${childShare.name}
+                        FROM ${shares} AS childShare
+                               INNER JOIN children AS cs ON ${childShare.parentId} = cs.id)
+      SELECT ${sharesMembers.id}          as id,
+             ${sharesMembers.userId}      as userId,
+             ${sharesMembers.permissions} as userPermissions,
+             ${sharesMembers.shareId},
+             children.alias               as shareAlias,
+             children.name                as shareName
+      FROM children
+             INNER JOIN ${sharesMembers} ON children.id = ${sharesMembers.shareId}
+    `
+    if (matchPermRegexp) {
+      withChildren.append(sql`WHERE ${sharesMembers.permissions} REGEXP ${matchPermRegexp}`)
+    }
+    const [r]: ShareChildMember[][] = (await this.db.execute(withChildren)) as MySqlQueryResult
+    return r
+  }
+
+  async shareRootFiles(user: UserModel, details: SpaceBrowseDetails): Promise<FileProps[]> {
+    if (!this.shareRootFilesQuery) {
+      const shareSpaceRoot: any = alias(spacesRoots, 'shareSpaceRoot')
+      const originOwner: any = alias(users, 'originOwner')
+      const childShare: any = alias(shares, 'childShare')
+      const selectUnion = {
+        id: files.id,
+        path: sql`IF (${files.id} IS NOT NULL, ${filePathSQL(files)}, '')`.as('path'),
+        isDir: files.isDir,
+        inTrash: files.inTrash,
+        size: files.size,
+        ctime: files.ctime,
+        mtime: files.mtime,
+        mime: files.mime,
+        originOwnerId: sql`${originOwner.id}`.as('originOwnerId'),
+        originOwnerLogin: sql`${originOwner.login}`.as('originOwnerLogin'),
+        originSpaceId: sql`${spaces.id}`.as('originSpaceId'),
+        originSpaceAlias: sql`${spaces.alias}`.as('originSpaceAlias'),
+        originSpaceExternalRootId: sql`${files.spaceExternalRootId}`.as('originSpaceExternalRootId'),
+        originSpaceRootExternalPath: sql`IF (${spacesRoots.externalPath} IS NULL,
+                                             ${shareSpaceRoot.externalPath}, ${spacesRoots.externalPath})`.as('originSpaceRootExternalPath'),
+        rootId: sql`${shares.id}`.as('rootId'),
+        rootAlias: shares.alias,
+        rootName: shares.name,
+        rootDescription: shares.description,
+        rootEnabled: shares.enabled,
+        rootExternalPath: shares.externalPath,
+        rootPermissions: sharesMembers.permissions,
+        rootOwnerId: sql`${users.id}`.as('rootOwnerId'),
+        rootOwnerLogin: sql`${users.login}`.as('rootOwnerLogin'),
+        rootOwnerEmail: sql`${users.email}`.as('rootOwnerEmail'),
+        rootOwnerFullName: userFullNameSQL(users).as('rootOwnerFullName'),
+        childShareId: sql`${childShare.id}`.as('childShareId'),
+        childShareAlias: sql`${childShare.alias}`.as('childShareAlias'),
+        childShareName: sql`${childShare.name}`.as('childShareName'),
+        childShareType: sql`${childShare.type}`.as('childShareType'),
+        syncPathId: sql`${syncPaths.id}`.as('syncPathId'),
+        syncPathClientId: sql`${syncClients.id}`.as('syncPathClientId'),
+        syncPathClientName: sql`JSON_VALUE(${syncClients.info}, '$.node')`.as('syncPathClientName')
+      } satisfies SelectedFields
+      const filters: SQL[] = [or(isNull(shares.ownerId), ne(shares.ownerId, sql.placeholder('userId')))!]
+      const externalShareFilters = [...filters, isNotNull(shares.externalPath)]
+      const externalShareTargets = union(
+        this.fromUserQuery({ id: shares.id, parentId: shares.parentId, externalPath: shares.externalPath }, externalShareFilters),
+        this.fromGroupsQuery({ id: shares.id, parentId: shares.parentId, externalPath: shares.externalPath }, externalShareFilters),
+        this.fromAdminSharesQuery({ id: shares.id, parentId: shares.parentId, externalPath: shares.externalPath }, externalShareFilters)
+      )
+      // Make lock enrichment use the same storage namespace regardless of the
+      // descendant through which an external file is listed. File records and
+      // locks are indexed by the highest external ancestor, not by the immediate
+      // parent. `targetShares` applies the same user/group/admin filters as the
+      // main UNION, so recursion walks only the ancestors of visible shares.
+      // For A -> B -> C, the result maps A, B and C to the storage scope A.
+      // A missing or non-external parent stops the traversal, leaving the
+      // malformed external share without a scope so it can be filtered below.
+      const externalRootScope = externalShareScopeSQL(externalShareTargets, 'shareRootExternalScope')
+      const fromUser = this.fromUserQuery(selectUnion, filters).$dynamic()
+      const fromGroups = this.fromGroupsQuery(selectUnion, filters).$dynamic()
+      const fromAdminShares = this.fromAdminSharesQuery({ ...selectUnion, rootPermissions: sql`${SHARE_ALL_OPERATIONS}` }, filters).$dynamic()
+      for (const q of [fromUser, fromGroups, fromAdminShares]) {
+        q.leftJoin(shareSpaceRoot, and(isNull(shares.externalPath), isNull(shares.fileId), eq(shareSpaceRoot.id, shares.spaceRootId)))
+          .leftJoin(
+            files,
+            or(
+              // if the child share is from a share with an external path, the child share should have an external path and a fileId
+              and(isNotNull(shares.fileId), eq(files.id, shares.fileId)),
+              and(isNull(shares.externalPath), isNull(shares.fileId), isNotNull(shareSpaceRoot.fileId), eq(files.id, shareSpaceRoot.fileId))
+            )
+          )
+          .leftJoin(spaces, and(isNull(shares.externalPath), isNotNull(files.spaceId), eq(spaces.id, files.spaceId)))
+          .leftJoin(spacesRoots, and(isNull(shares.externalPath), eq(spacesRoots.id, files.spaceExternalRootId)))
+          .leftJoin(
+            childShare,
+            and(
+              eq(sql.placeholder('withDetails'), sql`1`),
+              eq(childShare.ownerId, sql.placeholder('userId')),
+              eq(childShare.parentId, shares.id),
+              or(
+                and(isNull(childShare.externalPath), isNotNull(childShare.fileId), eq(childShare.fileId, shares.fileId)),
+                and(
+                  isNull(childShare.externalPath),
+                  isNull(childShare.fileId),
+                  eq(childShare.spaceId, shares.spaceId),
+                  eq(childShare.spaceRootId, shares.spaceRootId)
+                ),
+                and(isNotNull(childShare.externalPath), isNull(childShare.fileId), eq(shares.externalPath, childShare.externalPath))
+              )
+            )
+          )
+          .leftJoin(syncClients, and(eq(sql.placeholder('withSyncs'), sql`1`), eq(syncClients.ownerId, sql.placeholder('userId'))))
+          .leftJoin(
+            syncPaths,
+            and(
+              eq(sql.placeholder('withSyncs'), sql`1`),
+              eq(syncPaths.clientId, syncClients.id),
+              isNull(syncPaths.fileId),
+              eq(syncPaths.shareId, shares.id)
+            )
+          )
+          .leftJoin(users, eq(users.id, shares.ownerId))
+          .leftJoin(originOwner, and(isNull(shares.externalPath), eq(originOwner.id, files.ownerId)))
+      }
+      const unionAlias = union(fromUser, fromGroups, fromAdminShares).as('union_alias')
+      const select: any = {
+        id: unionAlias.id,
+        path: unionAlias.path,
+        isDir: unionAlias.isDir,
+        inTrash: unionAlias.inTrash,
+        size: unionAlias.size,
+        ctime: unionAlias.ctime,
+        mtime: unionAlias.mtime,
+        mime: unionAlias.mime,
+        origin: {
+          ownerId: unionAlias.originOwnerId,
+          ownerLogin: unionAlias.originOwnerLogin,
+          spaceId: unionAlias.originSpaceId,
+          spaceAlias: unionAlias.originSpaceAlias,
+          spaceExternalRootId: unionAlias.originSpaceExternalRootId,
+          spaceRootExternalPath: unionAlias.originSpaceRootExternalPath,
+          shareExternalId: externalRootScope.storageShareId
+        },
+        root: {
+          id: unionAlias.rootId,
+          alias: unionAlias.rootAlias,
+          name: unionAlias.rootName,
+          description: unionAlias.rootDescription,
+          enabled: unionAlias.rootEnabled,
+          externalPath: unionAlias.rootExternalPath,
+          permissions: spaceGroupConcatPermissions(unionAlias.rootPermissions),
+          owner: {
+            id: unionAlias.rootOwnerId,
+            login: unionAlias.rootOwnerLogin,
+            email: unionAlias.rootOwnerEmail,
+            fullName: unionAlias.rootOwnerFullName
+          } satisfies Owner
+        },
+        shares: sql`IF (${sql.placeholder('withDetails')}, ${concatDistinctObjectsInArray(unionAlias.childShareId, {
+          id: unionAlias.childShareId,
+          alias: unionAlias.childShareAlias,
+          name: unionAlias.childShareName,
+          type: unionAlias.childShareType
+        })}, '[]')`.mapWith(dbParseJson),
+        syncs: sql`IF (${sql.placeholder('withSyncs')}, ${concatDistinctObjectsInArray(unionAlias.syncPathId, {
+          id: unionAlias.syncPathId,
+          clientId: unionAlias.syncPathClientId,
+          clientName: unionAlias.syncPathClientName
+        })}, '[]')`.mapWith(dbParseJson),
+        hasComments: sql<boolean>`IF (${sql.placeholder('withDetails')}, ${fileHasCommentsSubquerySQL(unionAlias.id)}, 0)`.mapWith(Boolean),
+        isFavorite: isNotNull(filesFavorites.fileId).mapWith(Boolean)
+      } satisfies Partial<Record<keyof FileProps, any>>
+      this.shareRootFilesQuery = this.db
+        .select(select)
+        .from(unionAlias)
+        .leftJoin(
+          filesFavorites,
+          and(
+            eq(sql.placeholder('withFavorites'), sql`1`),
+            eq(filesFavorites.userId, sql.placeholder('userId')),
+            eq(filesFavorites.fileId, unionAlias.id)
+          )
+        )
+        .leftJoin(externalRootScope.table, eq(externalRootScope.targetShareId, unionAlias.rootId))
+        // Non-external shares do not need this scope. An external share must
+        // resolve one: otherwise omit it so `updateRootFile()` cannot mistake
+        // the share-record owner for the owner of its external storage.
+        .where(or(isNull(unionAlias.rootExternalPath), isNotNull(externalRootScope.storageShareId)))
+        .groupBy(unionAlias.rootId)
+        .prepare()
+    }
+    const fps: FileProps[] = await this.shareRootFilesQuery.execute({
+      userId: user.id,
+      isAdmin: +user.isAdmin,
+      withDetails: +!!details,
+      withFavorites: +(details?.favorites ?? false),
+      withSyncs: +(details?.syncs ?? false)
+    })
+    for (const f of fps) {
+      f.root!.permissions = uniquePermissions(f.root!.permissions!)
+    }
+    return fps
+  }
+
+  @CacheDecorator()
+  async permissions(userId: number, shareAlias: string, isAdmin: number = 0): Promise<Partial<SpaceEnv> | undefined> {
+    if (!this.sharePermissionsQuery) {
+      const shareSpaceRoot: any = alias(spacesRoots, 'shareSpaceRoot')
+      // Make every file operation through a nested external share address the
+      // same file records and locks as an operation through its external root.
+      // This storage ancestry is independent from permission inheritance:
+      // `shares.parentId` remains the immediate permission parent, while this
+      // CTE exposes the highest ancestor used by `files.shareExternalId`.
+      // Only external child shares recurse; roots and non-external shares keep
+      // a null `externalParentShareId` and retain their existing fallback scope.
+      // A missing or non-external parent produces no root row, so the inner join
+      // denies access to a malformed external child before any file operation.
+      const targetShare = this.db
+        .select({ id: shares.id, parentId: shares.parentId, externalPath: shares.externalPath })
+        .from(shares)
+        .where(eq(shares.alias, sql.placeholder('shareAlias')))
+      const externalRootScope = externalShareScopeSQL(targetShare, 'permissionExternalScope', { mapExternalRootToSelf: false })
+      const selectUnion = {
+        id: shares.id,
+        alias: shares.alias,
+        name: shares.name,
+        enabled: shares.enabled,
+        permissions: sharesMembers.permissions,
+        rootId: sql`${files.id}`.as('rootId'),
+        rootOwnerId: sql`${users.id}`.as('rootOwnerId'),
+        rootOwnerLogin: users.login,
+        rootSpaceId: sql`${spaces.id}`.as('rootSpaceId'),
+        rootSpaceAlias: sql`${spaces.alias}`.as('rootSpaceAlias'),
+        rootPath: sql`IF (${files.id} IS NOT NULL, ${filePathSQL(files)}, NULL)`.as('rootPath'),
+        rootInTrash: files.inTrash,
+        rootExternalPath: shares.externalPath,
+        rootSpaceRootId: sql`IF (${spacesRoots.id} IS NULL, ${shareSpaceRoot.id}, ${spacesRoots.id})`.as('rootSpaceRootId'),
+        rootSpaceRootExternalPath: sql`IF (${spacesRoots.externalPath} IS NULL,
+                                           ${shareSpaceRoot.externalPath}, ${spacesRoots.externalPath})`.as('rootSpaceRootExternalPath')
+      } satisfies SelectedFields
+      const filters: SQL[] = [eq(shares.alias, sql.placeholder('shareAlias'))]
+      const fromUser = this.fromUserQuery(selectUnion, filters).$dynamic()
+      const fromGroups = this.fromGroupsQuery(selectUnion, filters).$dynamic()
+      const fromAdminShares = this.fromAdminSharesQuery({ ...selectUnion, permissions: sql`${SHARE_ALL_OPERATIONS}` }, filters).$dynamic()
+      for (const q of [fromUser, fromGroups, fromAdminShares]) {
+        q.leftJoin(shareSpaceRoot, and(isNull(shares.externalPath), isNull(shares.fileId), eq(shareSpaceRoot.id, shares.spaceRootId)))
+          .leftJoin(
+            files,
+            or(
+              // in case of share child from a share with external path, child share should have an external path and a fileId
+              and(isNotNull(shares.fileId), eq(files.id, shares.fileId)),
+              and(isNull(shares.externalPath), isNotNull(shareSpaceRoot.fileId), eq(files.id, shareSpaceRoot.fileId))
+            )
+          )
+          .leftJoin(
+            spaces,
+            and(
+              isNull(shares.externalPath),
+              or(
+                and(isNotNull(files.spaceId), eq(spaces.id, files.spaceId)),
+                and(isNotNull(shareSpaceRoot.spaceId), eq(spaces.id, shareSpaceRoot.spaceId))
+              )
+            )
+          )
+          .leftJoin(spacesRoots, and(isNull(shares.externalPath), eq(spacesRoots.id, files.spaceExternalRootId)))
+          .leftJoin(users, eq(users.id, files.ownerId))
+      }
+      const unionAlias = union(fromUser, fromGroups, fromAdminShares).as('union_alias')
+      const select: any = {
+        id: unionAlias.id,
+        alias: unionAlias.alias,
+        name: unionAlias.name,
+        enabled: unionAlias.enabled,
+        permissions: spaceGroupConcatPermissions(unionAlias.permissions),
+        root: {
+          id: unionAlias.rootId,
+          owner: { id: unionAlias.rootOwnerId, login: unionAlias.rootOwnerLogin },
+          file: {
+            path: unionAlias.rootPath,
+            inTrash: unionAlias.rootInTrash,
+            space: { id: unionAlias.rootSpaceId, alias: unionAlias.rootSpaceAlias },
+            root: { id: unionAlias.rootSpaceRootId, externalPath: unionAlias.rootSpaceRootExternalPath }
+          },
+          externalPath: unionAlias.rootExternalPath,
+          externalParentShareId: externalRootScope.storageShareId
+        }
+      } satisfies Partial<Record<keyof SpaceEnv, any>>
+      this.sharePermissionsQuery = this.db
+        .select(select)
+        .from(unionAlias)
+        .innerJoin(externalRootScope.table, eq(externalRootScope.targetShareId, unionAlias.id))
+        .groupBy(unionAlias.id)
+        .limit(1)
+        .prepare()
+    }
+    // `userId` is used in `fromUserQuery` and `fromGroupsQuery` function
+    // `isAdmin` is used in `fromAdminSharesQuery` function
+    const [r]: Partial<SpaceEnv>[] = await this.sharePermissionsQuery.execute({ userId, shareAlias, isAdmin })
+    if (r) {
+      r.permissions = uniquePermissions(r.permissions!)
+    }
+    return r
+  }
+
+  @CacheDecorator(900, true)
+  async childSharesCount(shareId: number): Promise<number> {
+    const childShare: any = alias(shares, 'childShare')
+    const withChildren: any = sql`
+      WITH RECURSIVE children (id, parentId) AS
+                       (SELECT ${shares.id}, ${shares.parentId}
+                        FROM ${shares}
+                        WHERE ${shares.parentId} IS NOT NULL
+                          AND ${shares.parentId} = ${shareId}
+                        UNION
+                        SELECT ${childShare.id}, cs.parentId
+                        FROM ${shares} AS childShare
+                               INNER JOIN children AS cs ON ${childShare.parentId} = cs.id)
+      SELECT COUNT(children.id) as count
+      FROM children
+      GROUP BY parentId
+    `
+    const [r]: { count: number }[][] = (await this.db.execute(withChildren)) as MySqlQueryResult
+    return r.length ? r[0].count : 0
+  }
+
+  async clearCacheIdentities(userIds?: number[]) {
+    for (const userId of userIds ?? ['*']) {
+      const pattern = this.cache.genSlugKey(this.constructor.name, this.shareIdentities.name, userId, '*')
+      const keys = await this.cache.keys(pattern)
+      if (keys.length) {
+        this.logger.verbose({ tag: this.clearCacheIdentities.name, msg: `${JSON.stringify(keys)}` })
+        this.cache.mdel(keys).catch((e: Error) => this.logger.error({ tag: this.clearCacheIdentities.name, msg: toErrorMessage(e) }))
+      }
+    }
+  }
+
+  async clearCachePermissions(shareAlias: string, userIds?: number[]) {
+    // `permissions` argument must match with `this.permissions.name` function
+    await this.clearCacheIdentities(userIds)
+    for (const userId of userIds ?? ['*']) {
+      const pattern = this.cache.genSlugKey(this.constructor.name, this.permissions.name, userId, shareAlias, '*')
+      const keys = await this.cache.keys(pattern)
+      if (keys.length) {
+        this.logger.verbose({ tag: this.clearCachePermissions.name, msg: `${JSON.stringify(keys)}` })
+        this.cache.mdel(keys).catch((e: Error) => this.logger.error({ tag: this.clearCachePermissions.name, msg: toErrorMessage(e) }))
+      }
+    }
+  }
+
+  shareExistsForAlias(alias: string, excludedShareId?: number) {
+    return this.db.query.shares.findFirst({
+      columns: { id: true },
+      where: excludedShareId === undefined ? eq(shares.alias, alias) : and(eq(shares.alias, alias), ne(shares.id, excludedShareId))
+    })
+  }
+
+  private fromUserQuery(select: Record<string, any>, filters: SQL[] = []) {
+    const where: SQL[] = [eq(sharesMembers.userId, sql.placeholder('userId')), ...filters]
+    return this.db
+      .select(select)
+      .from(sharesMembers)
+      .innerJoin(shares, eq(sharesMembers.shareId, shares.id))
+      .where(and(...where))
+  }
+
+  private fromGroupsQuery(select: Record<string, any>, filters: SQL[] = []) {
+    const where: SQL[] = [eq(sharesMembers.groupId, usersGroups.groupId), ...filters]
+    return this.db
+      .select(select)
+      .from(sharesMembers)
+      .innerJoin(usersGroups, eq(usersGroups.userId, sql.placeholder('userId')))
+      .innerJoin(shares, eq(sharesMembers.shareId, shares.id))
+      .where(and(...where))
+  }
+
+  private fromAdminSharesQuery(select: Record<string, any>, filters: SQL[] = []) {
+    const where: SQL[] = [eq(sql.placeholder('isAdmin'), sql`1`), isNull(shares.ownerId), ...filters]
+    return this.db
+      .select(select)
+      .from(shares)
+      .where(and(...where))
+  }
+
+  private shareFileSelect(): any[] {
+    const shareRootFile: any = alias(files, 'shareRootFile')
+    const parentShare: any = alias(shares, 'parentShare')
+    const parentShareFile: any = alias(files, 'parentShareFile')
+    const childShareFromRoot: any = alias(spacesRoots, 'childShareFromRoot')
+    const shareMembers: any = alias(sharesMembers, 'shareMembers')
+    const selectedFilePath = filePathSQL(files)
+    const shareRootFilePath = filePathSQL(shareRootFile)
+    const parentShareFilePath = filePathSQL(parentShareFile)
+    const relativeFilePathFromRoot = (rootFilePath: SQL<string>): SQL<string> =>
+      sql`IF (
+        ${and(childPathMatch(selectedFilePath, rootFilePath), sql`CHAR_LENGTH(${selectedFilePath}) > CHAR_LENGTH(${rootFilePath})`)},
+        ${replacePathPrefix(selectedFilePath, sql`CONCAT(${rootFilePath}, '/')`, '')},
+        ${selectedFilePath}
+      )`
+    const selectFile = {
+      id: sql`IF (${shares.fileId} IS NULL AND ${shareRootFile.id} IS NOT NULL,
+                  ${shareRootFile.id}, ${files.id})`.as('fileId'),
+      ownerId: sql`IF (${shares.spaceId} IS NOT NULL,
+                       NULL, ${files.ownerId})`.as('fileOwnerId'),
+      name: sql`IF (${shares.fileId} IS NULL AND ${spacesRoots.id} IS NOT NULL,
+                    ${spacesRoots.name},
+                    IF(${childShareFromRoot.id} IS NOT NULL
+                           OR ${shares.fileId} = ${parentShare.fileId}, ${parentShare.name}, ${files.name}))`.as('fileName'),
+      path: sql`IF (${shareRootFile.id} IS NOT NULL AND ${shares.fileId} IS NOT NULL,
+                    ${relativeFilePathFromRoot(shareRootFilePath)},
+                    IF(${parentShareFile.id} IS NOT NULL AND ${shares.fileId} IS NOT NULL,
+                       IF(${parentShareFile.id} = ${shares.fileId}, '.',
+                          ${relativeFilePathFromRoot(parentShareFilePath)}),
+                       IF(${shares.fileId} IS NOT NULL, ${selectedFilePath}, '.')))`.as('filePath'),
+      isDir: sql`IF (${shares.fileId} IS NULL AND ${shares.spaceRootId} IS NOT NULL,
+                     ${shareRootFile.isDir}, ${files.isDir})`.as('fileIsDir'),
+      inTrash: sql`IF (${shares.fileId} IS NULL AND ${shares.spaceRootId} IS NOT NULL,
+                       ${shareRootFile.inTrash}, ${files.inTrash})`.as('fileInTrash'),
+      mime: sql`IF (${shares.fileId} IS NULL AND ${shares.spaceRootId} IS NOT NULL,
+                    ${shareRootFile.mime}, ${files.mime})`.as('fileMime'),
+      space: {
+        alias: spaces.alias,
+        name: spaces.name,
+        root: {
+          alias: sql`IF (${shares.parentId} IS NULL, ${spacesRoots.alias}, NULL)`,
+          name: sql`IF (${shares.parentId} IS NULL, ${spacesRoots.name}, NULL)`
+        }
+      }
+    } satisfies Record<keyof Omit<FileSpace, 'permissions'>, any>
+    return [selectFile, shareRootFile, parentShare, parentShareFile, childShareFromRoot, shareMembers]
+  }
+
+  private shareFileJoin(
+    select: any,
+    shareRootFile: any,
+    parentShare: any,
+    parentShareFile: any,
+    childShareFromRoot: any,
+    shareMembers: any
+  ): MySqlSelectDynamic<any> {
+    return this.db
+      .select(select)
+      .from(shares)
+      .leftJoin(files, and(isNotNull(shares.fileId), eq(files.id, shares.fileId)))
+      .leftJoin(spaces, and(isNull(shares.externalPath), isNull(shares.parentId), isNotNull(shares.spaceId), eq(spaces.id, shares.spaceId)))
+      .leftJoin(
+        spacesRoots,
+        and(isNull(shares.externalPath), isNull(shares.parentId), isNotNull(shares.spaceRootId), eq(spacesRoots.id, shares.spaceRootId))
+      )
+      .leftJoin(
+        childShareFromRoot,
+        and(
+          isNull(shares.externalPath),
+          isNotNull(shares.parentId),
+          isNull(shares.fileId),
+          isNotNull(shares.spaceRootId),
+          eq(childShareFromRoot.id, shares.spaceRootId)
+        )
+      )
+      .leftJoin(
+        shareRootFile,
+        and(
+          isNull(shares.externalPath),
+          isNotNull(shares.spaceRootId),
+          or(
+            and(isNull(shares.parentId), eq(shareRootFile.id, spacesRoots.fileId)),
+            and(isNotNull(shares.parentId), eq(shareRootFile.id, childShareFromRoot.fileId))
+          )
+        )
+      )
+      .leftJoin(parentShare, and(isNotNull(shares.parentId), eq(parentShare.id, shares.parentId)))
+      .leftJoin(parentShareFile, and(isNotNull(shares.parentId), isNotNull(parentShare.fileId), eq(parentShareFile.id, parentShare.fileId)))
+      .leftJoin(shareMembers, eq(shareMembers.shareId, shares.id))
+      .$dynamic()
+  }
+
+  private async setShareCounts(shares: ShareFile[]) {
+    if (!shares.length) return
+    for (const share of shares) {
+      share.counts.shares = await this.childSharesCount(share.id)
+    }
+  }
+}

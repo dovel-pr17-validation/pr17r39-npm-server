@@ -1,0 +1,573 @@
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { FastifyReply, FastifyRequest } from 'fastify'
+import {
+  allowInsecureRequests,
+  authorizationCodeGrant,
+  AuthorizationResponseError,
+  calculatePKCECodeChallenge,
+  ClientSecretBasic,
+  ClientSecretPost,
+  Configuration,
+  discovery,
+  fetchUserInfo,
+  None,
+  randomNonce,
+  randomPKCECodeVerifier,
+  randomState,
+  skipSubjectCheck,
+  UserInfoResponse
+} from 'openid-client'
+import { USER_ROLE } from '../../../applications/users/constants/user.js'
+import type { CreateUserDto, UpdateUserDto } from '../../../applications/users/dto/create-or-update-user.dto.js'
+import { UserModel } from '../../../applications/users/models/user.model.js'
+import { AdminUsersManager } from '../../../applications/users/services/admin-users-manager.service.js'
+import { UsersManager } from '../../../applications/users/services/users-manager.service.js'
+import {
+  isAvatarMetadataUnchanged,
+  saveAvatarMetadata,
+  USER_AVATAR_FILE_NAME,
+  USER_AVATAR_MAX_UPLOAD_SIZE
+} from '../../../applications/users/utils/avatar.js'
+import { toErrorMessage } from '../../../common/errors.js'
+import { generateShortUUID, splitFullName } from '../../../common/functions.js'
+import { configuration } from '../../../configuration/config.environment.js'
+import { AUTH_ROUTE } from '../../constants/routes.js'
+import type { AUTH_SCOPE } from '../../constants/scope.js'
+import { TOKEN_TYPE } from '../../interfaces/token.interface.js'
+import { AUTH_PROVIDER } from '../auth-providers.constants.js'
+import { AuthProvider } from '../auth-providers.models.js'
+import { applyStorageQuotaToIdentity } from '../auth-providers.utils.js'
+import { OAuthDesktopCallBackURI, OAuthDesktopLoopbackPorts, OAuthDesktopPortParam } from './auth-oidc-desktop.constants.js'
+import type { AuthProviderOIDCConfig } from './auth-oidc.config.js'
+import { OAuthCookie, OAuthCookieSettings, OAuthTokenEndpoint, OIDC_LOGIN_HASH_LENGTH, OIDC_LOGIN_MAX_LENGTH } from './auth-oidc.constants.js'
+import { HttpService } from '@nestjs/axios'
+import { type DownloadFileDto, downloadFileSchema } from '../../../applications/files/dto/file-operations.dto.js'
+import { DownloadFile } from '../../../applications/files/utils/download-file.js'
+import { convertTempImageToPng, imgMimeTypePrefix } from '../../../common/image.js'
+import { fileSize, temporaryFilePath } from '../../../applications/files/utils/files.js'
+
+@Injectable()
+export class AuthProviderOIDC implements AuthProvider {
+  private readonly logger = new Logger(AuthProviderOIDC.name)
+  private readonly oidcConfig: AuthProviderOIDCConfig = configuration.auth.oidc
+  private frontendBaseUrl!: string
+  private config: Configuration | null = null
+
+  constructor(
+    private readonly http: HttpService,
+    private readonly usersManager: UsersManager,
+    private readonly adminUsersManager: AdminUsersManager
+  ) {}
+
+  async validateUser(login: string, password: string, ip?: string, scope?: AUTH_SCOPE): Promise<UserModel | null> {
+    // Non-OIDC fallback: allow local password authentication only for:
+    // - guest users
+    // - administrators (break-glass access)
+    // - scoped application access (app passwords)
+    // - regular users when password authentication is enabled
+    const canUseLocalPassword = (user: UserModel): boolean =>
+      Boolean(user.isGuest || user.isAdmin || Boolean(scope) || this.oidcConfig.options.enablePasswordAuth)
+
+    return this.usersManager.validateLocalPasswordByLogin(login, password, ip, scope, canUseLocalPassword)
+  }
+
+  async getConfig(): Promise<Configuration> {
+    if (!this.config) {
+      this.config = await this.initializeOIDCClient()
+    }
+    return this.config
+  }
+
+  async getAuthorizationUrl(res: FastifyReply, desktopPort?: number): Promise<string> {
+    const redirectURI = this.getRedirectURI(desktopPort)
+    const config = await this.getConfig()
+
+    // state: CSRF protection, nonce: binds the ID Token to this auth request (replay protection)
+    const state = randomState()
+    const nonce = randomNonce()
+
+    const isPKCEEnabled = this.isPKCEEnabled(config)
+    const codeVerifier = isPKCEEnabled ? randomPKCECodeVerifier() : undefined
+
+    const authUrl = new URL(config.serverMetadata().authorization_endpoint!)
+    authUrl.searchParams.set('client_id', this.oidcConfig.clientId!)
+    authUrl.searchParams.set('redirect_uri', redirectURI)
+    authUrl.searchParams.set('response_type', 'code')
+    authUrl.searchParams.set('scope', this.oidcConfig.security.scope)
+    authUrl.searchParams.set('state', state)
+    authUrl.searchParams.set('nonce', nonce)
+    if (isPKCEEnabled) {
+      const codeChallenge = await calculatePKCECodeChallenge(codeVerifier!)
+      authUrl.searchParams.set('code_challenge', codeChallenge)
+      authUrl.searchParams.set('code_challenge_method', 'S256')
+    }
+
+    // Avoid cache
+    res
+      .header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+      .header('Pragma', 'no-cache')
+      .header('Expires', '0')
+      .header('X-Robots-Tag', 'noindex, nofollow')
+      .header('Referrer-Policy', 'no-referrer')
+
+    // Store state, nonce, and codeVerifier in httpOnly cookies (expires in 10 minutes)
+    res.setCookie(OAuthCookie.State, state, OAuthCookieSettings)
+    res.setCookie(OAuthCookie.Nonce, nonce, OAuthCookieSettings)
+    if (isPKCEEnabled) {
+      res.setCookie(OAuthCookie.CodeVerifier, codeVerifier!, OAuthCookieSettings)
+    }
+    return authUrl.toString()
+  }
+
+  async handleCallback(req: FastifyRequest, res: FastifyReply, query: Record<string, string>): Promise<UserModel> {
+    const config = await this.getConfig()
+    const isPKCEEnabled = this.isPKCEEnabled(config)
+    const [expectedState, expectedNonce, codeVerifier] = [
+      req.cookies[OAuthCookie.State],
+      req.cookies[OAuthCookie.Nonce],
+      req.cookies[OAuthCookie.CodeVerifier]
+    ]
+
+    try {
+      if (!expectedState?.length) {
+        throw new HttpException('OAuth state is missing', HttpStatus.BAD_REQUEST)
+      }
+
+      if (isPKCEEnabled && !codeVerifier?.length) {
+        throw new HttpException('OAuth code verifier is missing', HttpStatus.BAD_REQUEST)
+      }
+
+      const pkceCodeVerifier = isPKCEEnabled ? codeVerifier : undefined
+      const callbackParams = new URLSearchParams(query)
+
+      // Get Desktop Port if defined
+      const desktopPort: string | null = callbackParams.get(OAuthDesktopPortParam)
+      if (desktopPort) {
+        callbackParams.delete(OAuthDesktopPortParam)
+      }
+
+      // Exchange authorization code for tokens
+      const callbackUrl = new URL(this.getRedirectURI(desktopPort))
+      callbackUrl.search = callbackParams.toString()
+      const tokens = await authorizationCodeGrant(config, callbackUrl, {
+        expectedState,
+        pkceCodeVerifier,
+        expectedNonce
+      })
+
+      // Get validated ID token claims
+      const claims = tokens.claims()
+      if (!claims) {
+        throw new HttpException('No ID token claims found', HttpStatus.BAD_REQUEST)
+      }
+      if (!claims.sub) {
+        throw new HttpException('Unexpected profile response, no `sub`', HttpStatus.BAD_REQUEST)
+      }
+
+      // ID token claims may be minimal depending on the IdP; use the UserInfo endpoint to retrieve user details.
+      // Get user info from the userinfo endpoint (requires access token and subject from ID token).
+      const subject = this.oidcConfig.security.skipSubjectCheck ? skipSubjectCheck : claims.sub
+      const userInfo: UserInfoResponse = await fetchUserInfo(config, tokens.access_token, subject)
+
+      if (!userInfo.sub) {
+        throw new Error('Unexpected profile response, no `sub`')
+      }
+
+      // Process the user info and create/update the user
+      return await this.processUserInfo(userInfo, claims.sub, req.ip)
+    } catch (error: AuthorizationResponseError | HttpException | any) {
+      if (error instanceof AuthorizationResponseError) {
+        this.logger.error({ tag: this.handleCallback.name, msg: `OIDC callback error: ${error.code} - ${error.error_description}` })
+        throw new HttpException(error.error_description as string, HttpStatus.BAD_REQUEST)
+      } else {
+        const errorMessage = await this.getOIDCErrorMessage(error)
+        this.logger.error({ tag: this.handleCallback.name, msg: `OIDC callback error: ${errorMessage}` })
+        throw new HttpException(
+          error.error_description ?? 'OIDC authentication failed',
+          error instanceof HttpException ? error.getStatus() : (error.status ?? HttpStatus.INTERNAL_SERVER_ERROR)
+        )
+      }
+    } finally {
+      // Always clear temporary OIDC cookies (success or failure)
+      Object.values(OAuthCookie).forEach((value) => {
+        res.clearCookie(value, { path: '/' })
+      })
+    }
+  }
+
+  getRedirectCallbackUrl(accessExpiration: number, refreshExpiration: number) {
+    if (!this.frontendBaseUrl) {
+      const url = new URL(this.oidcConfig.redirectUri)
+      const apiIndex = url.pathname.indexOf(AUTH_ROUTE.BASE)
+      this.frontendBaseUrl = apiIndex >= 0 ? `${url.origin}${url.pathname.slice(0, apiIndex)}` : url.origin
+    }
+    const url = new URL(this.frontendBaseUrl)
+    const params = new URLSearchParams({
+      [AUTH_PROVIDER.OIDC]: 'true',
+      [`${TOKEN_TYPE.ACCESS}_expiration`]: `${accessExpiration}`,
+      [`${TOKEN_TYPE.REFRESH}_expiration`]: `${refreshExpiration}`
+    })
+    url.hash = `/?${params.toString()}`
+    return url.toString()
+  }
+
+  getRedirectURI(desktopPort?: number | string | null): string {
+    // web / default callback
+    if (desktopPort === undefined || desktopPort === null) return this.oidcConfig.redirectUri
+    // desktop app callback
+    if (typeof desktopPort === 'string') {
+      desktopPort = Number(desktopPort)
+    }
+    if (!Number.isInteger(desktopPort) || !OAuthDesktopLoopbackPorts.has(desktopPort as number)) {
+      throw new HttpException('Invalid desktop_port', HttpStatus.BAD_REQUEST)
+    }
+    // The redirect url must be known from provider
+    return `http://127.0.0.1:${desktopPort}${OAuthDesktopCallBackURI}`
+  }
+
+  private async initializeOIDCClient(): Promise<Configuration> {
+    try {
+      const issuerUrl = new URL(this.oidcConfig.issuerUrl)
+      const config: Configuration = await discovery(
+        issuerUrl,
+        this.oidcConfig.clientId,
+        {
+          client_secret: this.oidcConfig.clientSecret,
+          response_types: ['code'],
+          id_token_signed_response_alg: this.oidcConfig.security.tokenSigningAlg,
+          userinfo_signed_response_alg: this.oidcConfig.security.userInfoSigningAlg ?? undefined
+        },
+        this.getTokenAuthMethod(this.oidcConfig.security.tokenEndpointAuthMethod, this.oidcConfig.clientSecret),
+        {
+          ...(this.oidcConfig.security.allowInsecureRequests ? { execute: [allowInsecureRequests] } : {}),
+          timeout: 6000
+        }
+      )
+      this.logger.log({ tag: this.initializeOIDCClient.name, msg: `OIDC client initialized successfully for issuer: ${this.oidcConfig.issuerUrl}` })
+      return config
+    } catch (error) {
+      const errorMessage = await this.getOIDCErrorMessage(error)
+      this.logger.error({ tag: this.initializeOIDCClient.name, msg: `OIDC client initialization failed: ${errorMessage}` })
+      throw this.mapOIDCInitializationError(error)
+    }
+  }
+
+  private mapOIDCInitializationError(error: any): HttpException {
+    const code = error?.code ?? error?.cause?.code
+    switch (code) {
+      case 'OAUTH_HTTP_REQUEST_FORBIDDEN':
+        return new HttpException('OIDC issuer URL must use HTTPS unless allowInsecureRequests is enabled', HttpStatus.BAD_REQUEST)
+
+      case 'OAUTH_TIMEOUT':
+      case 'ETIMEDOUT':
+        return new HttpException('OIDC provider timeout', HttpStatus.GATEWAY_TIMEOUT)
+
+      case 'ECONNREFUSED':
+      case 'ENOTFOUND':
+        return new HttpException('OIDC provider unavailable', HttpStatus.SERVICE_UNAVAILABLE)
+
+      default:
+        if (typeof code === 'string' && code.startsWith('OAUTH_')) {
+          return new HttpException('OIDC provider configuration error', HttpStatus.BAD_REQUEST)
+        }
+        return new HttpException('OIDC client initialization failed', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  private async getOIDCErrorMessage(error: unknown): Promise<string> {
+    const cause = error !== null && typeof error === 'object' && 'cause' in error ? error.cause : undefined
+    if (cause instanceof Response) {
+      try {
+        return await cause.clone().text()
+      } catch {
+        return toErrorMessage(cause)
+      }
+    }
+
+    return toErrorMessage(cause ?? error)
+  }
+
+  private getTokenAuthMethod(tokenEndpointAuthMethod: OAuthTokenEndpoint, clientSecret?: string) {
+    if (!clientSecret) {
+      return None()
+    }
+
+    switch (tokenEndpointAuthMethod) {
+      case OAuthTokenEndpoint.ClientSecretPost: {
+        return ClientSecretPost(clientSecret)
+      }
+
+      case OAuthTokenEndpoint.ClientSecretBasic: {
+        return ClientSecretBasic(clientSecret)
+      }
+
+      default: {
+        return None()
+      }
+    }
+  }
+
+  private isPKCEEnabled(config: Configuration): boolean {
+    return (this.oidcConfig.security.supportPKCE ?? true) && config.serverMetadata().supportsPKCE()
+  }
+
+  private async processUserInfo(userInfo: UserInfoResponse, externalId: string, ip?: string): Promise<UserModel> {
+    // Extract user information
+    const { login, email } = this.extractLoginAndEmail(userInfo)
+
+    // Resolve an already linked external identity first, then fall back to email for existing OIDC users.
+    let user = await this.usersManager.findUserByExternalIdOrEmail(externalId, email, false)
+
+    if (user?.externalId && user.externalId !== externalId) {
+      this.logger.warn({ tag: this.processUserInfo.name, msg: `OIDC email is already linked to another external identity` })
+      throw new HttpException('OIDC identity mismatch', HttpStatus.UNAUTHORIZED)
+    }
+
+    // Enforce the local account status before binding an unlinked external identity.
+    if (user && !user.isActive) {
+      this.logger.warn({ tag: this.processUserInfo.name, msg: `OIDC login rejected for disabled user *${user.login}*` })
+      throw new HttpException('Account locked', HttpStatus.FORBIDDEN)
+    }
+
+    if (user && !user.externalId) {
+      if (!(await this.usersManager.usersQueries.bindExternalId(user.id, externalId))) {
+        throw new HttpException('Unable to link OIDC identity', HttpStatus.UNAUTHORIZED)
+      }
+      user.externalId = externalId
+    }
+
+    if (!user && !this.oidcConfig.options.autoCreateUser) {
+      this.logger.warn({ tag: this.processUserInfo.name, msg: `User not found and autoCreateUser is disabled` })
+      throw new HttpException('User not found', HttpStatus.UNAUTHORIZED)
+    }
+
+    // Determine if user should be admin based on groups/roles
+    const isAdmin = this.checkAdminRole(userInfo)
+
+    // Create identity
+    const identity = this.createIdentity(login, email, userInfo, isAdmin)
+
+    // Create or update user
+    user = await this.updateOrCreateUser(identity, user, externalId)
+    // Update picture url (if it exists)
+    if (this.oidcConfig.options.autoSyncAvatar) {
+      await this.updatePictureUrl(user, userInfo)
+    }
+    // Update user access log
+    this.usersManager
+      .updateAccesses(user, ip as string | null, true)
+      .catch((e: Error) => this.logger.error({ tag: this.processUserInfo.name, msg: toErrorMessage(e) }))
+
+    return user
+  }
+
+  private checkAdminRole(userInfo: UserInfoResponse): boolean {
+    if (!this.oidcConfig.options.adminRoleOrGroup) {
+      return false
+    }
+
+    // Check claims
+    const claims = [...(Array.isArray(userInfo.groups) ? userInfo.groups : []), ...(Array.isArray(userInfo.roles) ? userInfo.roles : [])]
+
+    return claims.includes(this.oidcConfig.options.adminRoleOrGroup)
+  }
+
+  private createIdentity(
+    login: string,
+    email: string,
+    userInfo: UserInfoResponse,
+    isAdmin: boolean
+  ): Omit<CreateUserDto, 'password'> & { password?: string } {
+    // Get first name and last name
+    let firstName = userInfo.given_name || ''
+    let lastName = userInfo.family_name || ''
+
+    // If structured names not available, try to split the full name
+    if (!firstName && !lastName && userInfo.name) {
+      const names = splitFullName(userInfo.name)
+      firstName = names.firstName
+      lastName = names.lastName
+    }
+
+    const identity: Omit<CreateUserDto, 'password'> & { password?: string } = {
+      login,
+      email,
+      role: isAdmin ? USER_ROLE.ADMINISTRATOR : USER_ROLE.USER,
+      firstName,
+      lastName
+    }
+    applyStorageQuotaToIdentity(identity, userInfo as Record<string, unknown>, this.oidcConfig.options.storageQuotaClaim!)
+    return identity
+  }
+
+  private async updateOrCreateUser(
+    identity: Omit<CreateUserDto, 'password'> & { password?: string },
+    user: UserModel | null,
+    externalId: string
+  ): Promise<UserModel> {
+    if (user === null) {
+      return this.createUser(identity, externalId)
+    }
+
+    // Check if user information has changed. The local login is initialized once and remains stable.
+    const identityHasChanged: UpdateUserDto = Object.fromEntries(
+      (Object.keys(identity) as (keyof typeof identity)[])
+        .filter((key) => key !== 'password' && key !== 'login')
+        .map((key) => (identity[key] !== user[key as keyof UserModel] ? [key, identity[key]] : null))
+        .filter(Boolean) as Iterable<readonly [PropertyKey, any]>
+    ) as UpdateUserDto
+
+    if (Object.keys(identityHasChanged).length > 0) {
+      try {
+        if (identityHasChanged?.role != null) {
+          if (user.role === USER_ROLE.ADMINISTRATOR && !this.oidcConfig.options.adminRoleOrGroup) {
+            // Prevent removing the admin role when adminGroup was removed or not defined
+            delete identityHasChanged.role
+          }
+        }
+
+        // Update user properties
+        await this.adminUsersManager.updateUserOrGuest(user.id, identityHasChanged)
+
+        // Update local user object
+        Object.assign(user, identityHasChanged)
+
+        if ('lastName' in identityHasChanged || 'firstName' in identityHasChanged) {
+          // Force fullName update in the current user model
+          user.setFullName(true)
+        }
+      } catch (e) {
+        this.logger.warn({ tag: this.updateOrCreateUser.name, msg: `unable to update user *${user.login}* : ${toErrorMessage(e)}` })
+      }
+    }
+
+    return user
+  }
+
+  private async createUser(identity: Omit<CreateUserDto, 'password'> & { password?: string }, externalId: string): Promise<UserModel> {
+    let login = identity.login
+    if (await this.usersManager.usersQueries.checkUserExists(login)) {
+      const suffix = crypto.createHash('sha256').update(externalId).digest('hex').slice(0, OIDC_LOGIN_HASH_LENGTH)
+      login = `${login.slice(0, OIDC_LOGIN_MAX_LENGTH - suffix.length - 1)}-${suffix}`
+    }
+
+    // A random password remains required by the local model but is not used for OIDC authentication.
+    const userWithPassword = {
+      ...identity,
+      login,
+      externalId,
+      password: generateShortUUID(24),
+      permissions: this.oidcConfig.options.autoCreatePermissions!.join(',')
+    } as CreateUserDto & { externalId: string }
+    const createdUser = await this.adminUsersManager.createUserOrGuest(userWithPassword, identity.role!)
+    const freshUser = await this.usersManager.fromUserId(createdUser.id)
+    if (!freshUser) {
+      this.logger.error({ tag: this.createUser.name, msg: `user was not found : ${createdUser.login} (${createdUser.id})` })
+      throw new HttpException('User not found', HttpStatus.NOT_FOUND)
+    }
+    return freshUser
+  }
+
+  private async updatePictureUrl(user: UserModel, userInfo: UserInfoResponse): Promise<void> {
+    const picture = userInfo.picture
+
+    if (typeof picture !== 'string') return
+
+    const pictureUrl = picture.trim()
+    if (!pictureUrl) return
+
+    // validate URL
+    let downloadDto: DownloadFileDto
+    try {
+      downloadDto = downloadFileSchema.parse({ url: pictureUrl })
+    } catch (e) {
+      this.logger.warn({ tag: this.updatePictureUrl.name, msg: `unable to validate picture URL *${pictureUrl}* : ${toErrorMessage(e)}` })
+      return
+    }
+
+    // checks
+    let pictureContentLength: number | undefined
+    let pictureLastModified: string | undefined
+    const downloader = new DownloadFile(this.http)
+    const allowPrivateIP = this.oidcConfig.security.allowPrivateIpAvatarDownload ?? undefined
+    const userAvatarTmpPath = temporaryFilePath(user.tmpPath, USER_AVATAR_FILE_NAME, 'avatar')
+    try {
+      // retrieve headers
+      const { contentType, contentLength, lastModified } = await downloader.download(downloadDto, userAvatarTmpPath, {
+        allowPrivateIP,
+        getContentInfo: true
+      })
+      pictureContentLength = contentLength ?? undefined
+      pictureLastModified = lastModified ?? ''
+
+      if (!contentType.startsWith(imgMimeTypePrefix)) {
+        this.logger.warn({ tag: this.updatePictureUrl.name, msg: `picture content type is not an image: ${contentType}` })
+        return
+      }
+
+      if (pictureContentLength !== undefined && pictureContentLength > USER_AVATAR_MAX_UPLOAD_SIZE) {
+        this.logger.warn({ tag: this.updatePictureUrl.name, msg: `picture content length is invalid: ${pictureContentLength}` })
+        return
+      }
+
+      if (
+        pictureContentLength !== undefined &&
+        pictureContentLength > 0 &&
+        (await isAvatarMetadataUnchanged(user.login, pictureUrl, pictureContentLength, pictureLastModified))
+      ) {
+        this.logger.verbose({ tag: this.updatePictureUrl.name, msg: `avatar metadata unchanged, skipping update` })
+        return
+      }
+    } catch (e) {
+      this.logger.warn({ tag: this.updatePictureUrl.name, msg: `checks failed: ${toErrorMessage(e)}` })
+    }
+
+    // download avatar
+    try {
+      await downloader.download(downloadDto, userAvatarTmpPath, { allowPrivateIP, maxSize: USER_AVATAR_MAX_UPLOAD_SIZE })
+    } catch (e) {
+      this.logger.warn({ tag: this.updatePictureUrl.name, msg: `download failed: ${toErrorMessage(e)}` })
+      return
+    }
+
+    // check size
+    const avatarSize = await fileSize(userAvatarTmpPath)
+    if (avatarSize > USER_AVATAR_MAX_UPLOAD_SIZE) {
+      fs.unlink(userAvatarTmpPath).catch(() => undefined)
+      this.logger.warn({ tag: this.updatePictureUrl.name, msg: `avatar size exceeds limit: ${avatarSize}` })
+      return
+    }
+
+    // convert
+    const userAvatarPath = path.join(UserModel.getHomePath(user.login), USER_AVATAR_FILE_NAME)
+    try {
+      await convertTempImageToPng(userAvatarTmpPath, userAvatarPath)
+      const avatarMetadataSize = pictureContentLength !== undefined && pictureContentLength > 0 ? pictureContentLength : avatarSize
+      void saveAvatarMetadata(user.login, pictureUrl, avatarMetadataSize, pictureLastModified)
+    } catch (e) {
+      this.logger.warn({ tag: this.updatePictureUrl.name, msg: `convert failed: ${toErrorMessage(e)}` })
+    } finally {
+      fs.unlink(userAvatarTmpPath).catch(() => undefined)
+    }
+  }
+
+  private extractLoginAndEmail(userInfo: UserInfoResponse) {
+    const email = userInfo.email ? userInfo.email.trim() : undefined
+    if (!email) {
+      throw new HttpException('No email address found in the OIDC profile', HttpStatus.BAD_REQUEST)
+    }
+    if (this.oidcConfig.security.requireVerifiedEmail && (userInfo as { email_verified?: boolean }).email_verified !== true) {
+      throw new HttpException('OIDC email must be verified', HttpStatus.BAD_REQUEST)
+    }
+
+    const login = userInfo.preferred_username ?? (email ? email.split('@')[0] : undefined) ?? userInfo.sub
+    if (!login) {
+      throw new HttpException('Unable to determine the OIDC profile login', HttpStatus.BAD_REQUEST)
+    }
+
+    return { login: login.trim().toLowerCase(), email }
+  }
+}

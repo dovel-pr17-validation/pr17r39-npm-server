@@ -1,0 +1,755 @@
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import bcrypt from 'bcryptjs'
+import { WriteStream } from 'fs'
+import { createWriteStream } from 'node:fs'
+import path from 'node:path'
+import { pipeline } from 'node:stream/promises'
+import { AUTH_SCOPE } from '../../../authentication/constants/scope.js'
+import { LoginResponseDto } from '../../../authentication/dto/login-response.dto.js'
+import { AuthPasswordWorkLimitException } from '../../../authentication/errors/auth-password-work-limit.exception.js'
+import { FastifyAuthenticatedRequest } from '../../../authentication/interfaces/auth-request.interface.js'
+import type { JwtIdentityPayload } from '../../../authentication/interfaces/jwt-payload.interface.js'
+import { AUTH_SESSION } from '../../../authentication/providers/auth-providers.constants.js'
+import { consumePasswordWorkRateLimit } from '../../../authentication/utils/auth-rate-limit.js'
+import { toErrorMessage } from '../../../common/errors.js'
+import { comparePassword, hashPassword } from '../../../common/functions.js'
+import { convertTempImageToPng, generateAvatar, imgMimeTypePrefix, pngMimeType, svgMimeType } from '../../../common/image.js'
+import { createLightSlug, genPassword } from '../../../common/shared.js'
+import { configuration, serverConfig } from '../../../configuration/config.environment.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { isPathExists, removeFiles, sanitizeName, temporaryFilePath } from '../../files/utils/files.js'
+import { NOTIFICATION_APP, NOTIFICATION_APP_EVENT } from '../../notifications/constants/notifications.js'
+import type { NotificationContent } from '../../notifications/interfaces/notification-properties.interface.js'
+import { NotificationsManager } from '../../notifications/services/notifications-manager.service.js'
+import { GROUP_TYPE } from '../constants/group.js'
+import { MEMBER_TYPE } from '../constants/member.js'
+import {
+  USER_GROUP_ROLE,
+  USER_MAX_PASSWORD_ATTEMPTS,
+  USER_ONLINE_STATUS,
+  USER_PASSWORD_ATTEMPTS_LOCK_DURATION_MS,
+  USER_ROLE
+} from '../constants/user.js'
+import type { UserCreateOrUpdateGroupDto } from '../dto/create-or-update-group.dto.js'
+import type { CreateUserDto, UpdateUserDto, UpdateUserFromGroupDto } from '../dto/create-or-update-user.dto.js'
+import type { ValidatedSearchMembersDto } from '../dto/search-members.dto.js'
+import type {
+  UserAppPasswordDto,
+  UserLanguageDto,
+  UserNotificationDto,
+  UserPreferencesDto,
+  UserStorageIndexingDto,
+  UserUpdatePasswordDto
+} from '../dto/user-properties.dto.js'
+import type { GroupBrowse } from '../interfaces/group-browse.interface.js'
+import type { GroupMember, GroupWithMembers } from '../interfaces/group-member.js'
+import type { GuestUser } from '../interfaces/guest-user.interface.js'
+import type { Member } from '../interfaces/member.interface.js'
+import type { UserPreferences } from '../interfaces/user-preferences.interface.js'
+import type { UserAppPassword, UserSecrets } from '../interfaces/user-secrets.interface.js'
+import type { UserOnline } from '../interfaces/websocket.interface.js'
+import { UserModel } from '../models/user.model.js'
+import { saveAvatarMetadata, USER_AVATAR_FILE_NAME, USER_AVATAR_MAX_UPLOAD_SIZE, USER_DEFAULT_AVATAR_FILE_PATH } from '../utils/avatar.js'
+import { AdminUsersManager } from './admin-users-manager.service.js'
+import { UsersQueries } from './users-queries.service.js'
+
+@Injectable()
+export class UsersManager {
+  private readonly logger = new Logger(UsersManager.name)
+
+  constructor(
+    public readonly usersQueries: UsersQueries,
+    private readonly adminUsersManager: AdminUsersManager,
+    private readonly notificationsManager: NotificationsManager,
+    private readonly cache: Cache
+  ) {}
+
+  async fromUserId(id: number): Promise<UserModel | null> {
+    const user = await this.usersQueries.from(id)
+    return user ? new UserModel(user, true) : null
+  }
+
+  async fromAuthToken(authUser: UserModel): Promise<UserModel | null> {
+    const user = await this.fromUserId(authUser.id)
+    if (!user?.isActive) {
+      return null
+    }
+    if (authUser.impersonatedFromId) {
+      const impersonatingUser = await this.fromUserId(authUser.impersonatedFromId)
+      if (!impersonatingUser?.isActive || !impersonatingUser.isAdmin) {
+        return null
+      }
+      user.impersonatedFromId = authUser.impersonatedFromId
+      user.impersonatedClientId = authUser.impersonatedClientId
+      user.impersonated = true
+    }
+    user.clientId = authUser.clientId
+    user.authSession = authUser.authSession
+    user.exp = authUser.exp
+    return user
+  }
+
+  async findUser(loginOrEmail: string, removePassword: false): Promise<UserModel | null>
+  async findUser(loginOrEmail: string, removePassword?: true): Promise<Omit<UserModel, 'password'> | null>
+  async findUser(loginOrEmail: string, removePassword: boolean = true): Promise<Omit<UserModel, 'password'> | null> {
+    const user = await this.usersQueries.from(null, loginOrEmail)
+    return user ? new UserModel(user, removePassword) : null
+  }
+
+  async findUserByExternalIdOrEmail(externalId: string, email: string, removePassword: false): Promise<UserModel | null>
+  async findUserByExternalIdOrEmail(externalId: string, email: string, removePassword?: true): Promise<Omit<UserModel, 'password'> | null>
+  async findUserByExternalIdOrEmail(externalId: string, email: string, removePassword: boolean = true): Promise<Omit<UserModel, 'password'> | null> {
+    const user = await this.usersQueries.fromExternalIdOrEmail(externalId, email)
+    return user ? new UserModel(user, removePassword) : null
+  }
+
+  async validateLocalPasswordByLogin(
+    loginOrEmail: string,
+    password: string,
+    ip?: string,
+    scope?: AUTH_SCOPE,
+    canAuthenticate?: (user: UserModel) => boolean
+  ): Promise<UserModel | null> {
+    const user = await this.findUser(loginOrEmail, false)
+    return this.validateLocalPasswordForUser(user, loginOrEmail, password, ip, scope, canAuthenticate)
+  }
+
+  async validateLocalPasswordForUser(
+    user: UserModel | null,
+    loginOrEmail: string,
+    password: string,
+    ip?: string,
+    scope?: AUTH_SCOPE,
+    canAuthenticate?: (user: UserModel) => boolean
+  ): Promise<UserModel | null> {
+    // Limit password work for every submitted identifier, whether or not it resolves to an account.
+    const rateLimit = await consumePasswordWorkRateLimit(this.cache, loginOrEmail)
+    if (rateLimit.isBlocked) throw new AuthPasswordWorkLimitException()
+
+    if (!user) {
+      this.logger.warn({ tag: this.validateLocalPasswordForUser.name, msg: `login or email not found for *${loginOrEmail}*` })
+      await comparePassword(password, null)
+      if (scope) {
+        // Scoped auth can also check app passwords; burn that second bcrypt path too.
+        await comparePassword(password, null)
+      }
+      return null
+    }
+    if (canAuthenticate && !canAuthenticate(user)) {
+      await comparePassword(password, null)
+      if (scope) {
+        // Match the scoped wrong-password path without revealing why local auth was rejected.
+        await comparePassword(password, null)
+      }
+      return null
+    }
+    return this.logUser(user, password, ip as string | null, scope)
+  }
+
+  async logUser(user: UserModel, password: string, ip: string | null, scope?: AUTH_SCOPE): Promise<UserModel | null> {
+    let accessDenied: HttpException | null = null
+    try {
+      await this.validateUserAccess(user)
+    } catch (e) {
+      if (!(e instanceof HttpException) || e.getStatus() !== HttpStatus.FORBIDDEN) throw e
+      accessDenied = e
+    }
+    const webDAVRequiresAppPassword = scope === AUTH_SCOPE.WEBDAV && configuration.auth.mfa.totp.enabled && user.twoFaEnabled
+    // Keep the primary-password bcrypt path for scoped auth timing, but never accept it for 2FA WebDAV.
+    const primaryPasswordMatches: boolean = await comparePassword(password, user.password)
+    if (accessDenied) {
+      // Only reveal the account state after an allowed primary password has been verified.
+      if (primaryPasswordMatches && !webDAVRequiresAppPassword) throw accessDenied
+      if (scope) await comparePassword(password, null)
+      return null
+    }
+    let authSuccess: boolean = webDAVRequiresAppPassword ? false : primaryPasswordMatches
+    if (!authSuccess && scope) {
+      authSuccess = await this.validateAppPassword(user, password, ip, scope)
+    }
+    this.updateAccesses(user, ip, authSuccess).catch((e: Error) => this.logger.error({ tag: this.logUser.name, msg: toErrorMessage(e) }))
+    if (authSuccess) {
+      await user.makePaths()
+      return user
+    }
+    this.logger.warn({ tag: this.logUser.name, msg: `bad password for *${user.login}*` })
+    return null
+  }
+
+  async validateUserAccess(user: UserModel): Promise<void> {
+    if (user.role === USER_ROLE.LINK) {
+      this.logger.error({ tag: this.validateUserAccess.name, msg: `guest link account ${user} is not authorized to login` })
+      throw new HttpException('Account is not allowed', HttpStatus.FORBIDDEN)
+    }
+    if (!user.isActive) {
+      this.logger.error({ tag: this.validateUserAccess.name, msg: `user account *${user.login}* is locked` })
+      throw new HttpException('Account locked', HttpStatus.FORBIDDEN)
+    }
+    await this.validatePasswordAttempts(user)
+  }
+
+  async validatePasswordAttempts(user: UserModel): Promise<void> {
+    if ((user.passwordAttempts ?? 0) < USER_MAX_PASSWORD_ATTEMPTS) return
+
+    const now = Date.now()
+    const lastAttemptAt = user.currentAccess?.getTime() ?? Number.NaN
+    if (Number.isFinite(lastAttemptAt) && lastAttemptAt + USER_PASSWORD_ATTEMPTS_LOCK_DURATION_MS > now) {
+      this.logger.error({ tag: this.validatePasswordAttempts.name, msg: `user account *${user.login}* is temporarily locked` })
+      throw new HttpException('Account locked', HttpStatus.FORBIDDEN)
+    }
+
+    const expiredBefore = new Date(now - USER_PASSWORD_ATTEMPTS_LOCK_DURATION_MS)
+    if (!(await this.usersQueries.resetExpiredPasswordAttempts(user.id, expiredBefore))) {
+      throw new HttpException('Account locked', HttpStatus.FORBIDDEN)
+    }
+    user.passwordAttempts = 0
+  }
+
+  async me(authUser: UserModel): Promise<Omit<LoginResponseDto, 'token'>> {
+    const user = await this.fromUserId(authUser.id)
+    if (!user) {
+      this.logger.warn({ tag: this.me.name, msg: `User *${authUser.login} (${authUser.id}) not found` })
+      throw new HttpException(`User not found`, HttpStatus.NOT_FOUND)
+    }
+    user.impersonated = !!authUser.impersonatedFromId
+    user.clientId = authUser.clientId
+    user.authSession = authUser.authSession
+    return { user: user, server: serverConfig }
+  }
+
+  async compareUserPassword(userId: number, password: string): Promise<boolean> {
+    return this.usersQueries.compareUserPassword(userId, password)
+  }
+
+  async updateLanguage(user: UserModel, userLanguageDto: UserLanguageDto) {
+    if (!userLanguageDto.language) userLanguageDto.language = null
+    if (!(await this.usersQueries.updateUserOrGuest(user.id, userLanguageDto))) {
+      throw new HttpException('Unable to update language', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async updatePassword(user: UserModel, userPasswordDto: UserUpdatePasswordDto) {
+    const r = await this.usersQueries.selectUserProperties(user.id, ['password'])
+    if (!r) {
+      throw new HttpException('Unable to check password', HttpStatus.NOT_FOUND)
+    }
+    const canSetLocalPasswordFromOIDC = user.authSession === AUTH_SESSION.OIDC && userPasswordDto.oldPassword === userPasswordDto.newPassword
+    if (!canSetLocalPasswordFromOIDC && !(await comparePassword(userPasswordDto.oldPassword, r.password))) {
+      throw new HttpException('Password mismatch', HttpStatus.BAD_REQUEST)
+    }
+    const hash = await bcrypt.hash(userPasswordDto.newPassword, 10)
+    if (!(await this.usersQueries.updateUserOrGuest(user.id, { password: hash }))) {
+      throw new HttpException('Unable to update password', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async updateNotification(user: UserModel, userNotificationDto: UserNotificationDto) {
+    if (!(await this.usersQueries.updateUserOrGuest(user.id, userNotificationDto))) {
+      throw new HttpException('Unable to update notification preference', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async updatePreferences(user: UserModel, dto: UserPreferencesDto): Promise<UserPreferences> {
+    const patch: Partial<UserPreferences> = {}
+    if (dto.theme !== undefined) patch.theme = dto.theme
+    if (dto.editor !== undefined) patch.editor = dto.editor
+    if (dto.showHiddenFiles !== undefined) patch.showHiddenFiles = dto.showHiddenFiles
+    if (dto.singleClickNavigation !== undefined) patch.singleClickNavigation = dto.singleClickNavigation
+    if (dto.useSystemNotifications !== undefined) patch.useSystemNotifications = dto.useSystemNotifications
+    if (dto.sidebarQuickAccessVisibility !== undefined) patch.sidebarQuickAccessVisibility = dto.sidebarQuickAccessVisibility
+    if (dto.sidebarQuickAccessPosition !== undefined) patch.sidebarQuickAccessPosition = dto.sidebarQuickAccessPosition
+    try {
+      const preferences = await this.usersQueries.updateUserPreferences(user.id, patch)
+      if (dto.showHiddenFiles !== undefined) {
+        await this.usersQueries.clearWebDAVAuthCache(user.id)
+      }
+      return preferences
+    } catch (e) {
+      this.logger.error({ tag: this.updatePreferences.name, msg: `Unable to update preferences for user (${user.id}) : ${toErrorMessage(e)}` })
+      throw new HttpException('Unable to update preferences', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async updateStorageIndexing(user: UserModel, userStorageIndexingDto: UserStorageIndexingDto) {
+    if (!(await this.usersQueries.updateUserOrGuest(user.id, userStorageIndexingDto))) {
+      throw new HttpException('Unable to update full-text search preference', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async updateAvatar(req: FastifyAuthenticatedRequest) {
+    const part = await req.file({ limits: { fileSize: USER_AVATAR_MAX_UPLOAD_SIZE } })
+    if (!part!.mimetype.startsWith(imgMimeTypePrefix)) {
+      throw new HttpException('Unsupported file type', HttpStatus.BAD_REQUEST)
+    }
+    const tmpPath = temporaryFilePath(req.user.tmpPath, USER_AVATAR_FILE_NAME, 'avatar')
+    try {
+      await pipeline(part!.file, createWriteStream(tmpPath))
+    } catch (e) {
+      void removeFiles(tmpPath)
+      this.logger.error({ tag: this.updateAvatar.name, msg: toErrorMessage(e) })
+      throw new HttpException('Unable to upload avatar', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    if (part!.file.truncated) {
+      void removeFiles(tmpPath)
+      this.logger.warn({ tag: this.updateAvatar.name, msg: `image is too large` })
+      throw new HttpException('Image is too large', HttpStatus.PAYLOAD_TOO_LARGE)
+    }
+    const avatarPath = path.join(req.user.homePath, USER_AVATAR_FILE_NAME)
+    try {
+      await convertTempImageToPng(tmpPath, avatarPath)
+      void saveAvatarMetadata(req.user.login, 'user')
+    } catch (e) {
+      void removeFiles(tmpPath)
+      this.logger.error({ tag: this.updateAvatar.name, msg: toErrorMessage(e) })
+      throw new HttpException('Unable to convert or create avatar', HttpStatus.BAD_REQUEST)
+    }
+  }
+
+  async updateSecrets(userId: number, secrets: UserSecrets) {
+    try {
+      await this.usersQueries.mutateUserSecrets(userId, (userSecrets) => ({
+        result: undefined,
+        secrets: { ...userSecrets, ...secrets }
+      }))
+      if ('twoFaSecret' in secrets) {
+        await this.usersQueries.clearWebDAVAuthCache(userId)
+      }
+    } catch (e) {
+      this.logger.error({ tag: this.updateSecrets.name, msg: `Unable to update secrets for user (${userId}) : ${toErrorMessage(e)}` })
+      throw new HttpException('Unable to update secrets', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  consumeRecoveryCode(userId: number, encryptedCode: string): Promise<boolean> {
+    // Only the transaction that still finds the code can consume it successfully.
+    return this.usersQueries.mutateUserSecrets(userId, (secrets) => {
+      const recoveryCodes = Array.isArray(secrets.recoveryCodes) ? secrets.recoveryCodes : []
+      const codeIndex = recoveryCodes.indexOf(encryptedCode)
+      if (codeIndex === -1) return { result: false }
+      const updatedRecoveryCodes = [...recoveryCodes]
+      updatedRecoveryCodes.splice(codeIndex, 1)
+      return {
+        result: true,
+        secrets: { ...secrets, recoveryCodes: updatedRecoveryCodes }
+      }
+    })
+  }
+
+  async updateAccesses(user: UserModel, ip: string | null, success: boolean, isAuthTwoFa = false) {
+    const preservePasswordAttempts = success && !isAuthTwoFa && configuration.auth.mfa.totp.enabled && user.twoFaEnabled
+    const result = await this.usersQueries.updateAccesses(user.id, ip, preservePasswordAttempts ? 'preserve' : success ? 'reset' : 'increment')
+    if (!result.success) {
+      throw new Error('Unable to update user accesses')
+    }
+    if (result.temporaryLockStarted) {
+      this.notifyTemporaryAccountLock(user, ip)
+    }
+  }
+
+  async getAvatar(userLogin: string, generate: true, generateIsNotExists?: boolean): Promise<void>
+  async getAvatar(userLogin: string, generate?: false, generateIsNotExists?: boolean): Promise<[path: string, mime: string]>
+  async getAvatar(userLogin: string, generate: boolean = false, generateIsNotExists?: boolean): Promise<[path: string, mime: string] | void> {
+    const avatarPath = path.join(UserModel.getHomePath(userLogin), USER_AVATAR_FILE_NAME)
+    const avatarExists = await isPathExists(avatarPath)
+    if (!avatarExists && generateIsNotExists) {
+      generate = true
+    }
+    if (!generate) {
+      return [avatarExists ? avatarPath : USER_DEFAULT_AVATAR_FILE_PATH, avatarExists ? pngMimeType : svgMimeType]
+    }
+    if (!(await isPathExists(UserModel.getHomePath(userLogin)))) {
+      throw new HttpException(`Home path for user *${userLogin}* does not exist`, HttpStatus.FORBIDDEN)
+    }
+    const user = await this.findUser(userLogin)
+    if (!user) {
+      throw new HttpException(`avatar not found`, HttpStatus.NOT_FOUND)
+    }
+    const avatarFile: WriteStream = createWriteStream(avatarPath)
+    const avatarStream: NodeJS.ReadableStream = await generateAvatar(user.getInitials())
+    try {
+      await pipeline(avatarStream, avatarFile)
+      void saveAvatarMetadata(user.login, 'local')
+    } catch (e) {
+      this.logger.error({ tag: this.getAvatar.name, msg: toErrorMessage(e) })
+      throw new HttpException('Unable to create avatar', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    if (generateIsNotExists) {
+      return [avatarPath, pngMimeType]
+    }
+  }
+
+  async listAppPasswords(user: UserModel): Promise<Omit<UserAppPassword, 'password'>[]> {
+    const secrets = await this.usersQueries.getUserSecrets(user.id)
+    if (Array.isArray(secrets.appPasswords)) {
+      // remove passwords from response
+      return secrets.appPasswords.map(({ password, ...rest }: UserAppPassword) => rest)
+    }
+    return []
+  }
+
+  async generateAppPassword(user: UserModel, userAppPasswordDto: UserAppPasswordDto): Promise<UserAppPassword> {
+    const slugName = createLightSlug(sanitizeName(userAppPasswordDto.name))
+    if (!slugName) throw new HttpException('Invalid name', HttpStatus.BAD_REQUEST)
+    const clearPassword = genPassword(24)
+    // Hash before acquiring the row lock: only the final read/check/write must be serialized.
+    const appPassword: UserAppPassword = {
+      name: slugName,
+      app: userAppPasswordDto.app,
+      expiration: userAppPasswordDto.expiration as Date | null,
+      password: await hashPassword(clearPassword),
+      createdAt: new Date(),
+      currentIp: null,
+      currentAccess: null,
+      lastIp: null,
+      lastAccess: null
+    }
+    try {
+      await this.usersQueries.mutateUserSecrets(user.id, (secrets) => {
+        const appPasswords = Array.isArray(secrets.appPasswords) ? secrets.appPasswords : []
+        if (appPasswords.some((p: UserAppPassword) => p.name === slugName)) {
+          throw new HttpException('Name already used', HttpStatus.BAD_REQUEST)
+        }
+        return {
+          result: undefined,
+          secrets: { ...secrets, appPasswords: [appPassword, ...appPasswords] }
+        }
+      })
+    } catch (e) {
+      if (e instanceof HttpException) throw e
+      this.logger.error({ tag: this.generateAppPassword.name, msg: `Unable to update app passwords for user (${user.id}) : ${toErrorMessage(e)}` })
+      throw new HttpException('Unable to update app passwords', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    // return clear password only once
+    return { ...appPassword, password: clearPassword }
+  }
+
+  async deleteAppPassword(user: UserModel, passwordName: string): Promise<void> {
+    let appPassword: UserAppPassword | null
+    try {
+      appPassword = await this.usersQueries.mutateUserSecrets<UserAppPassword | null>(user.id, (secrets) => {
+        const appPasswords = Array.isArray(secrets.appPasswords) ? secrets.appPasswords : []
+        const currentAppPassword = appPasswords.find((p: UserAppPassword) => p.name === passwordName)
+        if (!currentAppPassword) return { result: null }
+        return {
+          result: currentAppPassword,
+          secrets: { ...secrets, appPasswords: appPasswords.filter((p: UserAppPassword) => p.name !== passwordName) }
+        }
+      })
+    } catch (e) {
+      this.logger.error({ tag: this.deleteAppPassword.name, msg: `Unable to delete app password for user (${user.id}) : ${toErrorMessage(e)}` })
+      throw new HttpException('Unable to delete app password', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    if (!appPassword) {
+      throw new HttpException('App password not found', HttpStatus.NOT_FOUND)
+    }
+    if (appPassword.app === AUTH_SCOPE.WEBDAV) {
+      // mutateUserSecrets has committed the revocation; cached Basic-auth results can now be discarded.
+      await this.usersQueries.clearWebDAVAuthCache(user.id)
+    }
+  }
+
+  async validateAppPassword(user: UserModel, password: string, ip: string | null, scope: AUTH_SCOPE): Promise<boolean> {
+    if (!scope) return false
+    if (!user.haveRole(USER_ROLE.USER)) {
+      // Keep scoped auth timing close even when app passwords cannot apply to this role.
+      await comparePassword(password, null)
+      return false
+    }
+    const secrets = await this.usersQueries.getUserSecrets(user.id)
+    if (!Array.isArray(secrets.appPasswords)) {
+      // No candidate app password exists, but the scoped auth path should still do bcrypt work.
+      await comparePassword(password, null)
+      return false
+    }
+    let hasComparedAppPassword = false
+    for (const p of secrets.appPasswords) {
+      if (p.app !== scope) continue
+      const expMs = p.expiration ? new Date(p.expiration) : null
+      if (expMs && new Date() > expMs) continue // expired
+      hasComparedAppPassword = true
+      if (await comparePassword(password, p.password)) {
+        // Keep bcrypt outside the transaction, then recheck that the matched credential still exists under the row lock.
+        return this.usersQueries.mutateUserSecrets(user.id, (currentSecrets) => {
+          const appPasswords = Array.isArray(currentSecrets.appPasswords) ? currentSecrets.appPasswords : []
+          const passwordIndex = appPasswords.findIndex(
+            (currentPassword: UserAppPassword) =>
+              currentPassword.name === p.name && currentPassword.app === scope && currentPassword.password === p.password
+          )
+          if (passwordIndex === -1) return { result: false }
+          const currentPassword = appPasswords[passwordIndex]
+          const currentExpiration = currentPassword.expiration ? new Date(currentPassword.expiration) : null
+          if (currentExpiration && new Date() > currentExpiration) return { result: false }
+          const updatedAppPasswords = [...appPasswords]
+          updatedAppPasswords[passwordIndex] = {
+            ...currentPassword,
+            lastAccess: currentPassword.currentAccess,
+            currentAccess: new Date(),
+            lastIp: currentPassword.currentIp,
+            currentIp: ip
+          }
+          return {
+            result: true,
+            secrets: { ...currentSecrets, appPasswords: updatedAppPasswords }
+          }
+        })
+      }
+    }
+    if (!hasComparedAppPassword) {
+      // All app passwords were filtered out by scope/expiration, so compare against the dummy hash.
+      await comparePassword(password, null)
+    }
+    return false
+  }
+
+  setOnlineStatus(user: JwtIdentityPayload, onlineStatus: USER_ONLINE_STATUS) {
+    this.usersQueries
+      .setOnlineStatus(user.id, onlineStatus)
+      .catch((e: Error) => this.logger.error({ tag: this.setOnlineStatus.name, msg: toErrorMessage(e) }))
+  }
+
+  getOnlineUsers(userIds: number[]): Promise<UserOnline[]> {
+    return this.usersQueries.getOnlineUsers(userIds)
+  }
+
+  async usersWhitelist(userId: number): Promise<number[]> {
+    return this.usersQueries.usersWhitelist(userId)
+  }
+
+  async browseGroups(user: UserModel, name?: string): Promise<GroupBrowse> {
+    if (name) {
+      const group = await this.usersQueries.groupFromName(user.id, name)
+      if (!group) {
+        throw new HttpException('Group not found', HttpStatus.NOT_FOUND)
+      }
+      return { parentGroup: group, members: await this.usersQueries.browseGroupMembers(group.id) }
+    }
+    return { parentGroup: undefined, members: await this.usersQueries.browseRootGroups(user.id) }
+  }
+
+  async getGroup(user: UserModel, groupId: number, withMembers?: true, asAdmin?: boolean): Promise<GroupWithMembers>
+  async getGroup(user: UserModel, groupId: number, withMembers: false, asAdmin?: boolean): Promise<GroupMember>
+  async getGroup(user: UserModel, groupId: number, withMembers = true, asAdmin = false): Promise<GroupMember | GroupWithMembers> {
+    const group = withMembers
+      ? await this.usersQueries.getGroupWithMembers(user.id, groupId, asAdmin)
+      : await this.usersQueries.getGroup(user.id, groupId, asAdmin)
+    if (!group) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    return group
+  }
+
+  async createPersonalGroup(user: UserModel, userCreateOrUpdateGroupDto: UserCreateOrUpdateGroupDto): Promise<GroupMember> {
+    if (!userCreateOrUpdateGroupDto.name) {
+      this.logger.error({ tag: this.createPersonalGroup.name, msg: `missing group name : ${JSON.stringify(userCreateOrUpdateGroupDto)}` })
+      throw new HttpException('Group name is missing', HttpStatus.BAD_REQUEST)
+    }
+    if (await this.usersQueries.checkGroupNameExists(userCreateOrUpdateGroupDto.name)) {
+      throw new HttpException('Name already used', HttpStatus.BAD_REQUEST)
+    }
+    try {
+      const groupId: number = await this.usersQueries.createPersonalGroup(user.id, userCreateOrUpdateGroupDto)
+      this.logger.log({ tag: this.createPersonalGroup.name, msg: `group (${groupId}) was created : ${JSON.stringify(userCreateOrUpdateGroupDto)}` })
+      // clear user whitelists
+      void this.usersQueries.clearWhiteListCaches([user.id])
+      return this.getGroup(user, groupId, false)
+    } catch (e) {
+      this.logger.error({
+        tag: this.createPersonalGroup.name,
+        msg: `group was not created : ${JSON.stringify(userCreateOrUpdateGroupDto)} : ${toErrorMessage(e)}`
+      })
+      throw new HttpException('Unable to create group', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async updatePersonalGroup(user: UserModel, groupId: number, userCreateOrUpdateGroupDto: UserCreateOrUpdateGroupDto): Promise<GroupMember> {
+    if (!Object.keys(userCreateOrUpdateGroupDto).length) {
+      throw new HttpException('No changes to update', HttpStatus.BAD_REQUEST)
+    }
+    const currentGroup: GroupMember = await this.getGroup(user, groupId, false, user.isAdmin)
+    if (currentGroup.type !== MEMBER_TYPE.PGROUP) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    if (userCreateOrUpdateGroupDto.name && (await this.usersQueries.checkGroupNameExists(userCreateOrUpdateGroupDto.name))) {
+      throw new HttpException('Name already used', HttpStatus.BAD_REQUEST)
+    }
+    try {
+      await this.usersQueries.updateGroup(groupId, userCreateOrUpdateGroupDto)
+    } catch (e) {
+      throw new HttpException(toErrorMessage(e), HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    return this.getGroup(user, groupId, false, user.isAdmin)
+  }
+
+  async addUsersToGroup(user: UserModel, groupId: number, userIds: number[]): Promise<void> {
+    const currentGroup: GroupWithMembers = await this.getGroup(user, groupId)
+    // only users can be added to users groups
+    // guests and users can be added to personal groups
+    const userWhiteList: number[] = await this.usersQueries.usersWhitelist(
+      user.id,
+      currentGroup.type === MEMBER_TYPE.GROUP ? USER_ROLE.USER : undefined
+    )
+    // ignore user ids that are already group members & filter on user ids allowed to current user
+    userIds = userIds.filter((id) => !currentGroup.members.find((m) => m.id === id)).filter((id) => userWhiteList.indexOf(id) > -1)
+    if (!userIds.length) {
+      throw new HttpException('No users to add to group', HttpStatus.BAD_REQUEST)
+    }
+    return this.usersQueries.updateGroupMembers(groupId, { add: userIds.map((id) => ({ id: id, groupRole: USER_GROUP_ROLE.MEMBER })) })
+  }
+
+  async updateUserFromPersonalGroup(user: UserModel, groupId: number, userId: number, updateUserFromGroupDto: UpdateUserFromGroupDto): Promise<void> {
+    const currentGroup: GroupWithMembers = await this.getGroup(user, groupId)
+    if (currentGroup.type !== MEMBER_TYPE.PGROUP) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    const userToUpdate = currentGroup.members.find((m) => m.id === userId)
+    if (!userToUpdate) {
+      throw new HttpException('User was not found', HttpStatus.BAD_REQUEST)
+    }
+    if (userToUpdate.type === MEMBER_TYPE.GUEST && updateUserFromGroupDto.role === USER_GROUP_ROLE.MANAGER) {
+      throw new HttpException('Guest cannot be a group manager', HttpStatus.FORBIDDEN)
+    }
+    if (userToUpdate.groupRole !== updateUserFromGroupDto.role) {
+      if (userToUpdate.groupRole === USER_GROUP_ROLE.MANAGER) {
+        if (currentGroup.members.filter((m) => m.groupRole === USER_GROUP_ROLE.MANAGER).length === 1) {
+          throw new HttpException('Group must have at least one manager', HttpStatus.BAD_REQUEST)
+        }
+      }
+      return this.adminUsersManager.updateUserFromGroup(groupId, userId, updateUserFromGroupDto)
+    }
+  }
+
+  async removeUserFromGroup(user: UserModel, groupId: number, userId: number): Promise<void> {
+    const currentGroup: GroupWithMembers = await this.getGroup(user, groupId)
+    const userToRemove = currentGroup.members.find((m) => m.id === userId)
+    if (!userToRemove) {
+      throw new HttpException('User was not found', HttpStatus.BAD_REQUEST)
+    }
+    if (userToRemove.groupRole === USER_GROUP_ROLE.MANAGER) {
+      if (currentGroup.type === MEMBER_TYPE.GROUP) {
+        throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+      }
+      if (currentGroup.members.filter((m) => m.groupRole === USER_GROUP_ROLE.MANAGER).length === 1) {
+        throw new HttpException('Group must have at least one manager', HttpStatus.BAD_REQUEST)
+      }
+    }
+    return this.usersQueries.updateGroupMembers(groupId, { remove: [userId] })
+  }
+
+  async leavePersonalGroup(user: UserModel, groupId: number): Promise<void> {
+    const currentGroup = await this.usersQueries.getGroupWithMembers(user.id, groupId, true)
+    if (!currentGroup || currentGroup.type === MEMBER_TYPE.GROUP) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    const userWhoLeaves = currentGroup.members.find((m) => m.id === user.id)
+    if (!userWhoLeaves) {
+      throw new HttpException('User was not found', HttpStatus.BAD_REQUEST)
+    }
+    if (userWhoLeaves.groupRole === USER_GROUP_ROLE.MANAGER) {
+      if (currentGroup.members.filter((m) => m.groupRole === USER_GROUP_ROLE.MANAGER).length === 1) {
+        throw new HttpException('Group must have at least one manager', HttpStatus.BAD_REQUEST)
+      }
+    }
+    try {
+      await this.usersQueries.updateGroupMembers(groupId, { remove: [user.id] })
+      this.logger.log({ tag: this.leavePersonalGroup.name, msg: `user (${user.id}) has left group (${groupId})` })
+    } catch (e) {
+      this.logger.error({ tag: this.leavePersonalGroup.name, msg: `user (${user.id}) has not left group (${groupId}) : ${toErrorMessage(e)}` })
+      throw new HttpException(toErrorMessage(e), HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async deletePersonalGroup(user: UserModel, groupId: number): Promise<void> {
+    if (!(await this.usersQueries.canDeletePersonalGroup(user.id, groupId))) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    if (await this.usersQueries.deletePersonalGroup(groupId)) {
+      this.logger.log({ tag: this.deletePersonalGroup.name, msg: `group (${groupId}) was deleted` })
+    } else {
+      this.logger.warn({ tag: this.deletePersonalGroup.name, msg: `group (${groupId}) does not exist` })
+      throw new HttpException('Unable to delete group', HttpStatus.BAD_REQUEST)
+    }
+  }
+
+  listGuests(user: UserModel): Promise<GuestUser[]> {
+    return this.usersQueries.listGuests(null, user.id)
+  }
+
+  async getGuest(user: UserModel, guestId: number): Promise<GuestUser> {
+    const guest = await this.usersQueries.listGuests(guestId, user.id)
+    this.adminUsersManager.checkUser(guest, true)
+    return guest
+  }
+
+  async createGuest(user: UserModel, createGuestDto: CreateUserDto): Promise<GuestUser> {
+    // only allow managers visible to the current user
+    const userWhiteList = await this.usersQueries.usersWhitelist(user.id, USER_ROLE.USER)
+    createGuestDto.managers = (createGuestDto.managers ?? []).filter((id) => userWhiteList.includes(id))
+    if (!createGuestDto.managers.includes(user.id)) {
+      // force user as manager during creation
+      createGuestDto.managers.push(user.id)
+    }
+    if (createGuestDto?.groups?.length) {
+      // only allow personal groups where the current user is a manager
+      const groupWhiteList = await this.usersQueries.groupsWhitelist(user.id, GROUP_TYPE.PERSONAL, USER_GROUP_ROLE.MANAGER)
+      const nbGroups = createGuestDto.groups.length
+      createGuestDto.groups = createGuestDto.groups.filter((id) => groupWhiteList.includes(id))
+      if (nbGroups !== createGuestDto.groups.length) {
+        this.logger.warn({ tag: this.createGuest.name, msg: 'Some groups were not allowed' })
+      }
+    }
+    return this.adminUsersManager.createUserOrGuest(createGuestDto, USER_ROLE.GUEST, true)
+  }
+
+  async updateGuest(user: UserModel, guestId: number, updateGuestDto: UpdateUserDto): Promise<GuestUser | null> {
+    if (!Object.keys(updateGuestDto).length) {
+      throw new HttpException('No changes to update', HttpStatus.BAD_REQUEST)
+    }
+    if (!(await this.usersQueries.isGuestManager(user.id, guestId))) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    if (updateGuestDto.managers) {
+      // only allow managers visible to the current user
+      const userWhiteList = await this.usersQueries.usersWhitelist(user.id, USER_ROLE.USER)
+      updateGuestDto.managers = updateGuestDto.managers.filter((id) => userWhiteList.indexOf(id) > -1)
+      if (!updateGuestDto.managers.length) {
+        throw new HttpException('Guest must have at least one manager', HttpStatus.BAD_REQUEST)
+      }
+    }
+    if (updateGuestDto.groups) {
+      // only allow personal groups where the current user is a manager
+      const groupWhiteList = await this.usersQueries.groupsWhitelist(user.id, GROUP_TYPE.PERSONAL, USER_GROUP_ROLE.MANAGER)
+      const nbGroups = updateGuestDto.groups.length
+      updateGuestDto.groups = updateGuestDto.groups.filter((id) => groupWhiteList.indexOf(id) > -1)
+      if (nbGroups !== updateGuestDto.groups.length) {
+        this.logger.warn({ tag: this.updateGuest.name, msg: 'Some groups were not allowed' })
+      }
+    }
+    const guest = await this.adminUsersManager.updateUserOrGuest(guestId, updateGuestDto, USER_ROLE.GUEST)
+    return guest.managers!.find((m) => m.id === user.id) ? guest : null
+  }
+
+  async deleteGuest(user: UserModel, guestId: number): Promise<void> {
+    const guest = await this.usersQueries.isGuestManager(user.id, guestId)
+    if (!guest) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    // guest has no space but a temporary directory
+    return this.adminUsersManager.deleteUserOrGuest(guest.id, guest.login, { deleteSpace: true })
+  }
+
+  searchMembers(user: UserModel, searchMembersDto: ValidatedSearchMembersDto): Promise<Member[]> {
+    return this.usersQueries.searchUsersOrGroups(searchMembersDto, user.id)
+  }
+
+  private notifyTemporaryAccountLock(user: UserModel, ip: string | null): void {
+    const notification = {
+      app: NOTIFICATION_APP.AUTH_LOCKED,
+      event: NOTIFICATION_APP_EVENT.AUTH_LOCKED,
+      element: '',
+      url: ip as string
+    } satisfies NotificationContent
+    this.notificationsManager
+      .sendEmailNotification([user], notification)
+      .catch((e: Error) => this.logger.error({ tag: this.notifyTemporaryAccountLock.name, msg: toErrorMessage(e) }))
+  }
+}

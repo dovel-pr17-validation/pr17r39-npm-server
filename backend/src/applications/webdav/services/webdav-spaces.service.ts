@@ -1,0 +1,162 @@
+import { toErrorMessage } from '../../../common/errors.js'
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import { getProps, isPathExists, isPathIsDir } from '../../files/utils/files.js'
+import { SPACE_REPOSITORY } from '../../spaces/constants/spaces.js'
+import { SpaceEnv } from '../../spaces/models/space-env.model.js'
+import { SpacesBrowser } from '../../spaces/services/spaces-browser.service.js'
+import { SpacesManager } from '../../spaces/services/spaces-manager.service.js'
+import { canAccessToSpaceUrl } from '../../spaces/utils/permissions.js'
+import { UserModel } from '../../users/models/user.model.js'
+import { WEBDAV_NS, WEBDAV_SPACES } from '../constants/routes.js'
+import { DEPTH } from '../constants/webdav.js'
+import { FastifyDAVRequest } from '../interfaces/webdav.interface.js'
+import { WebDAVFile } from '../models/webdav-file.model.js'
+import { WEBDAV_PATH_TO_SPACE_SEGMENTS } from '../utils/routes.js'
+
+@Injectable()
+export class WebDAVSpaces {
+  private readonly logger = new Logger(WebDAVSpaces.name)
+  private readonly roots = {} as Record<keyof typeof WEBDAV_SPACES, WebDAVFile>
+
+  constructor(
+    private readonly spacesManager: SpacesManager,
+    private readonly spacesBrowser: SpacesBrowser
+  ) {
+    for (const [name, info] of Object.entries(WEBDAV_SPACES)) {
+      this.roots[name as keyof typeof WEBDAV_SPACES] = new WebDAVFile(
+        {
+          id: 0,
+          name: name,
+          isDir: true,
+          size: 0,
+          ctime: new Date().getTime(),
+          mtime: new Date().getTime()
+        },
+        info.route,
+        true
+      )
+    }
+  }
+
+  async spaceEnv(user: UserModel, path: string): Promise<SpaceEnv | null> {
+    try {
+      const space = await this.spacesManager.spaceEnv(user, WEBDAV_PATH_TO_SPACE_SEGMENTS(path))
+      if (space) {
+        return space
+      }
+    } catch (e) {
+      this.logger.warn({ tag: this.spaceEnv.name, msg: toErrorMessage(e) })
+      return null
+    }
+
+    this.logger.warn({ tag: this.spaceEnv.name, msg: `Space not authorized or not found : ${path}` })
+    return null
+  }
+
+  propfind(req: FastifyDAVRequest, space: string): AsyncGenerator<WebDAVFile> {
+    switch (space) {
+      case SPACE_REPOSITORY.FILES:
+        return this.listFiles(req, req.space!)
+      case WEBDAV_NS.SERVER:
+        return this.listServer(req)
+      case WEBDAV_NS.WEBDAV:
+        return this.listWebDAV(req)
+      case WEBDAV_NS.SPACES:
+        return this.listSpaces(req)
+      case WEBDAV_NS.TRASH:
+        return this.listTrashes(req)
+      default:
+        this.logger.error({ tag: this.propfind.name, msg: `Unknown space ${space}` })
+        throw new HttpException('Unknown space', HttpStatus.NOT_FOUND)
+    }
+  }
+
+  private async *listServer(req: FastifyDAVRequest): AsyncGenerator<WebDAVFile> {
+    yield this.roots[WEBDAV_NS.SERVER]
+
+    if (req.dav.depth === DEPTH.MEMBERS) {
+      yield this.roots[WEBDAV_NS.WEBDAV]
+    }
+  }
+
+  private async *listWebDAV(req: FastifyDAVRequest): AsyncGenerator<WebDAVFile> {
+    yield this.roots[WEBDAV_NS.WEBDAV]
+
+    if (req.dav.depth === DEPTH.MEMBERS) {
+      for (const root of Object.values(this.roots)) {
+        if ([WEBDAV_NS.SERVER as string, WEBDAV_NS.WEBDAV as string].indexOf(root.name) === -1) {
+          // filter repositories based on user applications
+          if (!canAccessToSpaceUrl(req.user, WEBDAV_SPACES[root.name as keyof typeof WEBDAV_SPACES].spaceRepository!)) {
+            continue
+          }
+          yield root
+        }
+      }
+    }
+  }
+
+  private async *listSpaces(req: FastifyDAVRequest): AsyncGenerator<WebDAVFile> {
+    yield this.roots[WEBDAV_NS.SPACES]
+
+    if (req.dav.depth === DEPTH.MEMBERS) {
+      for (const s of await this.spacesManager.listSpaces(req.user.id)) {
+        yield new WebDAVFile(
+          {
+            id: s.id,
+            name: s.name,
+            alias: s.alias,
+            isDir: true,
+            size: 0,
+            ctime: new Date(s.createdAt!).getTime(),
+            mtime: new Date(s.modifiedAt!).getTime()
+          },
+          req.dav.url
+        )
+      }
+    }
+  }
+
+  private async *listTrashes(req: FastifyDAVRequest): AsyncGenerator<WebDAVFile> {
+    yield this.roots[WEBDAV_NS.TRASH]
+
+    if (req.dav.depth === DEPTH.MEMBERS) {
+      for (const f of await this.spacesManager.listTrashes(req.user)) {
+        yield new WebDAVFile(
+          {
+            id: f.id,
+            alias: f.alias,
+            name: `${f.alias} (${f.nb})`,
+            isDir: true,
+            size: 0,
+            mtime: f.mtime,
+            ctime: f.ctime
+          },
+          req.dav.url
+        )
+      }
+    }
+  }
+
+  private async *listFiles(req: FastifyDAVRequest, space: SpaceEnv): AsyncGenerator<WebDAVFile> {
+    let isDir!: boolean
+
+    if (space.inSharesList) {
+      // The shares are defined like a files (direct link)
+      isDir = true
+      yield this.roots[WEBDAV_NS.SHARES]
+    } else {
+      if (!(await isPathExists(space.realPath))) {
+        this.logger.warn({ tag: this.listFiles.name, msg: `Location not found : ${space.realPath}` })
+        throw new HttpException('Location not found', HttpStatus.NOT_FOUND)
+      }
+      yield new WebDAVFile(await getProps(space.realPath, req.dav.url), req.dav.url, true)
+    }
+
+    if (req.dav.depth === DEPTH.MEMBERS && (isDir === true || (await isPathIsDir(space.realPath)))) {
+      const { files } = await this.spacesBrowser.browse(req.user, space)
+      for (const f of files) {
+        yield new WebDAVFile(f, req.dav.url)
+      }
+    }
+  }
+}

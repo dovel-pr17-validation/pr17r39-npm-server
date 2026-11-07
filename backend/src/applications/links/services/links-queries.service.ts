@@ -1,0 +1,232 @@
+import { Inject, Injectable } from '@nestjs/common'
+import { and, eq, getTableColumns, gt, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/mysql-core'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { DB_TOKEN_PROVIDER } from '../../../infrastructure/database/constants.js'
+import type { DBSchema } from '../../../infrastructure/database/interfaces/database.interface.js'
+import { dbCheckAffectedRows, dbGetInsertedId } from '../../../infrastructure/database/utils.js'
+import { files } from '../../files/schemas/files.schema.js'
+import type { ShareMembers } from '../../shares/schemas/share-members.interface.js'
+import type { Share } from '../../shares/schemas/share.interface.js'
+import { sharesMembers } from '../../shares/schemas/shares-members.schema.js'
+import { shares } from '../../shares/schemas/shares.schema.js'
+import { SPACE_ROLE } from '../../spaces/constants/spaces.js'
+import type { SpaceMembers } from '../../spaces/schemas/space-members.interface.js'
+import { spacesMembers } from '../../spaces/schemas/spaces-members.schema.js'
+import { spacesRoots } from '../../spaces/schemas/spaces-roots.schema.js'
+import { spaces } from '../../spaces/schemas/spaces.schema.js'
+import { USER_ROLE } from '../../users/constants/user.js'
+import { UserModel } from '../../users/models/user.model.js'
+import type { User } from '../../users/schemas/user.interface.js'
+import { userFullNameSQL, users } from '../../users/schemas/users.schema.js'
+import { CACHE_LINK_UUID_PREFIX, CACHE_LINK_UUID_TTL } from '../constants/cache.js'
+import { LINK_TYPE } from '../constants/links.js'
+import type { CreateOrUpdateLinkDto } from '../dto/create-or-update-link.dto.js'
+import type { LinkAsUser, LinkGuest } from '../interfaces/link-guest.interface.js'
+import type { SpaceLink } from '../interfaces/link-space.interface.js'
+import type { Link } from '../schemas/link.interface.js'
+import { links } from '../schemas/links.schema.js'
+
+@Injectable()
+export class LinksQueries {
+  constructor(
+    @Inject(DB_TOKEN_PROVIDER) private readonly db: DBSchema,
+    private readonly cache: Cache
+  ) {}
+
+  async linkFromShare(owner: UserModel, linkId: number, shareId: number): Promise<LinkGuest> {
+    const [r] = await this.db
+      .select({
+        ...getTableColumns(links),
+        permissions: sharesMembers.permissions,
+        language: users.language,
+        isActive: users.isActive
+      })
+      .from(links)
+      .innerJoin(shares, and(eq(shares.id, shareId), or(eq(shares.ownerId, owner.id), eq(sql`${+owner.isAdmin}`, 1))))
+      .innerJoin(sharesMembers, and(eq(sharesMembers.shareId, shares.id), eq(sharesMembers.userId, links.userId), eq(sharesMembers.linkId, linkId)))
+      .innerJoin(users, eq(users.id, links.userId))
+      .where(eq(links.id, linkId))
+      .limit(1)
+    return r as LinkGuest
+  }
+
+  async linkFromSpace(manager: UserModel, linkId: number, spaceId: number): Promise<LinkGuest> {
+    const linkMember: any = alias(spacesMembers, 'linkMember')
+    const managerMember: any = alias(spacesMembers, 'managerMember')
+    const [r] = await this.db
+      .select({
+        ...getTableColumns(links),
+        permissions: linkMember.permissions,
+        language: users.language,
+        isActive: users.isActive
+      })
+      .from(links)
+      .innerJoin(linkMember, and(eq(linkMember.spaceId, spaceId), eq(linkMember.userId, links.userId), eq(linkMember.linkId, linkId)))
+      .leftJoin(
+        managerMember,
+        and(eq(managerMember.spaceId, linkMember.spaceId), eq(managerMember.userId, manager.id), eq(managerMember.role, SPACE_ROLE.IS_MANAGER))
+      )
+      .innerJoin(users, eq(users.id, links.userId))
+      .where(and(eq(links.id, linkId), or(eq(sql`${+manager.isAdmin}`, 1), isNotNull(managerMember.userId))))
+      .limit(1)
+    return r as LinkGuest
+  }
+
+  async updateLinkFromSpaceOrShare(
+    link: LinkGuest,
+    shareId: number,
+    diffUser: Partial<User>,
+    diffLink: Partial<Link>,
+    diffShare: Partial<Share>,
+    diffMember: Partial<ShareMembers>
+  ) {
+    if (Object.keys(diffUser).length) {
+      await this.db.update(users).set(diffUser).where(eq(users.id, link.userId))
+    }
+    if (Object.keys(diffLink).length) {
+      await this.db.update(links).set(diffLink).where(eq(links.id, link.id))
+    }
+    if (Object.keys(diffShare).length) {
+      await this.db.update(shares).set(diffShare).where(eq(shares.id, shareId))
+    }
+    if (Object.keys(diffMember).length) {
+      await this.db
+        .update(sharesMembers)
+        .set(diffMember)
+        .where(and(eq(sharesMembers.shareId, shareId), eq(sharesMembers.userId, link.userId), eq(sharesMembers.linkId, link.id)))
+    }
+  }
+
+  async createLinkToSpaceOrShare(
+    guestId: number,
+    spaceOrShareId: number,
+    type: LINK_TYPE,
+    link: CreateOrUpdateLinkDto & Pick<Link, 'uuid' | 'userId'>
+  ): Promise<number> {
+    const linkId = dbGetInsertedId(await this.db.insert(links).values(link as Link))
+    if (type === LINK_TYPE.SPACE) {
+      await this.db.insert(spacesMembers).values({
+        userId: guestId,
+        spaceId: spaceOrShareId,
+        permissions: link.permissions,
+        role: SPACE_ROLE.IS_MEMBER,
+        linkId: linkId
+      } as SpaceMembers)
+    } else {
+      await this.db.insert(sharesMembers).values({
+        userId: guestId,
+        shareId: spaceOrShareId,
+        linkId: linkId,
+        permissions: link.permissions
+      } as ShareMembers)
+    }
+    return linkId
+  }
+
+  allLinksFromSpaceOrShare(spaceOrShareId: number, type: LINK_TYPE): Promise<{ id: number; linkId: number }[]> {
+    const members: any = alias(type == 'share' ? sharesMembers : spacesMembers, 'members')
+    return this.db
+      .select({ id: users.id, linkId: members.linkId })
+      .from(members)
+      .innerJoin(users, and(eq(users.id, members.userId), eq(users.role, USER_ROLE.LINK)))
+      .where(and(eq(type == 'share' ? members.shareId : members.spaceId, spaceOrShareId), isNotNull(members.linkId)))
+  }
+
+  async linkFromUUID(uuid: string): Promise<LinkAsUser | undefined> {
+    const { password, ...userColumns } = getTableColumns(users)
+    const [r] = await this.db
+      .select({
+        ...getTableColumns(links),
+        user: { ...userColumns }
+      })
+      .from(links)
+      .leftJoin(users, eq(users.id, links.userId))
+      .where(eq(links.uuid, uuid))
+      .limit(1)
+    return r as LinkAsUser | undefined
+  }
+
+  async spaceLink(uuid: string): Promise<SpaceLink | undefined> {
+    const shareOwner: any = alias(users, 'shareOwner')
+    const shareSpaceRoot: any = alias(spacesRoots, 'shareSpaceRoot')
+    const [r] = await this.db
+      .select({
+        share: {
+          name: shares.name,
+          alias: shares.alias,
+          hasParent: isNotNull(shares.parentId).mapWith(Boolean),
+          isDir: sql`IF (${isNotNull(shares.externalPath)} OR ${isNotNull(shareSpaceRoot.externalPath)}, 1 ,${files.isDir})`.mapWith(Boolean),
+          mime: files.mime,
+          mtime: files.mtime,
+          size: files.size,
+          permissions: sharesMembers.permissions
+        },
+        space: { name: spaces.name, alias: spaces.alias },
+        owner: { login: shareOwner.login, fullName: userFullNameSQL(shareOwner) }
+      })
+      .from(links)
+      .leftJoin(sharesMembers, eq(sharesMembers.linkId, links.id))
+      .leftJoin(shares, eq(shares.id, sharesMembers.shareId))
+      .leftJoin(shareOwner, eq(shareOwner.id, shares.ownerId))
+      .leftJoin(spacesMembers, eq(spacesMembers.linkId, links.id))
+      .leftJoin(spaces, eq(spaces.id, spacesMembers.spaceId))
+      .leftJoin(shareSpaceRoot, and(isNull(shares.externalPath), isNull(shares.fileId), eq(shareSpaceRoot.id, shares.spaceRootId)))
+      .leftJoin(
+        files,
+        or(
+          and(isNotNull(shares.fileId), eq(files.id, shares.fileId)),
+          and(isNull(shares.externalPath), isNotNull(shareSpaceRoot.fileId), eq(files.id, shareSpaceRoot.fileId))
+        )
+      )
+      .where(eq(links.uuid, uuid))
+      .limit(1)
+    if (!r) {
+      return undefined
+    }
+    return {
+      ...r,
+      space: r.space?.name ? r.space : null,
+      share: r.share?.name ? r.share : null
+    } as SpaceLink
+  }
+
+  async consumeLinkAccess(uuid: string): Promise<boolean> {
+    return dbCheckAffectedRows(
+      await this.db
+        .update(links)
+        .set({ nbAccess: sql`${links.nbAccess} + 1` } as Record<keyof Link, any>)
+        .where(
+          and(
+            eq(links.uuid, uuid),
+            or(eq(links.limitAccess, 0), lt(links.nbAccess, links.limitAccess)),
+            or(isNull(links.expiresAt), gt(links.expiresAt, sql`CURRENT_TIMESTAMP`))
+          )
+        )
+        .limit(1),
+      1,
+      false
+    )
+  }
+
+  async isUniqueUUID(userId: number, uuid: string) {
+    const [r] = await this.db.select({ check: links.uuid }).from(links).where(eq(links.uuid, uuid)).limit(1)
+    if (!r) {
+      // uuid does not exist in db
+      const cacheKey = this.cache.genSlugKey(CACHE_LINK_UUID_PREFIX, userId, uuid)
+      // check if uuid was already requested
+      if (!(await this.cache.has(cacheKey))) {
+        // store uuid to prevent reuse
+        await this.cache.set(cacheKey, uuid, CACHE_LINK_UUID_TTL)
+        return true
+      }
+      return false
+    }
+    return false
+  }
+
+  isReservedUUID(userId: number, uuid: string): Promise<boolean> {
+    // check if uuid is reserved
+    return this.cache.has(this.cache.genSlugKey(CACHE_LINK_UUID_PREFIX, userId, uuid))
+  }
+}

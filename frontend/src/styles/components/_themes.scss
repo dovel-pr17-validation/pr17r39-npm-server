@@ -1,0 +1,17 @@
+body {
+  &.theme-light {
+    @include skin-light-app();
+    @include skin-light-left-sidebar();
+    @include skin-light-right-sidebar();
+    @include skin-light-tree();
+    @include skin-light-miscellaneous();
+  }
+
+  &.theme-dark {
+    @include skin-dark-app();
+    @include skin-dark-left-sidebar();
+    @include skin-dark-right-sidebar();
+    @include skin-dark-tree();
+    @include skin-dark-miscellaneous();
+  }
+}

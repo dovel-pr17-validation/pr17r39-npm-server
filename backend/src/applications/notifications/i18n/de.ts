@@ -1,0 +1,50 @@
+export const de = {
+  'If you no longer wish to receive notifications, change your preferences directly from your user space.':
+    'Wenn Sie keine Benachrichtigungen mehr erhalten möchten, ändern Sie Ihre Einstellungen direkt in Ihrem Benutzerbereich.',
+  'Access it from': 'Öffnen Sie es über',
+  Comment: 'Kommentar',
+  commented: 'hat kommentiert',
+  'You receive this notification if you are the owner of the file or if you have also commented on this file':
+    'Sie erhalten diese Benachrichtigung, wenn Sie der Eigentümer der Datei sind oder wenn Sie diese Datei ebenfalls kommentiert haben',
+  Space: 'Bereich',
+  'from the space': 'aus dem Bereich',
+  'to the space': 'zum Bereich',
+  'Access your spaces from': 'Öffnen Sie Ihre Bereiche über',
+  'Access this space from': 'Öffnen Sie diesen Bereich über',
+  'You now have access to the space': 'Sie haben jetzt Zugriff auf den Bereich',
+  'You no longer have access to the space': 'Sie haben keinen Zugriff mehr auf den Bereich',
+  'This space has been permanently deleted': 'Dieser Bereich wurde dauerhaft gelöscht',
+  anchored: 'hat angeheftet',
+  unanchored: 'hat gelöst',
+  Share: 'Freigabe',
+  'shared with you': 'hat mit Ihnen geteilt',
+  'no longer share with you': 'teilt nicht mehr mit Ihnen',
+  'You now have access to the share': 'Sie haben jetzt Zugriff auf die Freigabe',
+  'You no longer have access to the share': 'Sie haben keinen Zugriff mehr auf die Freigabe',
+  'You are no longer a member of the parent share, your child share has been deleted':
+    'Sie sind kein Mitglied der übergeordneten Freigabe mehr, Ihre untergeordnete Freigabe wurde gelöscht',
+  'Access your shares from': 'Öffnen Sie Ihre Freigaben über',
+  'Access password': 'Zugriffspasswort',
+  Sync: 'Synchronisierung',
+  'Access your syncs from': 'Öffnen Sie Ihre Synchronisierungen über',
+  'You are no longer synchronizing': 'Sie synchronisieren nicht mehr',
+  'Unlock Request': 'Entsperranfrage',
+  'You receive this notification because you have a lock on this file.':
+    'Sie erhalten diese Benachrichtigung, weil Sie eine Sperre auf dieser Datei haben.',
+  'sends you a request to unlock the file': 'sendet Ihnen eine Anfrage zum Entsperren der Datei',
+  'Security notification': 'Sicherheitsbenachrichtigung',
+  'Your account is temporarily locked for 15 minutes due to too many failed sign-in attempts':
+    'Ihr Konto ist aufgrund zu vieler fehlgeschlagener Anmeldeversuche vorübergehend für 15 Minuten gesperrt',
+  'You can try signing in again after 15 minutes. If you did not make these attempts, please contact your administrator.':
+    'Sie können sich nach 15 Minuten erneut anmelden. Wenn diese Versuche nicht von Ihnen stammen, wenden Sie sich bitte an Ihren Administrator.',
+  'Two-factor authentication (2FA) on your account has been disabled': 'Die Zwei-Faktor-Authentifizierung (2FA) für Ihr Konto wurde deaktiviert',
+  'Two-factor authentication (2FA) on your account has been enabled': 'Die Zwei-Faktor-Authentifizierung (2FA) für Ihr Konto wurde aktiviert',
+  'You received this notification because the security of your Sync-in account has changed. If you think this was a mistake, please review your security settings or contact your administrator.':
+    'Sie erhalten diese Benachrichtigung, weil sich die Sicherheit Ihres Sync-in-Kontos geändert hat. Wenn Sie der Meinung sind, dass dies ein Fehler war, überprüfen Sie bitte Ihre Sicherheitseinstellungen oder kontaktieren Sie Ihren Administrator.',
+  'Address IP': 'IP-Adresse',
+  Browser: 'Browser',
+  'New Version Available': 'Neue Version verfügbar',
+  'You receive this notification because you are the administrator of this server.':
+    'Sie erhalten diese Benachrichtigung, weil Sie der Administrator dieses Servers sind.',
+  'A new update is available': 'Ein neues Update ist verfügbar'
+} as const

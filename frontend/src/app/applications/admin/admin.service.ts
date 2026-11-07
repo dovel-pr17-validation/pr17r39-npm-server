@@ -1,0 +1,178 @@
+import { HttpClient, HttpHeaders } from '@angular/common/http'
+import { inject, Injectable } from '@angular/core'
+import { Router } from '@angular/router'
+import { API_ADMIN_SPACES_LIST } from '@sync-in-server/backend/src/applications/spaces/constants/routes'
+import type { SpaceProps } from '@sync-in-server/backend/src/applications/spaces/models/space-props.model'
+import {
+  ADMIN_USERS_ROUTE,
+  API_ADMIN_GROUPS,
+  API_ADMIN_GROUPS_BROWSE,
+  API_ADMIN_GUESTS,
+  API_ADMIN_GUESTS_LIST,
+  API_ADMIN_IMPERSONATE,
+  API_ADMIN_MEMBERS,
+  API_ADMIN_PERSONAL_GROUPS_BROWSE,
+  API_ADMIN_USERS,
+  API_ADMIN_USERS_LIST
+} from '@sync-in-server/backend/src/applications/users/constants/routes'
+import type { CreateOrUpdateGroupDto } from '@sync-in-server/backend/src/applications/users/dto/create-or-update-group.dto'
+import type {
+  CreateUserDto,
+  UpdateUserDto,
+  UpdateUserFromGroupDto
+} from '@sync-in-server/backend/src/applications/users/dto/create-or-update-user.dto'
+import type { DeleteUserDto } from '@sync-in-server/backend/src/applications/users/dto/delete-user.dto'
+import type { SearchMembersDto } from '@sync-in-server/backend/src/applications/users/dto/search-members.dto'
+import type { AdminGroup } from '@sync-in-server/backend/src/applications/users/interfaces/admin-group.interface'
+import type { AdminUser } from '@sync-in-server/backend/src/applications/users/interfaces/admin-user.interface'
+import type { GroupBrowse } from '@sync-in-server/backend/src/applications/users/interfaces/group-browse.interface'
+import type { GuestUser } from '@sync-in-server/backend/src/applications/users/interfaces/guest-user.interface'
+import type { Member } from '@sync-in-server/backend/src/applications/users/interfaces/member.interface'
+import type { LoginResponseDto } from '@sync-in-server/backend/src/authentication/dto/login-response.dto'
+import { catchError, map, Observable, of } from 'rxjs'
+import { AuthService } from '../../auth/auth.service'
+import { SpaceModel } from '../spaces/models/space.model'
+import { GroupBrowseModel } from '../users/models/group-browse.model'
+import { GuestUserModel } from '../users/models/guest.model'
+import { MemberModel } from '../users/models/member.model'
+import { USER_PATH } from '../users/user.constants'
+import { AdminGroupModel } from './models/admin-group.model'
+import { AdminUserModel } from './models/admin-user.model'
+import {
+  API_FILES_INDEXING,
+  API_FILES_INDEXING_START,
+  API_FILES_INDEXING_STOP
+} from '@sync-in-server/backend/src/applications/files/constants/routes'
+import type { IndexingStatus } from '@sync-in-server/backend/src/applications/files/interfaces/indexing.interface'
+import type { SPACE_OPERATION } from '@sync-in-server/backend/src/applications/spaces/constants/spaces'
+
+type OptionalTwoFaHeaders = HttpHeaders | undefined
+
+@Injectable({
+  providedIn: 'root'
+})
+export class AdminService {
+  private readonly http = inject(HttpClient)
+  private readonly router = inject(Router)
+  private readonly authService = inject(AuthService)
+
+  listUsers(areGuests = false): Observable<AdminUserModel[]> {
+    return this.http
+      .get<AdminUser[] | GuestUser[]>(areGuests ? API_ADMIN_GUESTS_LIST : API_ADMIN_USERS_LIST)
+      .pipe(map((users) => users.map((u: AdminUser | GuestUser) => new AdminUserModel(u))))
+  }
+
+  getUser(userId: number, isGuest?: false): Observable<AdminUserModel>
+  getUser(userId: number, isGuest: true): Observable<GuestUserModel>
+  getUser(userId: number, isGuest = false): Observable<AdminUserModel | GuestUserModel> {
+    return this.http
+      .get<AdminUser | GuestUser>(`${isGuest ? API_ADMIN_GUESTS : API_ADMIN_USERS}/${userId}`)
+      .pipe(map((u) => (isGuest ? new GuestUserModel(u) : new AdminUserModel(u))))
+  }
+
+  createUser(createUserDto: CreateUserDto, twoFaHeaders: OptionalTwoFaHeaders, isGuest?: false): Observable<AdminUserModel>
+  createUser(createUserDto: CreateUserDto, twoFaHeaders: OptionalTwoFaHeaders, isGuest: true): Observable<GuestUserModel>
+  createUser(createUserDto: CreateUserDto, twoFaHeaders: OptionalTwoFaHeaders, isGuest = false): Observable<AdminUserModel | GuestUserModel> {
+    return this.http
+      .post<AdminUser | GuestUser>(isGuest ? API_ADMIN_GUESTS : API_ADMIN_USERS, createUserDto, twoFaHeaders ? { headers: twoFaHeaders } : undefined)
+      .pipe(map((u) => (isGuest ? new GuestUserModel(u) : new AdminUserModel(u))))
+  }
+
+  updateUser(userId: number, updateUserDto: UpdateUserDto, twoFaHeaders: OptionalTwoFaHeaders, isGuest?: false): Observable<AdminUserModel>
+  updateUser(userId: number, updateUserDto: UpdateUserDto, twoFaHeaders: OptionalTwoFaHeaders, isGuest: true): Observable<GuestUserModel>
+  updateUser(
+    userId: number,
+    updateUserDto: UpdateUserDto,
+    twoFaHeaders: OptionalTwoFaHeaders,
+    isGuest = false
+  ): Observable<AdminUserModel | GuestUserModel> {
+    return this.http
+      .put<AdminUser | GuestUser>(
+        `${isGuest ? API_ADMIN_GUESTS : API_ADMIN_USERS}/${userId}`,
+        updateUserDto,
+        twoFaHeaders ? { headers: twoFaHeaders } : undefined
+      )
+      .pipe(map((u) => (isGuest ? new GuestUserModel(u) : new AdminUserModel(u))))
+  }
+
+  deleteUser(userId: number, deleteUserDto: DeleteUserDto, twoFaHeaders: HttpHeaders): Observable<void> {
+    return this.http.request<void>('delete', `${API_ADMIN_USERS}/${userId}`, {
+      headers: twoFaHeaders,
+      body: deleteUserDto
+    })
+  }
+
+  deleteGuest(guestId: number, twoFaHeaders: HttpHeaders): Observable<void> {
+    return this.http.delete<void>(`${API_ADMIN_GUESTS}/${guestId}`, { headers: twoFaHeaders })
+  }
+
+  browseGroup(name?: string, personalGroups = false): Observable<GroupBrowseModel> {
+    return this.http
+      .get<GroupBrowse>(`${personalGroups ? API_ADMIN_PERSONAL_GROUPS_BROWSE : API_ADMIN_GROUPS_BROWSE}${name ? `/${name}` : ''}`)
+      .pipe(map((browse) => new GroupBrowseModel(browse)))
+  }
+
+  getGroup(groupId: number): Observable<AdminGroupModel> {
+    return this.http.get<AdminGroup>(`${API_ADMIN_GROUPS}/${groupId}`).pipe(map((g) => new AdminGroupModel(g)))
+  }
+
+  createGroup(createGroupDto: CreateOrUpdateGroupDto): Observable<AdminGroupModel> {
+    return this.http.post<AdminGroup>(API_ADMIN_GROUPS, createGroupDto).pipe(map((g) => new AdminGroupModel(g)))
+  }
+
+  updateGroup(groupId: number, updateGroupDto: CreateOrUpdateGroupDto): Observable<AdminGroupModel> {
+    return this.http.put<AdminGroup>(`${API_ADMIN_GROUPS}/${groupId}`, updateGroupDto).pipe(map((g) => new AdminGroupModel(g)))
+  }
+
+  deleteGroup(groupId: number): Observable<void> {
+    return this.http.delete<void>(`${API_ADMIN_GROUPS}/${groupId}`)
+  }
+
+  addUsersToGroup(groupId: number, userIds: number[]): Observable<void> {
+    return this.http.patch<void>(`${API_ADMIN_GROUPS}/${groupId}/${ADMIN_USERS_ROUTE.USERS}`, userIds)
+  }
+
+  updateUserFromGroup(groupId: number, userId: number, updateUserFromGroupDto: UpdateUserFromGroupDto): Observable<void> {
+    return this.http.patch<void>(`${API_ADMIN_GROUPS}/${groupId}/${ADMIN_USERS_ROUTE.USERS}/${userId}`, updateUserFromGroupDto)
+  }
+
+  removeUserFromGroup(groupId: number, userId: number): Observable<void> {
+    return this.http.delete<void>(`${API_ADMIN_GROUPS}/${groupId}/${ADMIN_USERS_ROUTE.USERS}/${userId}`)
+  }
+
+  searchMembers(search: SearchMembersDto, omitPermissions: SPACE_OPERATION[] = []): Observable<MemberModel[]> {
+    return this.http.request<Member[]>('search', API_ADMIN_MEMBERS, { body: search }).pipe(
+      map((members: Member[]) => members.map((m: Member) => new MemberModel(m, omitPermissions))),
+      catchError(() => of([]))
+    )
+  }
+
+  impersonateUser(userId: number, twoFaHeaders: HttpHeaders): Observable<LoginResponseDto> {
+    return this.http.post<LoginResponseDto>(`${API_ADMIN_IMPERSONATE}/${userId}`, null, { headers: twoFaHeaders })
+  }
+
+  initImpersonateUser(r: LoginResponseDto) {
+    this.authService.initUserFromResponse(r, true)
+    this.router.navigate([USER_PATH.BASE, USER_PATH.ACCOUNT]).catch(console.error)
+  }
+
+  listSpaces(): Observable<SpaceModel[]> {
+    return this.http.get<SpaceProps[]>(API_ADMIN_SPACES_LIST).pipe(map((sps: SpaceProps[]) => sps.map((s: SpaceProps) => new SpaceModel(s))))
+  }
+
+  indexingStatus(): Observable<IndexingStatus> {
+    return this.http.get<IndexingStatus>(API_FILES_INDEXING)
+  }
+
+  startIndexing(): Observable<boolean> {
+    return this.http.post<boolean>(API_FILES_INDEXING_START, null)
+  }
+
+  stopIndexing(): Observable<boolean> {
+    return this.http.post<boolean>(API_FILES_INDEXING_STOP, null)
+  }
+
+  dropIndexes(): Observable<void> {
+    return this.http.delete<void>(API_FILES_INDEXING)
+  }
+}

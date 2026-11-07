@@ -1,0 +1,307 @@
+<div class="app-top-menu app-top-menu-tool-bar"
+     [attr.aria-label]="'Actions' | translate:locale.language"
+     role="toolbar">
+  <button (click)="addToSync()"
+          [attr.aria-label]="'New' | translate:locale.language"
+          [tooltip]="'New' | translate:locale.language"
+          class="btn btn-default app-top-menu-tool-bar__action--icon" type="button">
+    <svg [lucideIcon]="icons.LucidePlus"></svg>
+  </button>
+  <button (click)="openSettingsDialog()"
+          [attr.aria-label]="'Edit' | translate:locale.language"
+          [disabled]="!syncPathSelected"
+          [tooltip]="'Edit' | translate:locale.language"
+          class="btn btn-default app-top-menu-tool-bar__action--icon" type="button">
+    <svg [lucideIcon]="icons.LucidePencil"></svg>
+  </button>
+  <!--Start Sync Buttons-->
+  @if (syncPathSelected && syncPathSelected.inSync) {
+    <button (click)="doSync(false)"
+            [attr.aria-label]="'Stop synchronization' | translate:locale.language"
+            [tooltip]="'Stop synchronization' | translate:locale.language"
+            class="btn btn-warning app-top-menu-tool-bar__action--icon" type="button">
+      <svg [lucideIcon]="icons.LucideSquare"></svg>
+    </button>
+  } @else {
+    <button (click)="doSync(true)"
+            [attr.aria-label]="'Synchronize' | translate:locale.language"
+            [disabled]="!syncPathSelected || !syncPathSelected.settings.enabled"
+            [tooltip]="'Synchronize' | translate:locale.language"
+            class="btn btn-default app-top-menu-tool-bar__action--icon" type="button">
+      <svg [lucideIcon]="icons.LucidePlay"></svg>
+    </button>
+  }
+  @if (allSyncsRunning) {
+    <button (click)="doAllSyncs(false)"
+            [attr.aria-label]="'Stop synchronizations' | translate:locale.language"
+            [tooltip]="'Stop synchronizations' | translate:locale.language"
+            class="btn btn-warning app-top-menu-tool-bar__action--icon" type="button">
+      <svg [lucideIcon]="icons.LucideSquare"></svg>
+    </button>
+  } @else {
+    <div [tooltip]="'Synchronize all' | translate:locale.language">
+      <div class="btn-group" dropdown [isDisabled]="!store.clientSyncPaths().length">
+        <button class="btn btn-default dropdown-toggle app-top-menu-tool-bar__action--icon"
+                [attr.aria-label]="'Synchronize all' | translate:locale.language"
+                dropdownToggle type="button">
+          <svg [lucideIcon]="icons.LucideFastForward"></svg>
+        </button>
+        <ul *dropdownMenu class="dropdown-menu" role="menu">
+          <li role="menuitem">
+            <a (click)="doAllSyncs(true, false)" class="dropdown-item">
+              <span l10nTranslate>
+                <svg [lucideIcon]="icons.LucideRepeat2"></svg>
+                Sequentially
+              </span>
+            </a>
+          </li>
+          <li role="menuitem">
+            <a (click)="doAllSyncs(true)" class="dropdown-item">
+              <span l10nTranslate>
+                <svg [lucideIcon]="icons.LucideShuffle"></svg>
+                Asynchronously
+              </span>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  }
+  <button (click)="openReportDialog()"
+          [attr.aria-label]="'Simulate' | translate:locale.language"
+          [disabled]="!syncPathSelected || !syncPathSelected.settings.enabled"
+          [tooltip]="'Simulate' | translate:locale.language"
+          class="btn btn-default app-top-menu-tool-bar__action--icon" type="button">
+    <svg [lucideIcon]="icons.LucideFlaskConical"></svg>
+  </button>
+  <div [tooltip]="(('Scheduler' | translate:locale.language) + ': ' + (store.clientScheduler() | translate:locale.language))">
+    <div class="btn-group" dropdown>
+      <button class="btn {{store.clientScheduler() === CLIENT_SCHEDULER_STATE.DISABLED ? 'btn-warning' : 'btn-success'}} dropdown-toggle app-top-menu-tool-bar__action--icon"
+              [attr.aria-label]="(('Scheduler' | translate:locale.language) + ': ' + (store.clientScheduler() | translate:locale.language))"
+              dropdownToggle type="button">
+        @if (store.clientScheduler() === CLIENT_SCHEDULER_STATE.DISABLED) {
+          <svg [lucideIcon]="icons.LucideCalendarX"></svg>
+        } @else {
+          <svg [lucideIcon]="icons.LucideCalendarCheck"></svg>
+        }
+      </button>
+      <ul *dropdownMenu class="dropdown-menu" role="menu">
+        @if (store.clientScheduler() !== CLIENT_SCHEDULER_STATE.DISABLED) {
+          <li role="menuitem">
+            <a (click)="setScheduler(CLIENT_SCHEDULER_STATE.DISABLED)" class="dropdown-item">
+              <span l10nTranslate>
+                <svg [lucideIcon]="icons.LucideCalendarX"></svg>
+                Disable
+              </span>
+            </a>
+          </li>
+        }
+        <li role="menuitem">
+          <a (click)="setScheduler(CLIENT_SCHEDULER_STATE.SEQ)" class="dropdown-item">
+            <span l10nTranslate>
+              <svg [lucideIcon]="icons.LucideRepeat2"></svg>
+              Sequentially
+            </span>
+          </a>
+        </li>
+        <li role="menuitem">
+          <a (click)="setScheduler(CLIENT_SCHEDULER_STATE.ASYNC)" class="dropdown-item">
+            <span l10nTranslate>
+              <svg [lucideIcon]="icons.LucideShuffle"></svg>
+              Asynchronously
+            </span>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+  <!--End Sync Buttons-->
+  <div [tooltip]="'Go to' | translate:locale.language">
+    <div [isDisabled]="!syncPathSelected" class="btn-group" dropdown>
+      <button class="btn btn-default dropdown-toggle app-top-menu-tool-bar__action--icon"
+              [attr.aria-label]="'Go to' | translate:locale.language"
+              dropdownToggle type="button">
+        <svg [lucideIcon]="icons.LucideMapPin"></svg>
+      </button>
+      <ul *dropdownMenu class="dropdown-menu" role="menu">
+        <li role="menuitem">
+          <a (click)="goToPath()" class="dropdown-item">
+            <span l10nTranslate>
+              <svg [lucideIcon]="icons.CLIENT"></svg>
+              Client
+            </span>
+          </a>
+        </li>
+        <li role="menuitem">
+          <a (click)="goToPath(false)" class="dropdown-item">
+            <span l10nTranslate>
+              <svg [lucideIcon]="icons.SERVER"></svg>
+              Server
+            </span>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+  <div class="d-flex align-items-center">
+    <button (click)="onRefresh()"
+            [attr.aria-label]="'Refresh' | translate:locale.language"
+            [tooltip]="'Refresh' | translate:locale.language"
+            class="d-none d-md-block btn btn-default app-top-menu-tool-bar__action--icon" type="button">
+      <svg [lucideIcon]="icons.LucideRotateCw"></svg>
+    </button>
+  </div>
+</div>
+<table class="app-table">
+  <thead>
+  <tr>
+    @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+      @if (th.value.show) {
+        <th (click)="sortBy(th.key)"
+            [style.width.%]="th.value.width"
+            [class.text-align-center]="th.value.textCenter"
+            [class.cursor-pointer]="th.value.sortable"
+            class="{{th.value.class}}"
+            l10nTranslate>
+          {{ th.value.label }}
+          @if (sortTable.sortParam.column === th.key) {
+            <svg [lucideIcon]="sortTable.sortParam.asc ? icons.LucideArrowDown : icons.LucideArrowUp"></svg>
+          }
+        </th>
+      }
+    }
+  </tr>
+  </thead>
+</table>
+<app-virtual-scroll (contextmenu)="onContextMenu($event)"
+                    [bufferAmount]="5"
+                    [items]="store.clientSyncPaths() | searchFilter:navbarSearch.viewFilter():'name'">
+  <table class="app-table">
+    <tbody tabindex="-1">
+      @for (s of store.clientSyncPaths() | searchFilter:navbarSearch.viewFilter(); track s.id) {
+        <tr (click)="onSelect(s)"
+            (contextmenu)="onSyncPathContextMenu($event, s)"
+            (appTap)="onSyncPathActivate(s)"
+            [class.selected]="syncPathSelected && syncPathSelected.id === s.id">
+          @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+            @if (th.value.show) {
+              <td [style.width.%]="th.value.width"
+                  [class.text-align-center]="th.value.textCenter"
+                  class="{{th.value.class}}">
+                @switch (th.key) {
+                  @case ('name') {
+                    <div class="d-flex align-items-center">
+                      <img [src]="s.mimeUrl" alt="" draggable="false" height="35">
+                      <span>{{ s.settings.name }}</span>
+                      <span class="d-flex align-items-center ms-auto">
+                        @if (s.nbSyncTasks) {
+                          <span class="badge bg-maroon">{{ s.nbSyncTasks }}</span>
+                        }
+                        @if (s.mainError) {
+                          <span [tooltip]="s.mainError | translate:locale.language" class="badge bg-danger cursor-pointer ms-1" placement="right">
+                            <svg [lucideIcon]="icons.LucideTriangleExclamationPoint" class="m-0"></svg>
+                          </span>
+                        }
+                        @if (s.lastErrors.length) {
+                          <span (click)="showErrors(s)" class="badge bg-danger cursor-pointer ms-1" data-app-tap-ignore>
+                            <svg [lucideIcon]="icons.LucideTriangleExclamationPoint" class="me-1"></svg>
+                            {{ s.lastErrors.length }}
+                          </span>
+                        }
+                      </span>
+                    </div>
+                  }
+                  @case ('mode') {
+                    <app-sync-path-direction-icon [syncPath]="s"></app-sync-path-direction-icon>
+                  }
+                  @case ('conflictMode') {
+                    <span l10nTranslate>{{ s.settings.mode === SYNC_PATH_MODE.BOTH ? s.settings.conflictMode : s.settings.mode ? SYNC_PATH_CONFLICT_MODE.REMOTE : SYNC_PATH_CONFLICT_MODE.LOCAL }}</span>
+                  }
+                  @case ('diffMode') {
+                    <span l10nTranslate>{{ s.settings.diffMode }}</span>
+                  }
+                  @case ('scheduler') {
+                    <app-sync-path-scheduler [s]="s"></app-sync-path-scheduler>
+                  }
+                  @case ('filters') {
+                    {{ s.settings.filters.length }}
+                  }
+                  @case ('lastSync') {
+                    <span class="{{th.value.newly ? 'badge sync-newly-' + s[th.value.newly] : ''}}">
+                      @if (s.newly) {
+                        {{ s.settings.lastSync | amLiveTimeAgo:true }}
+                      } @else {
+                        {{ 'never' | translate:locale.language }}
+                      }
+                    </span>
+                  }
+                }
+              </td>
+            }
+          }
+        </tr>
+      }
+    </tbody>
+  </table>
+</app-virtual-scroll>
+<!--Start Context Menu -->
+<context-menu #SyncPathContextMenu>
+  @if (syncPathSelected && syncPathSelected.inSync) {
+    <ng-template (execute)="doSync(false)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideSquare"></svg>Synchronize</span>
+    </ng-template>
+  } @else {
+    <ng-template (execute)="doSync(true)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucidePlay"></svg>Synchronize</span>
+    </ng-template>
+  }
+  <ng-template (execute)="openReportDialog()" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideFlaskConical"></svg>Simulate</span>
+  </ng-template>
+  <ng-template [divider]="true" contextMenuItem></ng-template>
+  <ng-template [subMenu]="SyncGoToContextMenu" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideMapPin"></svg>Go to</span>
+  </ng-template>
+  <ng-template (execute)="openSettingsDialog()" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucidePencil"></svg>Edit</span>
+  </ng-template>
+</context-menu>
+<context-menu #SyncAllContextMenu>
+  <ng-template (execute)="doAllSyncs(true, false)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideRepeat2"></svg>Sequentially</span>
+  </ng-template>
+  <ng-template (execute)="doAllSyncs(true)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideShuffle"></svg>Asynchronously</span>
+  </ng-template>
+</context-menu>
+<context-menu #SyncGoToContextMenu>
+  <ng-template (execute)="goToPath()" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.CLIENT"></svg>Client</span></ng-template>
+  <ng-template (execute)="goToPath(false)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.SERVER"></svg>Server</span></ng-template>
+</context-menu>
+<context-menu #SyncSchedulerContextMenu>
+  @if (store.clientScheduler() !== CLIENT_SCHEDULER_STATE.DISABLED) {
+    <ng-template (execute)="setScheduler(CLIENT_SCHEDULER_STATE.DISABLED)" contextMenuItem>
+      <span><svg [lucideIcon]="icons.LucideCalendarX"></svg>
+        {{ 'disabled' | translate:locale.language | capitalize }}</span>
+    </ng-template>
+  }
+  <ng-template (execute)="setScheduler(CLIENT_SCHEDULER_STATE.SEQ)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideRepeat2"></svg>Sequentially</span>
+  </ng-template>
+  <ng-template (execute)="setScheduler(CLIENT_SCHEDULER_STATE.ASYNC)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideShuffle"></svg>Asynchronously</span>
+  </ng-template>
+</context-menu>
+<context-menu #MainContextMenu>
+  @if (allSyncsRunning) {
+    <ng-template (execute)="doAllSyncs(false)" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucideSquare"></svg>Stop synchronizations</span>
+    </ng-template>
+  } @else if (store.clientSyncPaths().length) {
+    <ng-template [subMenu]="SyncAllContextMenu" contextMenuItem>
+      <span l10nTranslate><svg [lucideIcon]="icons.LucideFastForward"></svg>Synchronize</span>
+    </ng-template>
+  }
+  <ng-template [subMenu]="SyncSchedulerContextMenu" contextMenuItem>
+    <span l10nTranslate>
+      @if (store.clientScheduler() === CLIENT_SCHEDULER_STATE.DISABLED) {
+        <svg [lucideIcon]="icons.LucideCalendarX"></svg>
+      } @else {
+        <svg [lucideIcon]="icons.LucideCalendarCheck"></svg>
+      }
+      Scheduler
+    </span>
+  </ng-template>
+  <ng-template [divider]="true" contextMenuItem></ng-template>
+  <ng-template (execute)="addToSync()" contextMenuItem><span l10nTranslate><svg [lucideIcon]="icons.LucidePlus"></svg>New</span></ng-template>
+</context-menu>

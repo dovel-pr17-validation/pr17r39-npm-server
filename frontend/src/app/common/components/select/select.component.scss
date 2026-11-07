@@ -1,0 +1,144 @@
+.ui-select-container {
+  background-color: transparent;
+  border-radius: 4px;
+
+  &.open {
+    > .dropdown-menu {
+      display: block;
+    }
+
+    > a {
+      outline: none;
+    }
+  }
+
+  .ui-icon {
+    min-width: 32px;
+    min-height: 32px;
+    font-size: var(--font-size-lg);
+  }
+
+  .ui-disabled {
+    background-color: #d4dbe8;
+    border-radius: 4px;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    z-index: 5;
+    opacity: 0.6;
+    top: 0;
+    left: 0;
+    cursor: not-allowed;
+  }
+
+  .ui-select-search {
+    height: 42px
+  }
+
+  .ui-select-match {
+    height: 42px;
+    padding: 0.2rem 0.5rem;
+
+    .btn {
+      text-align: start !important;
+    }
+
+    .caret {
+      position: absolute;
+      top: 45%;
+      right: 15px;
+    }
+
+    .close {
+      font-size: calc(var(--font-size-base) * 1.6);
+      line-height: 0.75;
+    }
+
+    .ui-select-toggle {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      width: 100%;
+      min-width: 0;
+
+      > .ui-select-match-text {
+        display: flex;
+        flex: 1 1 auto;
+        line-height: 1.4;
+        min-width: 0;
+        overflow: hidden;
+
+        > * {
+          width: 100%;
+          min-width: 0;
+        }
+      }
+
+      > .lucide,
+      > .dropdown-toggle {
+        flex: 0 0 auto;
+      }
+
+      > .ui-select-clear-icon {
+        font-size: 1rem;
+      }
+
+      > .caret {
+        position: absolute;
+        height: 10px;
+        top: 50%;
+        right: 10px;
+        margin-top: -2px;
+      }
+    }
+
+    .ui-select-placeholder {
+      color: #8c8c8c;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dropdown-toggle {
+      cursor: pointer;
+
+      &:after {
+        display: inline-block !important;
+      }
+    }
+  }
+
+  .ui-select-choices {
+    width: 100%;
+    height: auto;
+    max-height: 275px;
+    overflow-x: hidden;
+    margin-top: 0;
+
+    .ui-select-choices-row {
+      > a {
+        display: block;
+        padding: 5px;
+        clear: both;
+        font-weight: 400;
+        line-height: 1.42857143;
+        color: #333;
+        white-space: nowrap;
+      }
+
+      .active > a {
+        text-decoration: none;
+        outline: 0;
+      }
+
+      .dropdown-item > div {
+        pointer-events: none;
+      }
+    }
+  }
+}

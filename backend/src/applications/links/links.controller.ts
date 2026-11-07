@@ -1,0 +1,70 @@
+import { Body, Controller, Get, Header, Param, Post, Req, Res, StreamableFile, UseGuards } from '@nestjs/common'
+import { Throttle } from '@nestjs/throttler'
+import { type FastifyReply, type FastifyRequest } from 'fastify'
+import { AuthTokenOptional } from '../../authentication/decorators/auth-token-optional.decorator.js'
+import { LoginResponseDto } from '../../authentication/dto/login-response.dto.js'
+import { AuthRateLimitGuard } from '../../authentication/guards/auth-rate-limit.guard.js'
+import { GetUser } from '../users/decorators/user.decorator.js'
+import { type UserPasswordDto, userPasswordSchema } from '../users/dto/user-properties.dto.js'
+import { UserModel } from '../users/models/user.model.js'
+import { LINK_DOWNLOAD_RATE_LIMIT_OPTIONS } from './constants/links.js'
+import { PUBLIC_LINKS_ROUTE } from './constants/routes.js'
+import { SpaceLink } from './interfaces/link-space.interface.js'
+import { publicLinkUuidParameterSchema } from './links.schema.js'
+import { LinksManager } from './services/links-manager.service.js'
+
+@Controller(PUBLIC_LINKS_ROUTE.BASE)
+@AuthTokenOptional()
+export class LinksController {
+  constructor(private readonly linksManager: LinksManager) {}
+
+  @Get(`${PUBLIC_LINKS_ROUTE.VALIDATION}/:uuid`)
+  @UseGuards(AuthRateLimitGuard)
+  linkValidation(
+    @GetUser() user: UserModel,
+    @Param('uuid', { schema: publicLinkUuidParameterSchema }) uuid: string
+  ): Promise<{
+    error: string | null
+    ok: boolean
+    link: SpaceLink | null
+  }> {
+    return this.linksManager.linkValidation(user, uuid)
+  }
+
+  @Get(`${PUBLIC_LINKS_ROUTE.ACCESS}/:uuid`)
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(AuthRateLimitGuard)
+  linkAccess(
+    @GetUser() user: UserModel,
+    @Param('uuid', { schema: publicLinkUuidParameterSchema }) uuid: string,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) res: FastifyReply
+  ): Promise<LoginResponseDto | Omit<LoginResponseDto, 'token'>> {
+    return this.linksManager.linkAccess(user, uuid, req, res)
+  }
+
+  @Get(`${PUBLIC_LINKS_ROUTE.DOWNLOAD}/:uuid`)
+  @Throttle({ default: LINK_DOWNLOAD_RATE_LIMIT_OPTIONS })
+  @UseGuards(AuthRateLimitGuard)
+  linkDownload(
+    @GetUser() user: UserModel,
+    @Param('uuid', { schema: publicLinkUuidParameterSchema }) uuid: string,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) res: FastifyReply
+  ): Promise<StreamableFile> {
+    return this.linksManager.linkDownload(user, uuid, req, res)
+  }
+
+  @Post(`${PUBLIC_LINKS_ROUTE.AUTH}/:uuid`)
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(AuthRateLimitGuard)
+  linkAuthentication(
+    @GetUser() user: UserModel,
+    @Param('uuid', { schema: publicLinkUuidParameterSchema }) uuid: string,
+    @Body({ schema: userPasswordSchema }) linkPasswordDto: UserPasswordDto,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) res: FastifyReply
+  ): Promise<LoginResponseDto> {
+    return this.linksManager.linkAuthentication(user, uuid, linkPasswordDto, req, res)
+  }
+}

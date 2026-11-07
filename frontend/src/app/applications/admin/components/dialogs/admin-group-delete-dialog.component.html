@@ -1,0 +1,43 @@
+<div class="modal-header">
+  <h4 class="modal-title">
+    <svg [lucideIcon]="member.isUser ? icons.LucideUserMinus : icons.LucideTrash"></svg>
+    <span>{{ member.name }}</span>
+  </h4>
+  <h4 class="modal-title ms-auto">
+    <span l10nTranslate>{{ member.isUser ? 'Remove from group' : 'Delete group' }}</span>
+  </h4>
+  <button (click)="onClose()" aria-label="Close" class="btn-close btn-close-white ms-2" type="button"></button>
+</div>
+<div class="modal-body">
+  <div class="d-flex align-items-center">
+    <div class="d-flex align-items-center avatar me-2">
+      @if (member.isUser) {
+        <img class="avatar-img" [src]="member.avatarUrl" alt="">
+      } @else {
+        <span class="{{member.isPersonalGroup ? 'circle-purple-icon' : 'circle-primary-icon'}}">
+          <svg [lucideIcon]="icons.GROUPS"></svg>
+        </span>
+      }
+    </div>
+    <span class="text-bold me-1">{{ member.name | capitalize }}</span>
+    <span l10nTranslate>will be removed</span>
+    @if (member.isUser) {
+      <div class="d-flex align-items-center">
+        <span class="mx-1" l10nTranslate>from the group</span>
+        <span class="text-bold me-1">{{ parentGroup.name | capitalize }}</span>
+      </div>
+    }
+  </div>
+  @if (member.isGroup) {
+    <div class="small mt-2" l10nTranslate>Only the group will be deleted, the members will no longer be part of it.</div>
+  }
+</div>
+<div class="modal-footer">
+  <button (click)="onClose()" class="btn btn-secondary ms-auto" data-dismiss="modal" type="button" l10nTranslate>Cancel</button>
+  <button (click)="onSubmit()"
+          [disabled]="submitted" class="btn btn-danger"
+          type="button"
+          l10nTranslate>
+    Remove
+  </button>
+</div>

@@ -1,0 +1,113 @@
+import { HttpClient, HttpErrorResponse } from '@angular/common/http'
+import { Component, inject, input, model, OnDestroy, OnInit } from '@angular/core'
+import { FILE_MODE } from '@sync-in-server/backend/src/applications/files/constants/operations'
+import { EURO_OFFICE_APP_LOCK, ONLY_OFFICE_APP_LOCK } from '@sync-in-server/backend/src/applications/files/editors/only-office/only-office.constants'
+import type { OnlyOfficeReqDto } from '@sync-in-server/backend/src/applications/files/editors/only-office/only-office.dtos'
+import { API_ONLY_OFFICE_SETTINGS } from '@sync-in-server/backend/src/applications/files/editors/only-office/only-office.routes'
+import { LayoutService } from '../../../../layout/layout.service'
+import { StoreService } from '../../../../store/store.service'
+import { FileModel } from '../../models/file.model'
+import { FilesService } from '../../services/files.service'
+import { fileLockPropsToString } from '../utils/file-lock.utils'
+import { OnlyOfficeComponent } from './utils/only-office.component'
+
+@Component({
+  selector: 'app-files-viewer-only-office',
+  imports: [OnlyOfficeComponent],
+  styles: [
+    `
+      // fix onlyoffice iframe blinking when we hide and show via the windows manager
+      .doc-placeholder {
+        display: none !important;
+      }
+    `
+  ],
+  template: `
+    @if (documentConfig) {
+      <div [style.height.px]="currentHeight()">
+        <app-files-onlyoffice-document
+          [id]="docId"
+          [editorName]="officeEditorName"
+          [documentServerUrl]="documentConfig.documentServerUrl"
+          [config]="documentConfig.config"
+          (loadError)="loadError($event)"
+        ></app-files-onlyoffice-document>
+      </div>
+    }
+  `
+})
+export class FilesViewerOnlyOfficeComponent implements OnInit, OnDestroy {
+  file = input.required<FileModel>()
+  isReadonly = model.required<boolean>()
+  currentHeight = input.required<number>()
+  protected docId: string
+  protected documentConfig: OnlyOfficeReqDto = null
+  private readonly http = inject(HttpClient)
+  private readonly filesService = inject(FilesService)
+  private readonly layout = inject(LayoutService)
+  private readonly store = inject(StoreService)
+  private shouldReconcileMetadata = false
+  protected readonly officeEditorName = this.store.server().files.editors.onlyoffice ? ONLY_OFFICE_APP_LOCK : EURO_OFFICE_APP_LOCK
+
+  ngOnInit() {
+    this.docId = `viewer-doc-${this.file().id}`
+    const theme = this.layout.getCurrentTheme()
+    this.http.get<OnlyOfficeReqDto>(`${API_ONLY_OFFICE_SETTINGS}/${this.file().path}`, { params: { theme } }).subscribe({
+      next: (data) => {
+        if (!data) {
+          this.layout.closeDialog()
+          this.layout.sendNotification('error', 'Unable to open document', 'Settings are missing')
+          return
+        }
+        if (data.hasLock) {
+          if (!this.file().lock) {
+            this.file().createLock(data.hasLock)
+          } else if (!this.file().lock.isExclusive) {
+            // If a lock already exists and is exclusive, a notification was previously fired
+            this.layout.sendNotification('info', 'The file is locked', fileLockPropsToString(data.hasLock))
+          }
+        }
+        this.isReadonly.set(data.config.editorConfig.mode === FILE_MODE.VIEW)
+        this.shouldReconcileMetadata = !this.isReadonly()
+        if (!this.isReadonly() && !this.file().lock) {
+          // Set lock on file
+          this.file().createLock({
+            owner: {
+              login: this.store.user.getValue().login,
+              fullName: this.store.user.getValue().fullName,
+              email: this.store.user.getValue().email
+            },
+            app: this.store.server().files.editors.onlyoffice ? ONLY_OFFICE_APP_LOCK : EURO_OFFICE_APP_LOCK,
+            isExclusive: false
+          })
+        }
+        data.config.editorConfig.lang = this.layout.getCurrentLanguage()
+        data.config.editorConfig.region = data.config.editorConfig.lang
+        this.documentConfig = data
+      },
+      error: (e: HttpErrorResponse) => {
+        this.layout.closeDialog()
+        this.layout.sendNotification(
+          'error',
+          'Unable to open document',
+          e.status === 404 ? this.layout.translateString('office_editor_load_error', { editor: this.officeEditorName }) : e.error.message
+        )
+      }
+    })
+  }
+
+  loadError(e: { title: string; titleArgs: { editor: string }; message: string }): void {
+    this.layout.closeDialog()
+    this.layout.sendNotification('error', this.layout.translateString(e.title, e.titleArgs), e.message)
+  }
+
+  ngOnDestroy() {
+    if (this.shouldReconcileMetadata) {
+      this.filesService.reconcileMetadataAfterEditorClose(this.file())
+    }
+    if (!this.isReadonly() && this.file().lock && this.file().lock.owner.login === this.store.user.getValue().login) {
+      // Remove lock
+      this.file().removeLock()
+    }
+  }
+}

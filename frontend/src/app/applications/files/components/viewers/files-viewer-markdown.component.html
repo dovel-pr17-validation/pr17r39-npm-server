@@ -1,0 +1,414 @@
+<div class="files-viewer-markdown" [style.height.px]="currentHeight()">
+  <div (pointerdown)="hideTooltips()"
+       class="app-top-menu app-top-menu-tool-bar files-markdown-toolbar"
+       [class.files-markdown-toolbar--source]="isSourceMode()"
+       [attr.aria-label]="'Actions' | translate:locale.language"
+       role="toolbar">
+    <button
+      (click)="toggleReadonly()"
+      [attr.aria-label]="(isReadonly() || !isWriteable() ? 'Read-only' : 'Read-write') | translate:locale.language"
+      [tooltip]="(isReadonly() || !isWriteable() ? 'Read-only' : 'Read-write') | translate:locale.language"
+      triggers="hover"
+      [adaptivePosition]="true"
+      class="btn {{ isReadonly() ? 'btn-warning' : 'btn-default' }}"
+      type="button"
+      [disabled]="!isSupported() || !isWriteable() || isSaving()">
+      <svg [lucideIcon]="isReadonly() ? icons.LucideLock : icons.LucideLockOpen"></svg>
+    </button>
+    <button
+      (click)="save()"
+      [attr.aria-label]="'Save' | translate:locale.language"
+      [tooltip]="(canSave() ? 'Save' : undefined) | translate:locale.language"
+      triggers="hover"
+      [delay]="0"
+      [isDisabled]="!canSave()"
+      class="btn btn-default app-top-menu-tool-bar__action--icon app-top-menu-tool-bar__action--quiet"
+      type="button"
+      [disabled]="!canSave()">
+      @if (isSaving()) {
+        <svg [lucideIcon]="icons.LucideLoader" class="icon-spin"></svg>
+      } @else {
+        <svg [lucideIcon]="icons.LucideSave"></svg>
+      }
+    </button>
+    <button
+      (click)="onUndo()"
+      [attr.aria-label]="'Undo' | translate:locale.language"
+      [disabled]="!canUndo()"
+      [tooltip]="'Undo' | translate:locale.language"
+      triggers="hover"
+      class="btn btn-custom"
+      type="button">
+      <svg [lucideIcon]="icons.LucideUndo"></svg>
+    </button>
+    <button
+      (click)="onRedo()"
+      [attr.aria-label]="'Redo' | translate:locale.language"
+      [disabled]="!canRedo()"
+      [tooltip]="'Redo' | translate:locale.language"
+      triggers="hover"
+      class="btn btn-custom"
+      type="button">
+      <svg [lucideIcon]="icons.LucideRedo"></svg>
+    </button>
+
+    <div class="files-markdown-mode-group">
+      <button
+        (click)="toggleViewMode()"
+        [attr.aria-label]="(isSourceMode() ? 'Visual Mode' : 'Code Mode') | translate:locale.language"
+        [tooltip]="(isSourceMode() ? 'Visual Mode' : 'Code Mode') | translate:locale.language"
+        triggers="hover"
+        class="btn btn-custom mx-0"
+        type="button">
+        <svg [lucideIcon]="isSourceMode() ? icons.LucideEye : icons.LucideKeyboard"></svg>
+      </button>
+      <div class="vr files-markdown-mode-separator files-markdown-mode-separator-end"></div>
+    </div>
+
+    @if (!isSourceMode()) {
+      <div class="files-markdown-toolbar-group">
+        <div class="btn-group" dropdown>
+          <button
+            [attr.aria-label]="'Heading' | translate:locale.language"
+            [disabled]="!canEditVisual()"
+            [class.active]="isSelectionActive('heading')"
+            [tooltip]="'Heading' | translate:locale.language"
+            triggers="hover"
+            class="btn btn-custom dropdown-toggle files-markdown-heading-toggle"
+            dropdownToggle
+            type="button">
+            <svg [lucideIcon]="icons.LucideLetterH"></svg>
+          </button>
+          <ul *dropdownMenu class="dropdown-menu files-markdown-heading-menu" role="menu">
+            @for (level of headingLevels; track level) {
+              <li role="menuitem">
+                <a (click)="toggleHeading(level)" [class.active]="editor.isActive('heading', { level })" class="dropdown-item">
+                  H{{ level }}
+                </a>
+              </li>
+            }
+          </ul>
+        </div>
+        <button
+          (click)="toggleBold()"
+          [attr.aria-label]="'Bold' | translate:locale.language"
+          [disabled]="!canEditVisual()"
+          [class.active]="isSelectionActive('bold')"
+          [tooltip]="'Bold' | translate:locale.language"
+          triggers="hover"
+          class="btn btn-custom"
+          type="button">
+          <svg [lucideIcon]="icons.LucideLetterB"></svg>
+        </button>
+        <button
+          (click)="toggleItalic()"
+          [attr.aria-label]="'Italic' | translate:locale.language"
+          [disabled]="!canEditVisual()"
+          [class.active]="isSelectionActive('italic')"
+          [tooltip]="'Italic' | translate:locale.language"
+          triggers="hover"
+          class="btn btn-custom"
+          type="button">
+          <svg [lucideIcon]="icons.LucideItalic"></svg>
+        </button>
+        <button
+          (click)="toggleUnderline()"
+          [attr.aria-label]="'Underline' | translate:locale.language"
+          [disabled]="!canEditVisual()"
+          [class.active]="isSelectionActive('underline')"
+          [tooltip]="'Underline' | translate:locale.language"
+          triggers="hover"
+          class="btn btn-custom"
+          type="button">
+          <svg [lucideIcon]="icons.LucideUnderline"></svg>
+        </button>
+        <button
+          (click)="toggleStrike()"
+          [attr.aria-label]="'Strikethrough' | translate:locale.language"
+          [disabled]="!canEditVisual()"
+          [class.active]="isSelectionActive('strike')"
+          [tooltip]="'Strikethrough' | translate:locale.language"
+          triggers="hover"
+          class="btn btn-custom"
+          type="button">
+          <svg [lucideIcon]="icons.LucideStrikethrough"></svg>
+        </button>
+
+        <div class="vr files-markdown-toolbar-separator"></div>
+
+        <div class="btn-group" dropdown>
+          <button
+            [attr.aria-label]="'List' | translate:locale.language"
+            [disabled]="!canEditVisual()"
+            [class.active]="editor.isActive('bulletList') || editor.isActive('orderedList') || editor.isActive('taskList')"
+            [tooltip]="'List' | translate:locale.language"
+            triggers="hover"
+            class="btn btn-custom dropdown-toggle"
+            dropdownToggle
+            type="button">
+            <svg [lucideIcon]="icons.LucideList"></svg>
+          </button>
+          <ul *dropdownMenu class="dropdown-menu files-markdown-list-menu" role="menu">
+            <li role="menuitem">
+              <a (click)="toggleBulletList()" [class.active]="editor.isActive('bulletList')" class="dropdown-item">
+                <span class="files-markdown-list-item">
+                  <svg [lucideIcon]="icons.LucideList"></svg>
+                  <span l10nTranslate>Bullet List</span>
+                </span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="toggleOrderedList()" [class.active]="editor.isActive('orderedList')" class="dropdown-item">
+                <span class="files-markdown-list-item">
+                  <svg [lucideIcon]="icons.LucideListOrdered"></svg>
+                  <span l10nTranslate>Ordered List</span>
+                </span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="toggleTaskList()" [class.active]="editor.isActive('taskList')" class="dropdown-item">
+                <span class="files-markdown-list-item">
+                  <svg [lucideIcon]="icons.LucideSquareCheck"></svg>
+                  <span l10nTranslate>Task List</span>
+                </span>
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div class="btn-group" dropdown>
+          <button
+            [attr.aria-label]="'Code' | translate:locale.language"
+            [disabled]="!canEditVisual()"
+            [class.active]="editor.isActive('code') || editor.isActive('codeBlock')"
+            [tooltip]="'Code' | translate:locale.language"
+            triggers="hover"
+            class="btn btn-custom dropdown-toggle"
+            dropdownToggle
+            type="button">
+            <svg [lucideIcon]="icons.LucideCode"></svg>
+          </button>
+          <ul *dropdownMenu class="dropdown-menu files-markdown-code-menu" role="menu">
+            <li role="menuitem">
+              <a (click)="toggleCode()" [class.active]="editor.isActive('code')" class="dropdown-item">
+                <span class="files-markdown-code-item">
+                  <svg [lucideIcon]="icons.LucideCode"></svg>
+                  <span l10nTranslate>Inline Code</span>
+                </span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="toggleCodeBlock()" [class.active]="editor.isActive('codeBlock')" class="dropdown-item">
+                <span class="files-markdown-code-item">
+                  <svg [lucideIcon]="icons.LucideCode"></svg>
+                  <span l10nTranslate>Code Block</span>
+                </span>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="files-markdown-toolbar-group">
+        <button
+          (click)="toggleBlockquote()"
+          [attr.aria-label]="'Blockquote' | translate:locale.language"
+          [disabled]="!canEditVisual()"
+          [class.active]="isSelectionActive('blockquote')"
+          [tooltip]="'Blockquote' | translate:locale.language"
+          triggers="hover"
+          class="btn btn-custom"
+          type="button">
+          <svg [lucideIcon]="icons.LucideQuote"></svg>
+        </button>
+      </div>
+
+      <div class="files-markdown-toolbar-group">
+        <div class="btn-group" dropdown>
+          <button
+            [attr.aria-label]="'Table' | translate:locale.language"
+            [disabled]="!canEditVisual()"
+            [class.active]="editor.isActive('table')"
+            [tooltip]="'Table' | translate:locale.language"
+            triggers="hover"
+            class="btn btn-custom dropdown-toggle"
+            dropdownToggle
+            type="button">
+            <svg [lucideIcon]="icons.LucideTable"></svg>
+          </button>
+          <ul *dropdownMenu class="dropdown-menu files-markdown-table-menu" role="menu">
+            <li role="menuitem">
+              <a (click)="insertTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideTable"></svg><span l10nTranslate>Create a table</span></span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="deleteTable()" [class.disabled]="!canEditTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideTrash"></svg><span l10nTranslate>Delete table</span></span>
+              </a>
+            </li>
+            <li class="dropdown-divider"></li>
+            <li role="menuitem">
+              <a (click)="addTableRow('above')" [class.disabled]="!canEditTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideSquarePlus"></svg><span l10nTranslate>Add row above</span></span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="addTableRow('below')" [class.disabled]="!canEditTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideSquarePlus"></svg><span l10nTranslate>Add row below</span></span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="deleteTableRow()" [class.disabled]="!canEditTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideSquareMinus"></svg><span l10nTranslate>Delete row</span></span>
+              </a>
+            </li>
+            <li class="dropdown-divider"></li>
+            <li role="menuitem">
+              <a (click)="addTableColumn('left')" [class.disabled]="!canEditTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideSquarePlus"></svg><span l10nTranslate>Add column left</span></span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="addTableColumn('right')" [class.disabled]="!canEditTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideSquarePlus"></svg><span l10nTranslate>Add column right</span></span>
+              </a>
+            </li>
+            <li role="menuitem">
+              <a (click)="deleteTableColumn()" [class.disabled]="!canEditTable()" class="dropdown-item">
+                <span><svg [lucideIcon]="icons.LucideSquareMinus"></svg><span l10nTranslate>Delete column</span></span>
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <button
+          (click)="setHorizontalRule()"
+          [attr.aria-label]="'Horizontal Rule' | translate:locale.language"
+          [disabled]="!canEditVisual()"
+          [tooltip]="'Horizontal Rule' | translate:locale.language"
+          triggers="hover"
+          class="btn btn-custom"
+          type="button">
+          <svg [lucideIcon]="icons.LucideMinus"></svg>
+        </button>
+
+        <button
+          (click)="setLink()"
+          [attr.aria-label]="'Link' | translate:locale.language"
+          [disabled]="!canEditVisual()"
+          [class.active]="isSelectionActive('link')"
+          [tooltip]="'Link' | translate:locale.language"
+          triggers="hover"
+          class="btn btn-custom"
+          type="button">
+          <svg [lucideIcon]="icons.LucideLink"></svg>
+        </button>
+
+        <div class="btn-group" dropdown>
+          <button
+            [attr.aria-label]="'Image' | translate:locale.language"
+            [disabled]="!canEditVisual()"
+            [class.active]="isSelectionActive('image')"
+            [tooltip]="'Image' | translate:locale.language"
+            triggers="hover"
+            class="btn btn-custom dropdown-toggle"
+            dropdownToggle
+            type="button">
+            <svg [lucideIcon]="icons.LucideImage"></svg>
+          </button>
+          <ul *dropdownMenu class="dropdown-menu files-markdown-image-menu" role="menu">
+            <li role="menuitem">
+              <a (click)="openImageFilePicker()" class="dropdown-item">
+                <span class="files-markdown-image-item">
+                  <svg [lucideIcon]="icons.LucideImage"></svg>
+                  <span l10nTranslate>Image from file</span>
+                </span>
+              </a>
+            </li>
+            @if (!file().isRoot) {
+              <li role="menuitem">
+                <a (click)="insertImageFromRelativePath()" class="dropdown-item">
+                  <span class="files-markdown-image-item">
+                    <svg [lucideIcon]="icons.LucideImage"></svg>
+                    <span l10nTranslate>Image from relative path</span>
+                  </span>
+                </a>
+              </li>
+            }
+            <li role="menuitem">
+              <a (click)="insertImageFromUrl()" class="dropdown-item">
+                <span class="files-markdown-image-item">
+                  <svg [lucideIcon]="icons.LucideLink"></svg>
+                  <span l10nTranslate>Image from URL</span>
+                </span>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <input #imageFileInput (change)="insertImageFromFile($event)" accept="image/*" class="d-none" type="file" />
+    }
+
+    @if (isSourceMode()) {
+      <button
+        btnCheckbox
+        [attr.aria-label]="'Line Wrap' | translate:locale.language"
+        [ngModel]="lineWrapping()"
+        (ngModelChange)="lineWrapping.set($event)"
+        [tooltip]="'Line Wrap' | translate:locale.language"
+        triggers="hover"
+        class="btn btn-custom"
+        type="button">
+        <svg [lucideIcon]="icons.LucideTextWrap"></svg>
+      </button>
+    }
+    <div class="vr files-markdown-toolbar-separator"></div>
+    <button
+      btnCheckbox
+      [attr.aria-label]="'Search' | translate:locale.language"
+      [ngModel]="isSearchPanelOpen()"
+      (ngModelChange)="toggleSearch()"
+      [tooltip]="'Search' | translate:locale.language"
+      triggers="hover"
+      class="btn btn-custom"
+      type="button">
+      <svg [lucideIcon]="icons.LucideSearch"></svg>
+    </button>
+
+  </div>
+
+  @if (warnOnUnsavedChanges()) {
+    <app-files-viewer-unsaved-changes
+      [saving]="isSaving()"
+      (saveAndExit)="save(true)"
+      (closeWithoutSaving)="onClose()"
+      (keepEditing)="warnOnUnsavedChanges.set(false)" />
+  }
+
+  <div class="files-markdown-content" [class.is-visual]="!isSourceMode()" [class.is-source]="isSourceMode()">
+    <div class="files-markdown-visual-pane">
+      <tiptap-editor
+        class="files-markdown-visual-editor"
+        [class.is-readonly]="!canEditContent()"
+        [editor]="editor">
+      </tiptap-editor>
+    </div>
+    <div class="files-markdown-source-pane">
+      <code-editor
+        #sourceEditor
+        [autoFocus]="false"
+        [languages]="languages"
+        [language]="currentLanguage"
+        [(ngModel)]="sourceContent"
+        (change)="sourceContentChange()"
+        [theme]="currentTheme"
+        [readonly]="!canEditContent()"
+        [disabled]="!canEditContent()"
+        [extensions]="sourceSearchAdapter.extensions"
+        [lineWrapping]="lineWrapping()" />
+    </div>
+  </div>
+  <app-files-viewer-search [adapter]="activeSearchAdapter()"></app-files-viewer-search>
+</div>

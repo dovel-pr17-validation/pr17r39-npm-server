@@ -1,0 +1,37 @@
+<div class="modal-header">
+  <h4 class="modal-title">
+    <svg [lucideIcon]="icons.LucideFileLock"></svg>
+    @if (renamedTo) {
+      <span l10nTranslate>Replace Existing File</span>
+    } @else {
+      <span l10nTranslate>Overwrite Existing File(s)</span>
+    }
+  </h4>
+  <button (click)="layout.closeDialog()" aria-label="Close" class="btn-close btn-close-white" type="button"></button>
+</div>
+<div class="modal-body">
+  @if (renamedTo) {
+    <div [innerHTML]="'rename_file_to_existing' | translate:locale.language:{ old: files[0].name, new: renamedTo }"></div>
+  } @else {
+    <div class="text-bold mb-3" l10nTranslate>Do you want to replace the existing file(s)?</div>
+    @for (f of files; track $index) {
+      <div class="d-flex align-items-center mb-1">
+        <img [src]="f.mimeUrl" alt="" height="24" width="24" (error)="f.fallBackMimeUrl()">
+        <div class="d-flex flex-column ms-2">
+          <span>{{ f.name }}</span>
+        </div>
+      </div>
+    }
+  }
+</div>
+<div class="modal-footer">
+  <button (click)="onAction('cancel')" [disabled]="submitted" class="btn btn-secondary" data-dismiss="modal" type="button" l10nTranslate>
+    Cancel
+  </button>
+  @if (!renamedTo) {
+    <button (click)="onAction('skip')" [disabled]="submitted" class="btn btn-primary" type="button" l10nTranslate>
+      Skip existing files
+    </button>
+  }
+  <button (click)="onAction('overwrite')" [disabled]="submitted" class="btn btn-danger" type="button" l10nTranslate>Confirm</button>
+</div>

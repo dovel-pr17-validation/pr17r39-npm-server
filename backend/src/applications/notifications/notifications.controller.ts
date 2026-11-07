@@ -1,0 +1,37 @@
+import { Controller, Delete, Get, Param, Patch } from '@nestjs/common'
+import { integerFromStringSchema } from '../../configuration/config.schema.js'
+import { GetUser } from '../users/decorators/user.decorator.js'
+import type { UserModel } from '../users/models/user.model.js'
+import { NOTIFICATIONS_ROUTE } from './constants/routes.js'
+import type { NotificationFromUser } from './interfaces/notification-properties.interface.js'
+import { NotificationsManager } from './services/notifications-manager.service.js'
+
+@Controller(NOTIFICATIONS_ROUTE.BASE)
+export class NotificationsController {
+  constructor(private readonly notificationsManager: NotificationsManager) {}
+
+  @Get()
+  list(@GetUser() user: UserModel): Promise<NotificationFromUser[]> {
+    return this.notificationsManager.list(user)
+  }
+
+  @Get(NOTIFICATIONS_ROUTE.UNREAD)
+  listUnread(@GetUser() user: UserModel): Promise<NotificationFromUser[]> {
+    return this.notificationsManager.list(user, true)
+  }
+
+  @Patch(':id')
+  wasRead(@GetUser() user: UserModel, @Param('id', { schema: integerFromStringSchema }) notificationId: number): void {
+    return this.notificationsManager.wasRead(user, notificationId)
+  }
+
+  @Delete()
+  deleteAll(@GetUser() user: UserModel): Promise<void> {
+    return this.notificationsManager.delete(user)
+  }
+
+  @Delete(':id')
+  delete(@GetUser() user: UserModel, @Param('id', { schema: integerFromStringSchema }) notificationId: number): Promise<void> {
+    return this.notificationsManager.delete(user, notificationId)
+  }
+}

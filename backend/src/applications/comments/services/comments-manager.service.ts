@@ -1,0 +1,113 @@
+import { toErrorMessage } from '../../../common/errors.js'
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import type { FileProps } from '../../files/interfaces/file-props.interface.js'
+import { FilesQueries } from '../../files/services/files-queries.service.js'
+import { dirName, fileName, getProps, isPathExists } from '../../files/utils/files.js'
+import { NOTIFICATION_APP, NOTIFICATION_APP_EVENT } from '../../notifications/constants/notifications.js'
+import { NotificationContent } from '../../notifications/interfaces/notification-properties.interface.js'
+import { UserMailNotification } from '../../notifications/interfaces/user-mail-notification.interface.js'
+import { NotificationsManager } from '../../notifications/services/notifications-manager.service.js'
+import { SpaceEnv } from '../../spaces/models/space-env.model.js'
+import { UserModel } from '../../users/models/user.model.js'
+import type { CreateOrUpdateCommentDto, DeleteCommentDto } from '../dto/comment.dto.js'
+import { CommentRecent } from '../interfaces/comment-recent.interface.js'
+import type { Comment } from '../schemas/comment.interface.js'
+import { CommentsQueries } from './comments-queries.service.js'
+
+@Injectable()
+export class CommentsManager {
+  private readonly logger = new Logger(CommentsManager.name)
+
+  constructor(
+    private readonly commentQueries: CommentsQueries,
+    private readonly filesQueries: FilesQueries,
+    private readonly notificationsManager: NotificationsManager
+  ) {}
+
+  async getComments(user: UserModel, space: SpaceEnv): Promise<Comment[]> {
+    const fileId = await this.getFileId(space)
+    if (fileId === undefined) {
+      return []
+    }
+    return this.commentQueries.getComments(user.id, space.dbFile?.ownerId === user.id, fileId)
+  }
+
+  async createComment(user: UserModel, space: SpaceEnv, createCommentDto: CreateOrUpdateCommentDto): Promise<Comment> {
+    if ((space.dbFile.spaceExternalRootId || space.dbFile.shareExternalId) && space.dbFile.path === '.') {
+      // If path is empty a file with path = '.' and name = '.' will be created
+      // The space browser does not support this kind of file and will remove it
+      // Maybe to implement later
+      throw new HttpException('Not supported on this kind of location', HttpStatus.BAD_REQUEST)
+    }
+    const fileId = await this.getFileId(space, createCommentDto.fileId)
+    const commentId: number = await this.commentQueries.createComment(user.id, fileId, createCommentDto.content)
+    this.notify(user, fileId, space, createCommentDto.content).catch((e: Error) =>
+      this.logger.error({ tag: this.createComment.name, msg: toErrorMessage(e) })
+    )
+    return (await this.commentQueries.getComments(user.id, space.dbFile?.ownerId === user.id, null, commentId))[0]
+  }
+
+  async updateComment(user: UserModel, space: SpaceEnv, updateCommentDto: CreateOrUpdateCommentDto): Promise<Comment> {
+    const [comment] = await this.commentQueries.getComments(user.id, space.dbFile?.ownerId === user.id, null, updateCommentDto.commentId)
+    if (!comment) {
+      throw new HttpException('Location not found', HttpStatus.NOT_FOUND)
+    }
+    const fileId = await this.getFileId(space)
+    if (fileId === undefined || updateCommentDto.fileId !== fileId || comment.fileId !== fileId) {
+      throw new HttpException('File id mismatch', HttpStatus.BAD_REQUEST)
+    }
+    if (!(await this.commentQueries.updateComment(user.id, updateCommentDto.commentId!, updateCommentDto.fileId, updateCommentDto.content))) {
+      throw new HttpException('Unable to update', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    return (await this.commentQueries.getComments(user.id, space.dbFile?.ownerId === user.id, null, updateCommentDto.commentId))[0]
+  }
+
+  async deleteComment(user: UserModel, space: SpaceEnv, deleteCommentDto: DeleteCommentDto): Promise<void> {
+    const fileId = await this.getFileId(space)
+    if (fileId === undefined || deleteCommentDto.fileId !== fileId) {
+      throw new HttpException('File id mismatch', HttpStatus.BAD_REQUEST)
+    }
+    if (!(await this.commentQueries.deleteComment(user.id, deleteCommentDto.commentId, fileId, space.dbFile?.ownerId === user.id))) {
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+  }
+
+  private async getFileId(space: SpaceEnv): Promise<number | undefined>
+  private async getFileId(space: SpaceEnv, fileId: number): Promise<number>
+  private async getFileId(space: SpaceEnv, fileId?: number): Promise<number | undefined> {
+    if (!(await isPathExists(space.realPath))) {
+      throw new HttpException('Location not found', HttpStatus.NOT_FOUND)
+    }
+    const fileProps: FileProps = { ...(await getProps(space.realPath, space.dbFile.path)), id: undefined }
+    if (fileId !== undefined) {
+      // get or create
+      return this.filesQueries.getOrCreateSpaceFile(fileId, fileProps, space.dbFile, { rejectIdMismatch: true })
+    } else {
+      // get only
+      return this.filesQueries.getSpaceFileId(fileProps, space.dbFile)
+    }
+  }
+
+  async getRecents(user: UserModel, limit: number): Promise<CommentRecent[]> {
+    return this.commentQueries.getRecentsFromUser(user, limit)
+  }
+
+  private async notify(fromUser: UserModel, fileId: number, space: SpaceEnv, comment: string): Promise<void> {
+    const members: UserMailNotification[] = await this.commentQueries.membersToNotify(fromUser.id, fileId)
+    if (!members.length) {
+      return
+    }
+    const notification: NotificationContent = {
+      app: NOTIFICATION_APP.COMMENTS,
+      event: NOTIFICATION_APP_EVENT.COMMENTS,
+      element: fileName(space.url),
+      url: dirName(space.url)
+    }
+    this.notificationsManager
+      .create(members, notification, {
+        author: fromUser,
+        content: comment
+      })
+      .catch((e: Error) => this.logger.error({ tag: this.notify.name, msg: toErrorMessage(e) }))
+  }
+}

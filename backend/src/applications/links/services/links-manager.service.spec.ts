@@ -1,0 +1,401 @@
+import { HttpService } from '@nestjs/axios'
+import { HttpException, HttpStatus } from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
+import { Test, TestingModule } from '@nestjs/testing'
+import { AuthManager } from '../../../authentication/auth.service.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { DB_TOKEN_PROVIDER } from '../../../infrastructure/database/constants.js'
+import { FilesLockManager } from '../../files/services/files-lock-manager.service.js'
+import { FilesManager } from '../../files/services/files-manager.service.js'
+import { FilesQueries } from '../../files/services/files-queries.service.js'
+import { NotificationsManager } from '../../notifications/services/notifications-manager.service.js'
+import { SharesManager } from '../../shares/services/shares-manager.service.js'
+import { SharesQueries } from '../../shares/services/shares-queries.service.js'
+import { SpacesManager } from '../../spaces/services/spaces-manager.service.js'
+import { SpacesQueries } from '../../spaces/services/spaces-queries.service.js'
+import { AdminUsersManager } from '../../users/services/admin-users-manager.service.js'
+import { AdminUsersQueries } from '../../users/services/admin-users-queries.service.js'
+import { UsersManager } from '../../users/services/users-manager.service.js'
+import { UsersQueries } from '../../users/services/users-queries.service.js'
+import { getAvatarBase64 } from '../../users/utils/avatar.js'
+import { LINK_ERROR } from '../constants/links.js'
+import { LinksManager } from './links-manager.service.js'
+import { LinksQueries } from './links-queries.service.js'
+import { Mocked } from 'vitest'
+
+vi.mock('../../users/utils/avatar.js', () => ({
+  getAvatarBase64: vi.fn()
+}))
+
+describe(LinksManager.name, () => {
+  let service: LinksManager
+  let linksQueriesMock: Mocked<LinksQueries>
+  let usersManagerMock: Mocked<UsersManager>
+  let filesManagerMock: Mocked<FilesManager>
+  let spacesManagerMock: Mocked<SpacesManager>
+  let authManagerMock: Mocked<AuthManager>
+
+  const identity: any = { id: 42, login: 'visitor' }
+  const baseLink: any = {
+    uuid: 'uuid-123',
+    user: { id: 7, login: 'john', isActive: true },
+    requireAuth: false,
+    limitAccess: 0,
+    nbAccess: 0,
+    expiresAt: null
+  }
+
+  beforeAll(async () => {
+    linksQueriesMock = {
+      linkFromUUID: vi.fn(),
+      spaceLink: vi.fn(),
+      consumeLinkAccess: vi.fn().mockResolvedValue(true)
+    } as any
+
+    usersManagerMock = {
+      validatePasswordAttempts: vi.fn(),
+      compareUserPassword: vi.fn(),
+      updateAccesses: vi.fn()
+    } as any
+
+    filesManagerMock = {
+      sendFileFromSpace: vi.fn()
+    } as any
+
+    spacesManagerMock = {
+      spaceEnv: vi.fn()
+    } as any
+
+    authManagerMock = {
+      setCookies: vi.fn()
+    } as any
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        {
+          provide: DB_TOKEN_PROVIDER,
+          useValue: {}
+        },
+        {
+          provide: Cache,
+          useValue: {}
+        },
+        {
+          provide: NotificationsManager,
+          useValue: {}
+        },
+        { provide: HttpService, useValue: {} },
+        { provide: FilesLockManager, useValue: {} },
+        { provide: JwtService, useValue: {} },
+        { provide: AuthManager, useValue: authManagerMock },
+        { provide: UsersManager, useValue: usersManagerMock },
+        { provide: UsersQueries, useValue: {} },
+        { provide: AdminUsersManager, useValue: {} },
+        { provide: AdminUsersQueries, useValue: {} },
+        { provide: FilesQueries, useValue: {} },
+        { provide: FilesManager, useValue: filesManagerMock },
+        { provide: SpacesQueries, useValue: {} },
+        { provide: SpacesManager, useValue: spacesManagerMock },
+        { provide: SharesQueries, useValue: {} },
+        { provide: SharesManager, useValue: {} },
+        { provide: LinksQueries, useValue: linksQueriesMock },
+        LinksManager
+      ]
+    }).compile()
+
+    module.useLogger(['fatal'])
+    service = module.get<LinksManager>(LinksManager)
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    linksQueriesMock.consumeLinkAccess.mockResolvedValue(true)
+  })
+
+  it('should be defined', () => {
+    expect(service).toBeDefined()
+  })
+
+  describe('linkValidation', () => {
+    it('returns ok with sanitized owner and avatar when link is valid', async () => {
+      const link = { ...baseLink }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      const spaceLink = {
+        owner: { login: 'jane' },
+        share: { isDir: true, alias: 's-alias', name: 'Docs' },
+        space: null
+      } as any
+      linksQueriesMock.spaceLink.mockResolvedValueOnce(spaceLink)
+      vi.mocked(getAvatarBase64).mockResolvedValueOnce('base64-xxx')
+
+      const res = await service.linkValidation(identity, link.uuid)
+
+      expect(res.ok).toBe(true)
+      expect(res.error).toBeNull()
+      expect(res.link).toBe(spaceLink)
+      expect((spaceLink.owner as any).login).toBeUndefined()
+      expect(linksQueriesMock.spaceLink).toHaveBeenCalledWith(link.uuid)
+      expect(getAvatarBase64).toHaveBeenCalledWith('jane')
+
+      // extra coverage: directly assert private checkLink with default ignoreAuth=false
+      const directCheck = (service as any).checkLink(identity, link)
+      expect(directCheck).toBe(true)
+    })
+
+    it('returns error and null link when uuid is not found', async () => {
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(undefined)
+
+      const res = await service.linkValidation(identity, 'missing-uuid')
+
+      expect(res.ok).toBe(false)
+      expect(res.error).toBeDefined()
+      expect(res.link).toBeNull()
+    })
+
+    it('returns unauthorized when auth is required and identity differs', async () => {
+      const link = { ...baseLink, requireAuth: true }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+
+      const res = await service.linkValidation(identity, link.uuid)
+
+      expect(res.ok).toBe(false)
+      expect(String(res.error).toLowerCase()).toContain('unauthorized')
+      expect(res.link).toBeNull()
+
+      // extra coverage: directly assert private checkLink with default ignoreAuth=false
+      const directCheck = (service as any).checkLink(identity, link)
+      expect(String(directCheck).toLowerCase()).toContain('unauthorized')
+    })
+
+    it('returns exceeded when nbAccess >= limitAccess', async () => {
+      const link = { ...baseLink, limitAccess: 5, nbAccess: 5 }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+
+      const res = await service.linkValidation(identity, link.uuid)
+
+      expect(res.ok).toBe(false)
+      expect(String(res.error).toLowerCase()).toContain('exceeded')
+    })
+  })
+
+  describe('linkAccess', () => {
+    const req: any = { ip: '127.0.0.1' }
+    const res: any = {}
+
+    it('streams a file when link targets a single file', async () => {
+      const link = { ...baseLink, limitAccess: 10 }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      const spaceLink = {
+        space: null,
+        share: { isDir: false, name: 'file.txt', alias: 'share-alias' }
+      } as any
+      linksQueriesMock.spaceLink.mockResolvedValueOnce(spaceLink)
+      spacesManagerMock.spaceEnv.mockResolvedValueOnce({} as any)
+      const streamable: any = { some: 'stream' }
+      filesManagerMock.sendFileFromSpace.mockReturnValueOnce({
+        checks: vi.fn().mockResolvedValueOnce(undefined),
+        stream: vi.fn().mockResolvedValueOnce(streamable)
+      } as any)
+
+      const result = await service.linkDownload(identity, link.uuid, req, res)
+
+      expect(result).toBe(streamable)
+      expect(filesManagerMock.sendFileFromSpace).toHaveBeenCalled()
+      expect(linksQueriesMock.consumeLinkAccess).toHaveBeenCalledWith(link.uuid)
+      // Assert repository selection for a share file (space falsy)
+      // should call spacesManager.spaceEnv with SHARES and share alias when link.space is falsy
+      expect(spacesManagerMock.spaceEnv).toHaveBeenCalledWith(expect.anything(), ['shares', 'share-alias'])
+    })
+
+    it('authenticates and returns cookies when link targets a directory and user is different', async () => {
+      const expiresAt = new Date(Date.now() + 3_600_000)
+      const link = { ...baseLink, requireAuth: false, expiresAt, user: { id: 7, login: 'john', isActive: true } }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+
+      const loginDto: any = { token: 'jwt' }
+      authManagerMock.setCookies.mockResolvedValueOnce(loginDto)
+
+      // cover: usersManager.updateAccesses.catch(...) should log an error when updateAccesses rejects
+      const logErrorSpy = vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined as any)
+      usersManagerMock.updateAccesses.mockRejectedValueOnce(new Error('updateAccesses boom'))
+
+      const result = await service.linkAccess(identity, link.uuid, req, res)
+
+      expect(result).toBe(loginDto)
+      expect(linksQueriesMock.consumeLinkAccess).toHaveBeenCalledWith(link.uuid)
+      expect(usersManagerMock.updateAccesses).toHaveBeenCalledWith(expect.anything(), req.ip, true)
+      expect(authManagerMock.setCookies).toHaveBeenCalledWith(expect.objectContaining({ id: link.user.id }), res, false, undefined, expiresAt)
+      // should log error when updateAccesses fails
+      expect(logErrorSpy).toHaveBeenCalled()
+    })
+
+    it('throws BAD_REQUEST when link is invalid', async () => {
+      const disabledLink = { ...baseLink, user: { id: 7, login: 'john', isActive: false } }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(disabledLink)
+
+      await expect(service.linkAccess(identity, disabledLink.uuid, req, res)).rejects.toMatchObject({
+        status: 400
+      })
+    })
+
+    it('keeps an authenticated directory session after the limit is reached without consuming another access', async () => {
+      const sameUserIdentity = { id: baseLink.user.id, login: 'john' }
+      const link = { ...baseLink, requireAuth: true, limitAccess: 1, nbAccess: 1 }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+
+      const result = await service.linkAccess(sameUserIdentity as any, link.uuid, req, res)
+
+      expect(result.user.id).toEqual(baseLink.user.id)
+      expect(authManagerMock.setCookies).not.toHaveBeenCalled()
+      expect(linksQueriesMock.consumeLinkAccess).not.toHaveBeenCalled()
+    })
+
+    it('downloads through an existing link session after the limit is reached without consuming another access', async () => {
+      const sameUserIdentity = { id: baseLink.user.id, login: 'john' }
+      const link = { ...baseLink, requireAuth: true, limitAccess: 1, nbAccess: 1 }
+      const spaceLink = {
+        space: null,
+        share: { isDir: false, name: 'file.txt', alias: 'share-alias' }
+      } as any
+      const streamable = { some: 'stream' } as any
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      linksQueriesMock.spaceLink.mockResolvedValueOnce(spaceLink)
+      spacesManagerMock.spaceEnv.mockResolvedValueOnce({} as any)
+      filesManagerMock.sendFileFromSpace.mockReturnValueOnce({
+        checks: vi.fn().mockResolvedValueOnce(undefined),
+        stream: vi.fn().mockResolvedValueOnce(streamable)
+      } as any)
+
+      const result = await service.linkDownload(sameUserIdentity as any, link.uuid, req, res)
+
+      expect(result).toBe(streamable)
+      expect(linksQueriesMock.consumeLinkAccess).not.toHaveBeenCalled()
+    })
+
+    it('throws INTERNAL_SERVER_ERROR when file checks fail during streaming', async () => {
+      const link = { ...baseLink, limitAccess: 10 }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      const spaceLink = {
+        space: null,
+        share: { isDir: false, name: 'bad.txt', alias: 'share' }
+      } as any
+      linksQueriesMock.spaceLink.mockReset()
+      linksQueriesMock.spaceLink.mockResolvedValueOnce(spaceLink)
+
+      spacesManagerMock.spaceEnv.mockResolvedValueOnce({} as any)
+      filesManagerMock.sendFileFromSpace.mockReturnValueOnce({
+        checks: vi.fn().mockRejectedValueOnce(new Error('disk error')),
+        stream: vi.fn()
+      } as any)
+
+      await expect(service.linkDownload(identity, link.uuid, req, res)).rejects.toMatchObject({
+        status: 500
+      })
+      expect(linksQueriesMock.consumeLinkAccess).toHaveBeenCalledWith(link.uuid)
+    })
+
+    it('does not issue a session when no access can be consumed', async () => {
+      const link = { ...baseLink, limitAccess: 1 }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      linksQueriesMock.consumeLinkAccess.mockResolvedValueOnce(false)
+
+      await expect(service.linkAccess(identity, link.uuid, req, res)).rejects.toMatchObject({
+        status: HttpStatus.BAD_REQUEST,
+        response: 'exceeded'
+      })
+      expect(authManagerMock.setCookies).not.toHaveBeenCalled()
+    })
+
+    it('reports expiration when the link expires during atomic access consumption', async () => {
+      const link = { ...baseLink, expiresAt: new Date(Date.now() + 60_000) }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      linksQueriesMock.consumeLinkAccess.mockImplementationOnce(async () => {
+        link.expiresAt = new Date(Date.now() - 1)
+        return false
+      })
+
+      await expect(service.linkAccess(identity, link.uuid, req, res)).rejects.toMatchObject({
+        status: HttpStatus.BAD_REQUEST,
+        response: LINK_ERROR.EXPIRED
+      })
+
+      expect(authManagerMock.setCookies).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('linkAuthentication', () => {
+    const req: any = { ip: '10.0.0.1' }
+    const res: any = {}
+
+    it('returns cookies when password is correct', async () => {
+      const expiresAt = new Date(Date.now() + 3_600_000)
+      const link = { ...baseLink, requireAuth: true, expiresAt }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      usersManagerMock.compareUserPassword.mockResolvedValueOnce(true)
+      // usersManagerMock.updateAccesses.mockResolvedValueOnce(undefined) // removed to ensure rejection is hit
+      const loginDto: any = { token: 'abc' }
+      authManagerMock.setCookies.mockResolvedValueOnce(loginDto)
+
+      // cover: usersManager.updateAccesses.catch(...) should log an error when updateAccesses rejects (success flow)
+      const logErrorSpy = vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined as any)
+      usersManagerMock.updateAccesses.mockRejectedValueOnce(new Error('updateAccesses auth success boom'))
+
+      const result = await service.linkAuthentication(identity, link.uuid, { password: 'secret' } as any, req, res)
+
+      expect(result).toBe(loginDto)
+      expect(usersManagerMock.validatePasswordAttempts).toHaveBeenCalledWith(expect.objectContaining({ id: link.user.id }))
+      expect(usersManagerMock.compareUserPassword).toHaveBeenCalledWith(link.user.id, 'secret')
+      expect(linksQueriesMock.consumeLinkAccess).toHaveBeenCalledWith(link.uuid)
+      expect(usersManagerMock.updateAccesses).toHaveBeenCalledWith(expect.anything(), req.ip, true)
+      expect(authManagerMock.setCookies).toHaveBeenCalledWith(expect.objectContaining({ id: link.user.id }), res, false, undefined, expiresAt)
+      // should log error when updateAccesses fails in successful authentication
+      expect(logErrorSpy).toHaveBeenCalled()
+    })
+
+    it('does not consume access or issue cookies when the link expires during password verification', async () => {
+      const link = { ...baseLink, requireAuth: true, expiresAt: new Date(Date.now() + 60_000) }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      usersManagerMock.compareUserPassword.mockImplementationOnce(async () => {
+        link.expiresAt = new Date(Date.now() - 1)
+        return true
+      })
+      usersManagerMock.updateAccesses.mockResolvedValueOnce(undefined)
+
+      await expect(service.linkAuthentication(identity, link.uuid, { password: 'secret' } as any, req, res)).rejects.toMatchObject({
+        status: HttpStatus.BAD_REQUEST,
+        response: LINK_ERROR.EXPIRED
+      })
+
+      expect(linksQueriesMock.consumeLinkAccess).not.toHaveBeenCalled()
+      expect(authManagerMock.setCookies).not.toHaveBeenCalled()
+    })
+
+    it('throws FORBIDDEN when password is incorrect', async () => {
+      const link = { ...baseLink, requireAuth: true }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      usersManagerMock.compareUserPassword.mockResolvedValueOnce(false)
+      usersManagerMock.updateAccesses.mockResolvedValueOnce(undefined)
+
+      await expect(service.linkAuthentication(identity, link.uuid, { password: 'bad' } as any, req, res)).rejects.toMatchObject({ status: 403 })
+    })
+
+    it('rejects a temporarily locked link before comparing its password', async () => {
+      const link = { ...baseLink, requireAuth: true }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(link)
+      usersManagerMock.validatePasswordAttempts.mockRejectedValueOnce(new HttpException('Account locked', HttpStatus.FORBIDDEN))
+
+      await expect(service.linkAuthentication(identity, link.uuid, { password: 'secret' } as any, req, res)).rejects.toMatchObject({ status: 403 })
+      expect(usersManagerMock.compareUserPassword).not.toHaveBeenCalled()
+      expect(usersManagerMock.updateAccesses).not.toHaveBeenCalled()
+    })
+
+    it('throws BAD_REQUEST when link is invalid (e.g., expired)', async () => {
+      const expired = { ...baseLink, expiresAt: new Date(Date.now() - 60_000) }
+      linksQueriesMock.linkFromUUID.mockResolvedValueOnce(expired)
+
+      await expect(service.linkAuthentication(identity, expired.uuid, { password: 'whatever' } as any, req, res)).rejects.toMatchObject({
+        status: 400
+      })
+    })
+  })
+})

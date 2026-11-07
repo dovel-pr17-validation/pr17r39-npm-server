@@ -1,0 +1,483 @@
+import { HttpService } from '@nestjs/axios'
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
+import { AxiosResponse, isAxiosError } from 'axios'
+import https from 'https'
+import crypto from 'node:crypto'
+import os from 'node:os'
+import path from 'node:path'
+import type { JwtIdentityPayload } from '../../../../authentication/interfaces/jwt-payload.interface.js'
+import { TOKEN_TYPE } from '../../../../authentication/interfaces/token.interface.js'
+import { toErrorMessage } from '../../../../common/errors.js'
+import { convertHumanTimeToSeconds } from '../../../../common/functions.js'
+import { encodeUrl } from '../../../../common/shared.js'
+import { configuration } from '../../../../configuration/config.environment.js'
+import { Cache } from '../../../../infrastructure/cache/cache.service.js'
+import { ContextManager } from '../../../../infrastructure/context/services/context-manager.service.js'
+import { HTTP_METHOD } from '../../../applications.constants.js'
+import { FastifySpaceRequest } from '../../../spaces/interfaces/space-request.interface.js'
+import type { SpaceEnv } from '../../../spaces/models/space-env.model.js'
+import { canModifySpaceEnv } from '../../../spaces/utils/permissions.js'
+import { USER_THEME } from '../../../users/constants/user-preferences.js'
+import type { UserTheme } from '../../../users/interfaces/user-preferences.interface.js'
+import type { UserModel } from '../../../users/models/user.model.js'
+import { getAvatarBase64 } from '../../../users/utils/avatar.js'
+import { DEPTH, LOCK_SCOPE } from '../../../webdav/constants/webdav.js'
+import { FILE_MODE } from '../../constants/operations.js'
+import type { FileDBProps } from '../../interfaces/file-db-props.interface.js'
+import { FileLockOptions } from '../../interfaces/file-lock.interface.js'
+import { FileLockProps } from '../../interfaces/file-props.interface.js'
+import { LockConflict } from '../../models/file-lock-error.js'
+import { FilesLockManager } from '../../services/files-lock-manager.service.js'
+import {
+  copyFileContent,
+  fileSize,
+  genEtag,
+  genUniqHashFromFileDBProps,
+  isPathExists,
+  isPathIsDir,
+  removeFiles,
+  writeUploadFromStream
+} from '../../utils/files.js'
+import {
+  EURO_OFFICE_APP_LOCK,
+  ONLY_OFFICE_APP_LOCK,
+  ONLY_OFFICE_CACHE_KEY,
+  ONLY_OFFICE_CONVERT_ERROR,
+  ONLY_OFFICE_CONVERT_EXTENSIONS,
+  ONLY_OFFICE_EXTENSIONS,
+  ONLY_OFFICE_INTERNAL_URI,
+  ONLY_OFFICE_TOKEN_QUERY_PARAM_NAME
+} from './only-office.constants.js'
+import { OnlyOfficeReqDto } from './only-office.dtos.js'
+import { OnlyOfficeCallBack, OnlyOfficeConfig, OnlyOfficeConvertForm } from './only-office.interface.js'
+import { API_ONLY_OFFICE_CALLBACK, API_ONLY_OFFICE_DOCUMENT } from './only-office.routes.js'
+import { FileEvent } from '../../events/file-events.js'
+import { ACTION } from '../../../../common/constants.js'
+import { createUploadStreamLimiter, parseContentLength } from '../../utils/upload-file.js'
+
+@Injectable()
+export class OnlyOfficeManager {
+  private logger = new Logger(OnlyOfficeManager.name)
+  private readonly maxUploadSize = configuration.applications.files.maxUploadSize
+  private readonly officeConfig = configuration.applications.files.editors.onlyoffice.enabled
+    ? configuration.applications.files.editors.onlyoffice
+    : configuration.applications.files.editors.eurooffice
+  private readonly officeAppLock = configuration.applications.files.editors.onlyoffice.enabled ? ONLY_OFFICE_APP_LOCK : EURO_OFFICE_APP_LOCK
+  private readonly externalOnlyOfficeServer = this.officeConfig.externalServer || null
+  private readonly rejectUnauthorized: boolean = this.officeConfig.verifySSL
+  private readonly convertUrl: string | null = this.externalOnlyOfficeServer
+    ? `${this.externalOnlyOfficeServer.replace(/\/+$/, '')}/ConvertService.ashx`
+    : null
+  private readonly expiration = convertHumanTimeToSeconds(configuration.auth.token.refresh.expiration)
+  private readonly mobileRegex: RegExp = /android|webos|iphone|ipad|ipod|blackberry|windows phone|opera mini|iemobile|mobile/i
+
+  constructor(
+    private readonly http: HttpService,
+    private readonly contextManager: ContextManager,
+    private readonly cache: Cache,
+    private readonly jwt: JwtService,
+    private readonly filesLockManager: FilesLockManager
+  ) {}
+
+  async getSettings(user: UserModel, space: SpaceEnv, req: FastifySpaceRequest, theme?: UserTheme): Promise<OnlyOfficeReqDto> {
+    if (!(await isPathExists(space.realPath))) {
+      throw new HttpException('Document not found', HttpStatus.BAD_REQUEST)
+    }
+    if (await isPathIsDir(space.realPath)) {
+      throw new HttpException('Document must be a file', HttpStatus.BAD_REQUEST)
+    }
+    const fileExtension = path.extname(space.realPath).slice(1)
+    if (!ONLY_OFFICE_EXTENSIONS.has(fileExtension)) {
+      throw new HttpException('Document not supported', HttpStatus.BAD_REQUEST)
+    }
+    let hasLock: false | FileLockProps = false
+    let mode: FILE_MODE = canModifySpaceEnv(space) ? FILE_MODE.EDIT : FILE_MODE.VIEW
+    if (mode === FILE_MODE.EDIT) {
+      // Check lock conflicts
+      try {
+        await this.filesLockManager.checkConflicts(space.dbFile, DEPTH.RESOURCE, {
+          userId: user.id,
+          app: this.officeAppLock,
+          lockScope: LOCK_SCOPE.SHARED
+        })
+      } catch (e) {
+        if (e instanceof LockConflict) {
+          hasLock = this.filesLockManager.convertLockToFileLockProps(e.lock)
+          mode = FILE_MODE.VIEW
+        } else {
+          this.logger.error({ tag: this.getSettings.name, msg: toErrorMessage(e) })
+          throw new HttpException('Unable to check file lock', HttpStatus.INTERNAL_SERVER_ERROR)
+        }
+      }
+    }
+    const userAgent = req.headers['user-agent']
+    const isMobile = this.mobileRegex.test(typeof userAgent === 'string' ? userAgent : '')
+    const authToken: string = await this.genAuthToken(user)
+    const fileUrl = this.buildUrl(API_ONLY_OFFICE_DOCUMENT, encodeUrl(space.url), authToken)
+    const callBackUrl = this.buildUrl(API_ONLY_OFFICE_CALLBACK, encodeUrl(space.url), authToken)
+    const config: OnlyOfficeReqDto = await this.genConfiguration(user, space, mode, fileUrl, fileExtension, callBackUrl, isMobile, hasLock)
+    config.config.editorConfig!.customization!.uiTheme = `theme-${theme ?? USER_THEME.LIGHT}`
+    config.config.token = await this.genPayloadToken(config.config)
+    return config
+  }
+
+  async callBack(user: UserModel, space: SpaceEnv, token: string) {
+    const callBackData: OnlyOfficeCallBack = await this.jwt.verifyAsync(token, { secret: this.officeConfig.secret })
+    try {
+      switch (callBackData.status) {
+        case 1:
+          // users connect / disconnect
+          await this.checkFileLock(user, space, callBackData)
+          this.logger.debug({ tag: this.callBack.name, msg: `document is being edited : ${space.url}` })
+          break
+        case 2:
+          // No active users on the document
+          await this.checkFileLock(user, space, callBackData)
+          if (callBackData.notmodified) {
+            this.logger.debug({ tag: this.callBack.name, msg: `document was edited but closed with no changes : ${space.url}` })
+          } else {
+            this.logger.debug({ tag: this.callBack.name, msg: `document was edited and closed but not saved (let's do it) : ${space.url}` })
+            await this.saveDocument(user, space, callBackData.url!)
+          }
+          await this.removeFileLock(user.id, space)
+          await this.removeDocumentKey(space)
+          break
+        case 3:
+          this.logger.error({ tag: this.callBack.name, msg: `document cannot be saved, an error has occurred (try to save it) : ${space.url}` })
+          await this.saveDocument(user, space, callBackData.url!)
+          break
+        case 4:
+          // No active users on the document
+          await this.removeFileLock(user.id, space)
+          await this.removeDocumentKey(space)
+          this.logger.debug({ tag: this.callBack.name, msg: `document was closed with no changes : ${space.url}` })
+          break
+        case 6:
+          this.logger.debug({ tag: this.callBack.name, msg: `document is edited but save was requested : ${space.url}` })
+          await this.saveDocument(user, space, callBackData.url!)
+          break
+        case 7:
+          this.logger.error({ tag: this.callBack.name, msg: `document cannot be force saved, an error has occurred (try to save it) : ${space.url}` })
+          await this.saveDocument(user, space, callBackData.url!)
+          break
+        default:
+          this.logger.error({ tag: this.callBack.name, msg: 'unhandled case' })
+      }
+    } catch (e) {
+      const errorMessage = toErrorMessage(e)
+      this.logger.error({ tag: this.callBack.name, msg: `${errorMessage} : ${space.url}` })
+      return { error: errorMessage }
+    }
+    return { error: 0 }
+  }
+
+  private async genConfiguration(
+    user: UserModel,
+    space: SpaceEnv,
+    mode: FILE_MODE,
+    fileUrl: string,
+    fileExtension: string,
+    callBackUrl: string,
+    isMobile: boolean,
+    hasLock: false | FileLockProps
+  ): Promise<OnlyOfficeReqDto> {
+    const canEdit = mode === FILE_MODE.EDIT
+    const documentType = ONLY_OFFICE_EXTENSIONS.get(fileExtension)
+    return {
+      hasLock: hasLock,
+      documentServerUrl: this.externalOnlyOfficeServer || `${this.contextManager.publicOriginUrl()}${ONLY_OFFICE_INTERNAL_URI}`,
+      config: {
+        type: isMobile ? 'mobile' : 'desktop',
+        height: '100%',
+        width: '100%',
+        documentType: documentType,
+        document: {
+          title: path.basename(space.relativeUrl),
+          fileType: fileExtension,
+          key: await this.getDocumentKey(space),
+          permissions: {
+            download: true,
+            edit: canEdit,
+            changeHistory: false,
+            comment: canEdit,
+            fillForms: canEdit,
+            print: true,
+            review: canEdit
+          },
+          url: fileUrl
+        },
+        editorConfig: {
+          mode: mode,
+          lang: 'en',
+          region: 'en',
+          callbackUrl: callBackUrl,
+          user: { id: user.id.toString(), name: `${user.fullName} (${user.email})`, image: await getAvatarBase64(user.login) },
+          coEditing: {
+            mode: 'fast',
+            change: true
+          },
+          embedded: {
+            embedUrl: fileUrl,
+            saveUrl: fileUrl,
+            shareUrl: fileUrl,
+            toolbarDocked: 'top'
+          },
+          customization: {
+            about: false,
+            autosave: false,
+            forcesave: true,
+            zoom: documentType === 'slide' ? 60 : 90,
+            help: false,
+            features: { featuresTips: false },
+            plugins: true
+          }
+        }
+      }
+    }
+  }
+
+  private buildUrl(basePath: string, spaceUrl: string, token: string): string {
+    const url = new URL(`${basePath}/${spaceUrl}`, this.contextManager.publicOriginUrl())
+    url.searchParams.set(ONLY_OFFICE_TOKEN_QUERY_PARAM_NAME, token)
+    return url.toString()
+  }
+
+  private genPayloadToken(payload: OnlyOfficeConfig | OnlyOfficeConvertForm): Promise<string> {
+    return this.jwt.signAsync(payload, { secret: this.officeConfig.secret, expiresIn: 60 })
+  }
+
+  private genAuthToken(user: UserModel): Promise<string> {
+    // use refresh expiration to allow long sessions
+    return this.jwt.signAsync(
+      {
+        tokenType: TOKEN_TYPE.ONLY_OFFICE,
+        identity: {
+          id: user.id,
+          login: user.login,
+          email: user.email,
+          fullName: user.fullName,
+          language: user.language,
+          role: user.role,
+          applications: user.applications
+        } satisfies JwtIdentityPayload
+      },
+      {
+        secret: configuration.auth.token.access.secret,
+        expiresIn: this.expiration
+      }
+    )
+  }
+
+  private async checkFileLock(user: UserModel, space: SpaceEnv, callBackData: OnlyOfficeCallBack) {
+    for (const action of callBackData.actions!) {
+      if (action.type === 0) {
+        // Disconnect
+        // Remove the lock if no other users are active on the document
+        if (!Array.isArray(callBackData.users)) {
+          await this.removeFileLock(parseInt(action.userid), space)
+        }
+      } else if (action.type === 1) {
+        // Connect
+        // Create the lock if it's the first user to open the document
+        if (Array.isArray(callBackData.users) && callBackData.users.length === 1) {
+          await this.createFileLock(user, space)
+        }
+      }
+    }
+  }
+
+  private async createFileLock(user: UserModel, space: SpaceEnv): Promise<void> {
+    const [ok, _fileLock] = await this.filesLockManager.create(
+      user,
+      space.dbFile,
+      this.officeAppLock,
+      DEPTH.RESOURCE,
+      {
+        lockRoot: null,
+        lockToken: null,
+        lockScope: LOCK_SCOPE.SHARED
+      } satisfies FileLockOptions,
+      this.expiration
+    )
+    if (!ok) {
+      throw new HttpException('The file is locked', HttpStatus.LOCKED)
+    }
+  }
+
+  private async removeFileLock(userId: number, space: SpaceEnv): Promise<void> {
+    for (const lock of await this.filesLockManager.getLocksByPath(space.dbFile)) {
+      if (lock.owner.id === userId) {
+        await this.filesLockManager.removeLock(lock.key)
+      }
+    }
+  }
+
+  private async removeDocumentKey(space: SpaceEnv): Promise<void> {
+    if (!(await this.filesLockManager.isPathLocked(space.dbFile))) {
+      const cacheKey = this.getCacheKey(space.dbFile)
+      const r = await this.cache.del(cacheKey)
+      this.logger.debug({ tag: this.removeDocumentKey.name, msg: `${cacheKey} ${r ? '' : 'not'} removed` })
+    }
+  }
+
+  private async getDocumentKey(space: SpaceEnv): Promise<string> {
+    // Uniq key to identify the document in OnlyOffice
+    const cacheKey = this.getCacheKey(space.dbFile)
+    const existingDocKey: string = await this.cache.get(cacheKey)
+    if (existingDocKey) {
+      return existingDocKey
+    }
+    const docKey = genEtag(null, space.realPath, false)
+    await this.cache.set(cacheKey, docKey, this.expiration)
+    this.logger.debug({ tag: this.getDocumentKey.name, msg: `${cacheKey} (${docKey}) created` })
+    return docKey
+  }
+
+  private async saveDocument(user: UserModel, space: SpaceEnv, url: string): Promise<void> {
+    /* url format:
+      https://onlyoffice-server.com/cache/files/data/-33120641_7158/output.pptx/output.pptx
+      ?md5=duFHKC-5d47s-RRcYn3hAw&expires=1739400549&shardkey=-33120641&filename=output.pptx
+    */
+    const callbackDownloadUrl = this.parseDocumentServerDownloadUrl(url)
+    const urlParams = callbackDownloadUrl.searchParams
+    const tmpFilePath = path.join(os.tmpdir(), `sync-in-onlyoffice-${crypto.randomUUID()}`)
+
+    try {
+      // convert the remote file to the local file with the current extension if these extensions aren't equal
+      const localExtension = path.extname(space.realPath).slice(1)
+      const remoteExtension = path.extname(urlParams.get('filename') ?? '').slice(1)
+
+      let finalDownloadUrl = url
+      let finalParsedDownloadUrl = callbackDownloadUrl
+      if (localExtension !== remoteExtension && !ONLY_OFFICE_CONVERT_EXTENSIONS.ALLOW_AUTO.has(localExtension)) {
+        if (ONLY_OFFICE_CONVERT_EXTENSIONS.FROM.has(remoteExtension) && ONLY_OFFICE_CONVERT_EXTENSIONS.TO.has(localExtension)) {
+          finalDownloadUrl = (await this.convertDocument(urlParams.get('shardkey')!, url, remoteExtension, localExtension, space.url))!
+          finalParsedDownloadUrl = this.parseDocumentServerDownloadUrl(finalDownloadUrl)
+        } else {
+          throw new Error(`document cannot be converted from ${remoteExtension} -> ${localExtension} : ${space.url}`)
+        }
+      }
+
+      // download file
+      let downloadStream: AxiosResponse['data'] | undefined
+      let contentLength: number | undefined
+      try {
+        const res: AxiosResponse = await this.http.axiosRef({
+          method: HTTP_METHOD.GET,
+          url: finalDownloadUrl,
+          responseType: 'stream',
+          maxRedirects: 0,
+          httpsAgent: new https.Agent({ rejectUnauthorized: this.rejectUnauthorized })
+        })
+        downloadStream = res.data
+        const fileLimiter = createUploadStreamLimiter(space, this.maxUploadSize).createFileLimiter()
+        contentLength = parseContentLength(res.headers['content-length'])
+        if (contentLength !== undefined) {
+          fileLimiter.assertKnownSize(contentLength)
+        }
+        await writeUploadFromStream(tmpFilePath, downloadStream, { limiter: fileLimiter })
+      } catch (e) {
+        downloadStream?.destroy?.()
+        this.logger.error({
+          tag: this.saveDocument.name,
+          msg: `failed to download document from ${finalParsedDownloadUrl.origin}${finalParsedDownloadUrl.pathname} : ${space.url} - ${toErrorMessage(e)}`
+        })
+        throw new Error(`unable to download document : ${toErrorMessage(e)}`, { cause: e })
+      }
+
+      // try to verify the downloaded size
+      if (contentLength !== undefined && contentLength !== 0) {
+        const tmpFileSize = await fileSize(tmpFilePath)
+        if (tmpFileSize !== contentLength) {
+          throw new Error(`document size differs (${tmpFileSize} != ${contentLength})`)
+        }
+      } else if (contentLength === 0) {
+        this.logger.warn({ tag: this.saveDocument.name, msg: `content length is 0 : ${space.url}` })
+      }
+      // copy contents to avoid inode changes (`file.id` in some cases)
+      try {
+        await copyFileContent(tmpFilePath, space.realPath)
+        // emit file event
+        FileEvent.emit('event', { user: user, space: space, action: ACTION.UPDATE, rPath: space.realPath, source: 'editor' })
+      } catch (e) {
+        throw new Error(`unable to save document : ${toErrorMessage(e)}`, { cause: e })
+      }
+    } finally {
+      try {
+        await removeFiles(tmpFilePath)
+      } catch (e) {
+        this.logger.error({ tag: this.saveDocument.name, msg: `failed to remove temporary document ${tmpFilePath} : ${toErrorMessage(e)}` })
+      }
+    }
+  }
+
+  private parseDocumentServerDownloadUrl(downloadUrl: string): URL {
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(downloadUrl)
+    } catch {
+      this.logger.warn({ tag: this.parseDocumentServerDownloadUrl.name, msg: 'document download url is invalid' })
+      throw new Error('document download url is invalid')
+    }
+
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      this.logger.warn({ tag: this.parseDocumentServerDownloadUrl.name, msg: `document download url protocol is not allowed: ${parsedUrl.protocol}` })
+      throw new Error('document download url protocol is not allowed')
+    }
+
+    // Host validation is only enforced when an explicit externalServer is configured.
+    // Without externalServer, local Docker/proxy deployments may legitimately return
+    // internal container URLs (for example http://onlyoffice/...), so host validation is skipped.
+    // With externalServer, we only compare origins to avoid breaking reverse proxies that rewrite paths.
+    if (!this.externalOnlyOfficeServer) {
+      return parsedUrl
+    }
+
+    const documentServerUrl = new URL(this.externalOnlyOfficeServer)
+    if (parsedUrl.origin !== documentServerUrl.origin) {
+      this.logger.warn({
+        tag: this.parseDocumentServerDownloadUrl.name,
+        msg: `document download origin is not allowed: ${parsedUrl.origin} (expected: ${documentServerUrl.origin})`
+      })
+      throw new Error('document download url is not allowed')
+    }
+    return parsedUrl
+  }
+
+  private async convertDocument(id: string, url: string, fileType: string, outputType: string, spaceUrl: string): Promise<string | undefined> {
+    const key: string = `${id}-${crypto.randomBytes(20).toString('hex')}`.slice(0, 20).replace('-', '_')
+    const payload: OnlyOfficeConvertForm = {
+      key: key,
+      url: url,
+      filetype: fileType,
+      outputtype: outputType,
+      async: false
+    }
+    payload.token = await this.genPayloadToken(payload)
+    let result: { fileUrl?: string; fileType?: string; endConvert?: boolean; error?: number }
+    try {
+      const res: AxiosResponse = await this.http.axiosRef({
+        method: HTTP_METHOD.POST,
+        url: this.convertUrl as string,
+        data: payload,
+        httpsAgent: new https.Agent({ rejectUnauthorized: this.rejectUnauthorized })
+      })
+      result = res.data
+    } catch (e) {
+      const reason = isAxiosError(e) && e.response ? `status : ${e.response.status}` : `reason : ${toErrorMessage(e)}`
+      throw new Error(`convert failed with ${reason}`, { cause: e })
+    }
+    if (result.error) {
+      throw new Error(`convert failed with reason : ${ONLY_OFFICE_CONVERT_ERROR.get(result.error)}`)
+    }
+    if (result.endConvert) {
+      this.logger.log({ tag: this.convertDocument.name, msg: `${fileType} -> ${outputType} : ${spaceUrl}` })
+      return result.fileUrl
+    }
+  }
+
+  private getCacheKey(dbFile: FileDBProps): string {
+    return `${ONLY_OFFICE_CACHE_KEY}|${genUniqHashFromFileDBProps(dbFile)}`
+  }
+}

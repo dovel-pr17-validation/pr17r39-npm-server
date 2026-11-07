@@ -1,0 +1,115 @@
+import { CanActivate, ExecutionContext, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
+import { toErrorMessage } from '../../../common/errors.js'
+import { HTTP_METHOD } from '../../applications.constants.js'
+import { FILE_ERROR } from '../../files/constants/errors.js'
+import { COLLABORA_CONTEXT } from '../../files/editors/collabora-online/collabora-online.constants.js'
+import { COLLABORA_ONLINE_TO_SPACE_SEGMENTS } from '../../files/editors/collabora-online/collabora-online.utils.js'
+import { isPathExists, isPathIsDir } from '../../files/utils/files.js'
+import { SYNC_CONTEXT } from '../../sync/decorators/sync-context.decorator.js'
+import { SYNC_PATH_TO_SPACE_SEGMENTS } from '../../sync/utils/routes.js'
+import { WEB_DAV_CONTEXT } from '../../webdav/decorators/webdav-context.decorator.js'
+import { WEBDAV_PATH_TO_SPACE_SEGMENTS } from '../../webdav/utils/routes.js'
+import { SPACE_HTTP_PERMISSION, SPACE_OPERATION } from '../constants/spaces.js'
+import { OverrideSpacePermission } from '../decorators/space-override-permission.decorator.js'
+import { SKIP_SPACE_GUARD } from '../decorators/space-skip-guard.decorator.js'
+import { SKIP_SPACE_PERMISSIONS_CHECK } from '../decorators/space-skip-permissions.decorator.js'
+import { FastifySpaceRequest } from '../interfaces/space-request.interface.js'
+import { SpaceEnv } from '../models/space-env.model.js'
+import { SpacesManager } from '../services/spaces-manager.service.js'
+import { canAccessToSpaceUrl, haveSpaceEnvPermissions } from '../utils/permissions.js'
+import { PATH_TO_SPACE_SEGMENTS } from '../utils/routes.js'
+
+@Injectable()
+export class SpaceGuard implements CanActivate {
+  private readonly logger = new Logger(SpaceGuard.name)
+
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly spacesManager: SpacesManager
+  ) {}
+
+  static async checkPermissions(req: FastifySpaceRequest, logger: Logger, overrideSpacePermission?: SPACE_OPERATION) {
+    let permission: SPACE_OPERATION | null
+    if (req.method === HTTP_METHOD.PUT && (await isPathExists(req.space.realPath)) && !(await isPathIsDir(req.space.realPath))) {
+      // PUT method may either create a new resource or replace an existing one.
+      // Therefore, we must check whether the target resource already exists to apply the appropriate permission rules.
+      permission = SPACE_OPERATION.MODIFY
+    } else {
+      // The override is applied for specific POST methods that update an existing file rather than creating it.
+      permission = overrideSpacePermission || SPACE_HTTP_PERMISSION[req.method]
+    }
+    if (!haveSpaceEnvPermissions(req.space, permission)) {
+      logger.warn(`is not allowed to ${req.method} on this space path : *${req.space.alias}* (${req.space.id}) : ${req.space.url}`)
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    if ([SPACE_OPERATION.ADD, SPACE_OPERATION.MODIFY].indexOf(permission as SPACE_OPERATION) > -1) {
+      if (req.space.inTrashRepository) {
+        throw new HttpException('The trash is read-only', HttpStatus.FORBIDDEN)
+      }
+      if (req.space.quotaIsExceeded) {
+        logger.warn(`Storage quota exceeded for *${req.space.alias}* (${req.space.id})`)
+        throw new HttpException(FILE_ERROR.STORAGE_QUOTA_EXCEEDED, HttpStatus.INSUFFICIENT_STORAGE)
+      }
+    }
+  }
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    if (this.reflector.getAllAndOverride(SKIP_SPACE_GUARD, [ctx.getHandler(), ctx.getClass()])) {
+      return true
+    }
+
+    const req: FastifySpaceRequest = ctx.switchToHttp().getRequest()
+    const webDAVContext = this.reflector.getAllAndOverride(WEB_DAV_CONTEXT, [ctx.getHandler(), ctx.getClass()])
+    const syncContext = this.reflector.getAllAndOverride(SYNC_CONTEXT, [ctx.getHandler(), ctx.getClass()])
+    const collaboraOnlineContext = this.reflector.getAllAndOverride(COLLABORA_CONTEXT, [ctx.getHandler(), ctx.getClass()])
+
+    const urlSegments = this.urlSegmentsFromContext(req, webDAVContext, syncContext, collaboraOnlineContext)
+    this.checkAccessToSpace(req, urlSegments)
+    let space: SpaceEnv | null
+    try {
+      space = await this.spacesManager.spaceEnv(req.user, urlSegments)
+    } catch (e) {
+      this.logger.warn({ tag: this.canActivate.name, msg: toErrorMessage(e) })
+      throw new HttpException('Space path is not valid', HttpStatus.BAD_REQUEST)
+    }
+    if (!space) {
+      this.logger.warn({ tag: this.canActivate.name, msg: `space not authorized or not found : ${req.params['*']}` })
+      throw new HttpException('Space not found', HttpStatus.NOT_FOUND)
+    }
+    if (!space.enabled) {
+      throw new HttpException('Space is disabled', HttpStatus.FORBIDDEN)
+    }
+    // assign space to request
+    req.space = space
+    const skipSpacePermissionsCheck = this.reflector.getAllAndOverride(SKIP_SPACE_PERMISSIONS_CHECK, [ctx.getHandler(), ctx.getClass()])
+    if (skipSpacePermissionsCheck === undefined) {
+      const overrideSpacePermission: SPACE_OPERATION = this.reflector.getAllAndOverride(OverrideSpacePermission, [ctx.getHandler(), ctx.getClass()])
+      await SpaceGuard.checkPermissions(req, this.logger, overrideSpacePermission)
+    }
+    return true
+  }
+
+  private urlSegmentsFromContext(req: FastifySpaceRequest, webDAVContext: boolean, syncContext: boolean, collaboraOnlineContext: boolean): string[] {
+    try {
+      if (webDAVContext) {
+        return WEBDAV_PATH_TO_SPACE_SEGMENTS(req.params['*'])
+      } else if (syncContext) {
+        return SYNC_PATH_TO_SPACE_SEGMENTS(req.params['*'])
+      } else if (collaboraOnlineContext) {
+        return COLLABORA_ONLINE_TO_SPACE_SEGMENTS(req)
+      }
+      return PATH_TO_SPACE_SEGMENTS(req.params['*'])
+    } catch (e) {
+      this.logger.warn({ tag: this.canActivate.name, msg: toErrorMessage(e) })
+      throw new HttpException(toErrorMessage(e), HttpStatus.NOT_FOUND)
+    }
+  }
+
+  private checkAccessToSpace(req: FastifySpaceRequest, urlSegments: string[]) {
+    if (!canAccessToSpaceUrl(req.user, urlSegments)) {
+      this.logger.warn({ tag: this.checkAccessToSpace.name, msg: `is not allowed to access to this space repository : ${req.params['*']}` })
+      throw new HttpException('You are not allowed to access to this repository', HttpStatus.FORBIDDEN)
+    }
+  }
+}

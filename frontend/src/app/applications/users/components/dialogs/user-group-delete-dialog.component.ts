@@ -1,0 +1,49 @@
+import { HttpErrorResponse } from '@angular/common/http'
+import { Component, EventEmitter, inject, Input, Output } from '@angular/core'
+import { LucideDynamicIcon, LucideTrash, LucideUserMinus } from '@lucide/angular'
+import { L10nTranslateDirective } from 'angular-l10n'
+import { CapitalizePipe } from '../../../../common/pipes/capitalize.pipe'
+import { LayoutService } from '../../../../layout/layout.service'
+import { GroupBrowseModel } from '../../models/group-browse.model'
+import { MemberModel } from '../../models/member.model'
+import { USER_ICON } from '../../user.constants'
+import { UserService } from '../../user.service'
+
+@Component({
+  selector: 'app-user-group-delete-dialog',
+  imports: [LucideDynamicIcon, L10nTranslateDirective, CapitalizePipe],
+  templateUrl: 'user-group-delete-dialog.component.html'
+})
+export class UserGroupDeleteDialogComponent {
+  @Input({ required: true }) parentGroup: GroupBrowseModel['parentGroup']
+  @Input({ required: true }) member: MemberModel
+  @Output() wasDeleted = new EventEmitter<boolean>()
+  protected submitted = false
+  protected readonly icons = { GROUPS: USER_ICON.GROUPS, LucideTrash, LucideUserMinus }
+  private readonly layout = inject(LayoutService)
+  private readonly userService = inject(UserService)
+
+  onSubmit() {
+    this.submitted = true
+    const notification = this.member.isUser ? 'Remove from group' : 'Delete group'
+    const action = this.member.isUser
+      ? this.userService.removeUserFromGroup(this.parentGroup.id, this.member.id)
+      : this.userService.deletePersonalGroup(this.member.id)
+    action.subscribe({
+      next: () => {
+        this.wasDeleted.emit(true)
+        this.layout.sendNotification('success', notification, this.member.name)
+        this.onClose()
+      },
+      error: (e: HttpErrorResponse) => {
+        this.submitted = false
+        this.layout.sendNotification('error', notification, this.member.name, e)
+      }
+    })
+  }
+
+  onClose() {
+    this.wasDeleted.emit(false)
+    this.layout.closeDialog()
+  }
+}

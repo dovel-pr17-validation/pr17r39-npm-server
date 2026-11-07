@@ -1,0 +1,970 @@
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import { eq, isNotNull } from 'drizzle-orm'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { ACTION } from '../../../common/constants.js'
+import { toErrorMessage } from '../../../common/errors.js'
+import { convertDiffUpdate, diffCollection, differencePermissions } from '../../../common/functions.js'
+import type { Entries } from '../../../common/interfaces.js'
+import { createSlug, InvalidSlugError, regExpLetterOrNumber, regExpNumberSuffix } from '../../../common/shared.js'
+import { DEFAULT_DIRECTORY_BUFFER_SIZE } from '../../files/constants/files.js'
+import { FileError } from '../../files/models/file-error.js'
+import { dirListFileNames, getProps, isInternalTemporaryEntry, isPathExists, moveFiles, removeFiles } from '../../files/utils/files.js'
+import { LINK_TYPE } from '../../links/constants/links.js'
+import { NOTIFICATION_APP, NOTIFICATION_APP_EVENT } from '../../notifications/constants/notifications.js'
+import { NotificationContent } from '../../notifications/interfaces/notification-properties.interface.js'
+import { NotificationsManager } from '../../notifications/services/notifications-manager.service.js'
+import type { ValidatedCreateOrUpdateShareDto } from '../../shares/dto/create-or-update-share.dto.js'
+import type { ShareLink } from '../../shares/interfaces/share-link.interface.js'
+import type { ShareProps } from '../../shares/interfaces/share-props.interface.js'
+import type { ShareChild } from '../../shares/models/share-child.model.js'
+import { SharesManager } from '../../shares/services/shares-manager.service.js'
+import { MEMBER_TYPE } from '../../users/constants/member.js'
+import { USER_PERMISSION, USER_ROLE } from '../../users/constants/user.js'
+import { UserModel } from '../../users/models/user.model.js'
+import { UsersQueries } from '../../users/services/users-queries.service.js'
+import {
+  SPACE_ALIAS,
+  SPACE_ALL_OPERATIONS,
+  SPACE_MAX_DISABLED_DAYS,
+  SPACE_OPERATION,
+  SPACE_PERSONAL,
+  SPACE_PERSONAL_TITLE,
+  SPACE_REPOSITORY,
+  SPACE_ROLE,
+  SPACE_SHARES
+} from '../constants/spaces.js'
+import { type SpaceMemberDto, spaceMemberSchema, type ValidatedCreateOrUpdateSpaceDto } from '../dto/create-or-update-space.dto.js'
+import type { DeleteSpaceDto } from '../dto/delete-space.dto.js'
+import type { ValidatedSearchSpaceDto } from '../dto/search-space.dto.js'
+import type { SpaceRootPermissionUpdate } from '../interfaces/space-diff.interface.js'
+import type { SpaceIdentity } from '../interfaces/space-identity.interface.js'
+import { SpaceTrash } from '../interfaces/space-trash.interface.js'
+import { SpaceEnv } from '../models/space-env.model.js'
+import { SpaceProps } from '../models/space-props.model.js'
+import type { SpaceRootProps } from '../models/space-root-props.model.js'
+import { SpaceModel } from '../models/space.model.js'
+import type { Space } from '../schemas/space.interface.js'
+import { spaces } from '../schemas/spaces.schema.js'
+import { createUniqueAlias } from '../utils/alias.js'
+import { haveSpacePermission } from '../utils/permissions.js'
+import { SpacesQueries } from './spaces-queries.service.js'
+import { FilesQuotaManager } from '../../files/services/files-quota-manager.service.js'
+import { genQuotaCacheKey } from '../../files/utils/quota.js'
+import { FILE_REPOSITORY } from '../../files/constants/operations.js'
+
+@Injectable()
+export class SpacesManager {
+  private readonly logger = new Logger(SpacesManager.name)
+
+  constructor(
+    private readonly spacesQueries: SpacesQueries,
+    private readonly usersQueries: UsersQueries,
+    private readonly sharesManager: SharesManager,
+    private readonly filesQuotaManager: FilesQuotaManager,
+    private readonly notificationsManager: NotificationsManager
+  ) {}
+
+  listSpaces(userId: number): Promise<SpaceProps[]> {
+    return this.spacesQueries.spaces(userId)
+  }
+
+  listSpacesAsAdmin(): Promise<SpaceProps[]> {
+    return this.spacesQueries.spacesAsAdmin()
+  }
+
+  spacesWithDetails(userId: number): Promise<SpaceProps[]> {
+    return this.spacesQueries.spacesWithDetails(userId)
+  }
+
+  uniqueRootName(name: string, names: string[]) {
+    if (names.find((fName: string) => name.toLowerCase() === fName.toLowerCase())) {
+      const nameExtension = path.extname(name)
+      const nameWithoutExtension = path.basename(name, nameExtension)
+      const originalName = nameWithoutExtension.replace(regExpNumberSuffix, '')
+      let count = 1
+      let newName = `${originalName}-${count}${nameExtension}`
+      while (names.find((fName: string) => newName.toLowerCase() === fName.toLowerCase())) {
+        count += 1
+        newName = `${originalName}-${count}${nameExtension}`
+      }
+      return newName
+    }
+    return null
+  }
+
+  async spaceEnv(user: UserModel, urlSegments: string[], skipEndpointProtection = false): Promise<SpaceEnv | null> {
+    /* SpaceEnv builder */
+    const [repository, spaceAlias, initialRootAlias, ...paths] = urlSegments
+    let rootAlias: string | null = initialRootAlias ?? null
+
+    if (
+      !repository ||
+      (!spaceAlias && repository !== SPACE_REPOSITORY.SHARES) ||
+      Object.values(SPACE_REPOSITORY).indexOf(repository as SPACE_REPOSITORY) === -1
+    ) {
+      throw new Error(`Space path is not valid : ${urlSegments}`)
+    }
+
+    let space: SpaceEnv | undefined
+    if (spaceAlias === SPACE_ALIAS.PERSONAL) {
+      /* Personal Space (static) */
+      if (rootAlias) {
+        // there is no root in a personal space
+        paths.unshift(rootAlias)
+        rootAlias = null
+      }
+      space = new SpaceEnv(SPACE_PERSONAL, rootAlias, false)
+    } else if (repository === SPACE_REPOSITORY.SHARES) {
+      if (spaceAlias) {
+        /* Share */
+        const spacePermissions = await this.sharesManager.permissions(user, spaceAlias)
+        if (spacePermissions) {
+          space = new SpaceEnv(spacePermissions, null, false)
+        }
+      } else {
+        /* Shares List (static) */
+        space = new SpaceEnv(SPACE_SHARES, null, false)
+      }
+    } else {
+      /* Space */
+      if (repository === SPACE_REPOSITORY.TRASH && rootAlias) {
+        // there is no root in a trash space
+        paths.unshift(rootAlias)
+        rootAlias = null
+      }
+      const spacePermissions = await this.spacesQueries.permissions(user.id, spaceAlias, rootAlias)
+      if (spacePermissions) {
+        space = new SpaceEnv(spacePermissions, rootAlias || '')
+      }
+    }
+    if (!space) return null
+    try {
+      space.setup(user, repository as SPACE_REPOSITORY, rootAlias, paths, urlSegments, skipEndpointProtection)
+      await this.filesQuotaManager.setQuotaExceeded(user, space)
+      return space
+    } catch (e) {
+      this.logger.warn({ tag: this.spaceEnv.name, msg: `*${space.alias}* : ${toErrorMessage(e)}` })
+      throw new HttpException(toErrorMessage(e), e instanceof FileError ? e.httpCode : HttpStatus.BAD_REQUEST)
+    }
+  }
+
+  async searchSpaces(userId: number, searchSpaceDto: ValidatedSearchSpaceDto): Promise<SpaceProps[]> {
+    const sps: SpaceProps[] = []
+    const limit = searchSpaceDto.limit ?? 6
+    for (const s of await this.spacesQueries.spaces(userId, true)) {
+      if (searchSpaceDto.shareInsidePermission && !haveSpacePermission(s, SPACE_OPERATION.SHARE_INSIDE)) {
+        continue
+      }
+      if (!searchSpaceDto.search || `${s.name} ${s.alias} ${s.description || ''}`.toLowerCase().indexOf(searchSpaceDto.search) > -1) {
+        sps.push(s)
+      }
+      if (sps.length >= limit) {
+        break
+      }
+    }
+    return sps
+  }
+
+  async listSpacesWithPermissions(user: UserModel): Promise<SpaceEnv[]> {
+    return Promise.all(
+      (await this.spacesQueries.spaces(user.id, true)).map(async (s) => {
+        const space = new SpaceEnv(s)
+        await this.filesQuotaManager.setQuotaExceeded(user, space)
+        return space
+      })
+    )
+  }
+
+  async listTrashes(user: UserModel): Promise<SpaceTrash[]> {
+    const trashes: SpaceTrash[] = []
+    const personalTrash: SpaceTrash = {
+      id: 0,
+      name: SPACE_PERSONAL_TITLE,
+      alias: SPACE_ALIAS.PERSONAL,
+      nb: 0,
+      mtime: 0,
+      ctime: 0,
+      enabled: true
+    }
+    const spaces: SpaceTrash[] = (await this.listSpaces(user.id)).map(({ id, name, alias, enabled }) => ({
+      id,
+      name,
+      alias,
+      enabled,
+      nb: 0,
+      mtime: 0,
+      ctime: 0
+    }))
+    if (user.havePermission(USER_PERMISSION.PERSONAL_SPACE)) spaces.push(personalTrash)
+    for (const space of spaces) {
+      const rPath = space.alias === SPACE_ALIAS.PERSONAL ? user.trashPath : SpaceModel.getTrashPath(space.alias)
+      try {
+        space.nb = 0
+        for await (const entry of await fs.opendir(rPath, { bufferSize: DEFAULT_DIRECTORY_BUFFER_SIZE })) {
+          if (
+            (entry.isDirectory() || entry.isFile()) &&
+            !isInternalTemporaryEntry(entry.name) &&
+            (user.preferences.showHiddenFiles || entry.name[0] !== '.')
+          ) {
+            space.nb++
+          }
+        }
+        if (space.nb) {
+          const stats = await fs.stat(rPath)
+          space.mtime = stats.mtime.getTime()
+          space.ctime = stats.birthtime.getTime()
+          trashes.push(space)
+        }
+      } catch (e) {
+        this.logger.error({ tag: this.listTrashes.name, msg: toErrorMessage(e) })
+      }
+    }
+    return trashes
+  }
+
+  async getSpace(user: UserModel, spaceId: number): Promise<SpaceProps> {
+    const space: SpaceProps = await this.userCanAccessSpace(user, spaceId, true)
+    if (space.roots?.length && !user.isAdmin) {
+      // remove external path if the current user is not an administrator
+      for (const root of space.roots) {
+        root.externalPath = null
+      }
+    }
+    return space
+  }
+
+  async createSpace(user: UserModel, createOrUpdateSpaceDto: ValidatedCreateOrUpdateSpaceDto): Promise<SpaceProps> {
+    /* only users with admin space role can create a space */
+    await this.validateManagers(createOrUpdateSpaceDto.managers)
+    // create space
+    const space: SpaceProps = new SpaceProps({
+      name: createOrUpdateSpaceDto.name,
+      alias: await this.uniqueSpaceAlias(createOrUpdateSpaceDto.name),
+      description: createOrUpdateSpaceDto.description,
+      enabled: createOrUpdateSpaceDto.enabled ?? undefined,
+      storageQuota: createOrUpdateSpaceDto.storageQuota,
+      storageIndexing: createOrUpdateSpaceDto.storageIndexing ?? undefined,
+      disabledAt: createOrUpdateSpaceDto.enabled ? null : new Date()
+    })
+    try {
+      space.id = await this.spacesQueries.createSpace(space)
+    } catch (e) {
+      this.logger.error({ tag: this.createSpace.name, msg: `unable to create space *${space.alias}* : ${toErrorMessage(e)}` })
+      throw new HttpException('Unable to create space', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    // create space paths
+    await SpaceModel.makePaths(space.alias)
+    // add roots
+    await this.updateRoots(user, space, space.roots, createOrUpdateSpaceDto.roots as SpaceRootProps[], [], [])
+    // add members
+    await this.updateMembers(user, space, createOrUpdateSpaceDto.members.concat(createOrUpdateSpaceDto.managers))
+    // create links after members, user must be a space manager to create links
+    await this.sharesManager.createOrUpdateLinksAsMembers(user, space, LINK_TYPE.SPACE, createOrUpdateSpaceDto.links)
+    const createdSpace = await this.spacesQueries.getSpaceAsAdminOrManager(user, space.id)
+    if (!createdSpace) {
+      throw new HttpException('Unable to retrieve the created space', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    return createdSpace
+  }
+
+  async updateSpace(user: UserModel, spaceId: number, createOrUpdateSpaceDto: ValidatedCreateOrUpdateSpaceDto): Promise<SpaceProps | null> {
+    /* only managers of the space can update it */
+    const space: SpaceProps = await this.userCanAccessSpace(user, spaceId, true)
+    await this.validateManagers(createOrUpdateSpaceDto.managers)
+    // check and update space info
+    let mustInvalidateCache = false
+    let renamedSpaceAlias: string | undefined
+    const spaceDiffProps: Partial<SpaceProps> = { modifiedAt: new Date() }
+    const props = ['name', 'description', 'enabled', 'storageQuota', 'storageIndexing'] as const
+    for (const prop of props) {
+      if (createOrUpdateSpaceDto[prop] !== space[prop]) {
+        ;(spaceDiffProps as Record<string, unknown>)[prop] = createOrUpdateSpaceDto[prop]
+        if (prop === 'name') {
+          renamedSpaceAlias = space.alias
+          spaceDiffProps.alias = await this.uniqueSpaceAlias(spaceDiffProps.name!, space.id)
+          if (space.alias !== spaceDiffProps.alias) {
+            // must move the space to match the new alias
+            const spaceLocationWasRenamed: boolean = await this.renameSpaceLocation(space.alias, spaceDiffProps.alias)
+            if (!spaceLocationWasRenamed) {
+              throw new HttpException('Unable to rename space', HttpStatus.INTERNAL_SERVER_ERROR)
+            }
+            space.alias = spaceDiffProps.alias
+          }
+        } else if (prop === 'enabled') {
+          spaceDiffProps.disabledAt = spaceDiffProps[prop] ? null : new Date()
+          mustInvalidateCache = true
+        }
+      }
+    }
+    // update in db
+    if (!(await this.spacesQueries.updateSpace(spaceId, spaceDiffProps))) {
+      throw new HttpException('Unable to update space', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+    if (renamedSpaceAlias) {
+      void this.spacesQueries.clearCachePermissions(renamedSpaceAlias)
+    }
+    // update quota in cache
+    if ('storageQuota' in spaceDiffProps) {
+      void this.filesQuotaManager.updateStorageQuota(spaceId, FILE_REPOSITORY.SPACE, spaceDiffProps.storageQuota as number | null)
+    }
+    // checks & updates members
+    const linkMembers: SpaceMemberDto[] = await this.sharesManager.createOrUpdateLinksAsMembers(
+      user,
+      space,
+      LINK_TYPE.SPACE,
+      createOrUpdateSpaceDto.links
+    )
+    const rootOwnerIds: number[] = (await this.updateMembers(user, space, [
+      ...createOrUpdateSpaceDto.members,
+      ...createOrUpdateSpaceDto.managers,
+      ...linkMembers
+    ]))!
+    if (rootOwnerIds.length) {
+      // removes the roots of removed members or those no longer having the `share inside` permission
+      createOrUpdateSpaceDto.roots = createOrUpdateSpaceDto.roots!.filter((r) => rootOwnerIds.indexOf(r.owner.id) === -1)
+    }
+    // checks & updates roots
+    const aliases: string[] = space.roots.map((r) => r.alias)
+    const names: string[] = [...(await dirListFileNames(SpaceModel.getFilesPath(space.alias))), ...space.roots.map((r) => r.name)]
+    await this.updateRoots(user, space, space.roots, createOrUpdateSpaceDto.roots as SpaceRootProps[], aliases, names)
+    if (mustInvalidateCache) {
+      void this.spacesQueries.clearCachePermissions(space.alias, undefined, [user.id])
+    }
+    if (rootOwnerIds.indexOf(user.id) > -1) {
+      // current manager was removed
+      return null
+    } else {
+      return this.spacesQueries.getSpaceAsAdminOrManager(user, spaceId)
+    }
+  }
+
+  async deleteSpace(user: UserModel, spaceId: number, deleteSpaceDto?: DeleteSpaceDto) {
+    /* only managers of the space can disable it */
+    const space: SpaceProps = await this.userCanAccessSpace(user, spaceId, true)
+    // only admin can delete the space data, managers can only disable the space for 30 days
+    const deleteNow: boolean = user.isAdmin && !!deleteSpaceDto?.deleteNow
+    try {
+      if (deleteNow) {
+        await this.sharesManager.deleteAllLinkMembers(spaceId, LINK_TYPE.SPACE)
+      }
+      await this.deleteOrDisableSpace(space, deleteNow)
+      this.logger.log({ tag: this.deleteSpace.name, msg: `*${space.alias}* (${space.id}) was ${deleteNow ? 'deleted' : 'disabled'}` })
+    } catch (e) {
+      this.logger.error({
+        tag: this.deleteSpace.name,
+        msg: `*${space.alias}* (${space.id}) was not ${deleteNow ? 'deleted' : 'disabled'} : ${toErrorMessage(e)}`
+      })
+      throw new HttpException('Unable to delete space', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async getUserRoots(user: UserModel, spaceId: number): Promise<SpaceRootProps[]> {
+    /* if user has no permissions on the space an empty array will be returned  */
+    return this.spacesQueries.getSpaceRoots(spaceId, user.id)
+  }
+
+  async updateUserRoots(user: UserModel, spaceId: number, userRoots: SpaceRootProps[], addOnly: boolean = false): Promise<SpaceRootProps[]> {
+    const space = await this.userCanAccessSpace(user, spaceId)
+    if (space.role !== SPACE_ROLE.IS_MANAGER && !haveSpacePermission(space, SPACE_OPERATION.SHARE_INSIDE)) {
+      this.logger.warn({ tag: this.updateUserRoots.name, msg: `is not allowed to share inside on this space : *${space.alias}* (${space.id})` })
+      throw new HttpException('You are not allowed to do this action', HttpStatus.FORBIDDEN)
+    }
+    // current states
+    const spaceRoots: SpaceRootProps[] = await this.spacesQueries.getSpaceRoots(spaceId)
+    const aliases = spaceRoots.map((r) => r.alias)
+    const names = [...(await dirListFileNames(SpaceModel.getFilesPath(space.alias))), ...spaceRoots.map((r) => r.name)]
+    // force owner.id on new user roots (owner is optional and required for the next steps)
+    userRoots.forEach((r: SpaceRootProps) => (r.owner = { id: user.id }))
+    if (addOnly) {
+      // short circuit the `updateRoots` function
+      // we need to provide all space roots to avoid collisions on aliases and names for new user roots
+      const toAdd: SpaceRootProps[] = await this.validateNewRoots(user, space, spaceRoots, userRoots, aliases, names)
+      const status: Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, SpaceRootProps[]> = await this.spacesQueries.updateSpaceRoots(
+        user.id,
+        space.id,
+        toAdd,
+        [],
+        []
+      )
+      ;(Object.entries(status) as [Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, SpaceRootProps[]][]).forEach(([action, roots]) =>
+        this.clearCachePermissionsAndOrNotify(space, action, user, null, roots).catch((e: Error) =>
+          this.logger.error({ tag: this.updateUserRoots.name, msg: toErrorMessage(e) })
+        )
+      )
+      return this.getUserRoots(user, spaceId)
+    } else {
+      const currentUserRoots: SpaceRootProps[] = spaceRoots.filter((r) => r.owner?.id === user.id)
+      await this.updateRoots(user, space, currentUserRoots, userRoots, aliases, names)
+      return this.spacesQueries.getSpaceRoots(spaceId, user.id)
+    }
+  }
+
+  async uniqueRootAlias(
+    spaceId: number,
+    alias: string,
+    aliasesAndNames: string[],
+    replaceCount = false,
+    excludedRootId?: number,
+    normalize = false
+  ): Promise<string | null> {
+    // Resolves a stored space-root alias without renaming filesystem entries.
+    // Some WebDAV clients display aliases instead of names, so aliases must also avoid visible file names.
+    //
+    // aliasesAndNames: aliases and visible file names to avoid; omit the current root's own alias/name when editing.
+    // replaceCount: strip the numeric suffix before trying the base alias, then -1, -2, etc.
+    // normalize: normalize on creation/explicit renaming; otherwise preserve available aliases when browsing.
+    const normalizedNames = new Set(aliasesAndNames.map((name) => name.toLowerCase().normalize('NFC')))
+    const aliasExists = async (candidate: string): Promise<boolean> =>
+      normalizedNames.has(candidate.toLowerCase().normalize('NFC')) ||
+      !!(await this.spacesQueries.spaceRootExistsForAlias(spaceId, candidate, excludedRootId))
+    // Browsing only resolves collisions; it must not normalize existing aliases.
+    if (!normalize && !(await aliasExists(alias))) {
+      return null
+    }
+
+    const aliasExtension = path.extname(alias)
+    let aliasWithoutExtension: string
+    let extension = aliasExtension
+    try {
+      aliasWithoutExtension = this.createAliasSlug(path.basename(alias, aliasExtension))
+      if (normalize && aliasExtension) {
+        extension = `.${this.createAliasSlug(aliasExtension.slice(1))}`
+      }
+    } catch (error) {
+      if (!normalize || !(error instanceof HttpException) || error.getStatus() !== HttpStatus.BAD_REQUEST) {
+        throw error
+      }
+      // A symbol-only component must not reject an otherwise valid alias.
+      aliasWithoutExtension = this.createAliasSlug(alias)
+      extension = ''
+    }
+    const normalizedAlias = `${aliasWithoutExtension}${extension}`
+    const uniqueAlias = await createUniqueAlias(
+      aliasWithoutExtension,
+      // Browsing must not reuse the normalized alias that already caused a collision.
+      async (candidate) => (!normalize && candidate === normalizedAlias) || aliasExists(candidate),
+      { extension, replaceCount }
+    )
+    return uniqueAlias === alias ? null : uniqueAlias
+  }
+
+  async deleteExpiredSpaces() {
+    /* Removes spaces that have been disabled for more than 30 days */
+    const props: (keyof Space)[] = ['id', 'name', 'alias', 'disabledAt']
+    for (const space of await this.spacesQueries.selectSpaces(props, [eq(spaces.enabled, false), isNotNull(spaces.disabledAt)])) {
+      const disabled = new Date(space.disabledAt!)
+      disabled.setDate(disabled.getDate() + SPACE_MAX_DISABLED_DAYS)
+      if (new Date() > disabled) {
+        try {
+          await this.sharesManager.deleteAllLinkMembers(space.id!, LINK_TYPE.SPACE)
+          await this.deleteOrDisableSpace(space as SpaceIdentity, true)
+          this.logger.log({ tag: this.deleteExpiredSpaces.name, msg: `space *${space.alias}* (${space.id}) was deleted` })
+        } catch (e) {
+          this.logger.error({
+            tag: this.deleteExpiredSpaces.name,
+            msg: `space *${space.alias}* (${space.id}) was not deleted : ${toErrorMessage(e)}`
+          })
+        }
+      }
+    }
+  }
+
+  async listSpaceShares(user: UserModel, spaceId: number): Promise<ShareChild[]> {
+    await this.userIsAdminOrSpaceManager(user, spaceId)
+    return this.sharesManager.listSpaceShares(spaceId)
+  }
+
+  async getSpaceShare(user: UserModel, spaceId: number, shareId: number): Promise<ShareProps> {
+    await this.userIsAdminOrSpaceManager(user, spaceId, shareId)
+    return this.sharesManager.getShareWithMembers(user, shareId, true)
+  }
+
+  async updateSpaceShare(
+    user: UserModel,
+    spaceId: number,
+    shareId: number,
+    createOrUpdateShareDto: ValidatedCreateOrUpdateShareDto
+  ): Promise<ShareProps> {
+    await this.userIsAdminOrSpaceManager(user, spaceId, shareId)
+    return this.sharesManager.updateShare(user, shareId, createOrUpdateShareDto, true)
+  }
+
+  async deleteSpaceShare(user: UserModel, spaceId: number, shareId: number): Promise<void> {
+    await this.userIsAdminOrSpaceManager(user, spaceId, shareId)
+    return this.sharesManager.deleteShare(user, shareId, true)
+  }
+
+  async getSpaceShareLink(user: UserModel, spaceId: number, shareId: number): Promise<ShareLink> {
+    await this.userIsAdminOrSpaceManager(user, spaceId, shareId)
+    return this.sharesManager.getShareLink(user, shareId, true)
+  }
+
+  private async updateMembers(user: UserModel, space: SpaceProps, currentMembers: SpaceMemberDto[]): Promise<number[] | undefined> {
+    if (space.members.length === 0 && currentMembers.length === 0) {
+      return
+    }
+    const previousMembers: SpaceMemberDto[] = spaceMemberSchema.array().parse(space.members)
+    // diff
+    const [add, update, remove] = diffCollection(previousMembers, currentMembers, ['permissions', 'spaceRole'], ['id', 'type'])
+
+    // check members whitelists
+    let toAdd: SpaceMemberDto[] = []
+    if (add.length) {
+      const [userIdsWhitelist, groupIdsWhitelist] = await Promise.all([
+        this.usersQueries.usersWhitelist(user.id),
+        this.usersQueries.groupsWhitelist(user.id)
+      ])
+      toAdd = add.filter((m) => {
+        if (
+          ((m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST) && !m.linkId && userIdsWhitelist.indexOf(m.id) === -1) ||
+          ((m.type === MEMBER_TYPE.GROUP || m.type === MEMBER_TYPE.PGROUP) && groupIdsWhitelist.indexOf(m.id) === -1)
+        ) {
+          this.logger.warn({
+            tag: this.updateMembers.name,
+            msg: `cannot add ${m.type} (${m.id}) to space *${space.alias}* (${space.id}) : not in the members whitelist`
+          })
+          return false
+        }
+        return true
+      })
+    }
+
+    // filter links
+    const toRemove: SpaceMemberDto[] = remove.filter((m) => !m.linkId)
+    // do remove links
+    this.sharesManager
+      .deleteLinkMembers(remove.filter((m) => !!m.linkId))
+      .catch((e: Error) => this.logger.error({ tag: this.updateMembers.name, msg: toErrorMessage(e) }))
+    // do update members
+    const status: Record<
+      Exclude<ACTION, ACTION.DELETE_PERMANENTLY>,
+      {
+        groupIds: number[]
+        userIds: number[]
+      }
+    > = await this.spacesQueries.updateMembers(space.id, toAdd, convertDiffUpdate(update), toRemove)
+
+    // lists deleted and updated members as potential share or space roots owners
+    const [rmShareOwners, upShareOwners, rmRootOwners]: [
+      SpaceMemberDto[],
+      {
+        object: SpaceMemberDto
+        rmPermissions: SPACE_OPERATION[]
+      }[],
+      number[]
+    ] = [[], [], []]
+
+    for (const [action, members] of Object.entries(status) as Entries<typeof status>) {
+      if (!members.userIds.length && !members.groupIds.length) continue
+      if (action === ACTION.DELETE) {
+        // stores the removed members who might own shares created from the current space
+        rmShareOwners.push(
+          ...toRemove.filter(
+            (m) =>
+              ((m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST) && members.userIds.indexOf(m.id) > -1) ||
+              ((m.type === MEMBER_TYPE.GROUP || m.type === MEMBER_TYPE.PGROUP) && members.groupIds.indexOf(m.id) > -1)
+          )
+        )
+        // stores ids of removed members that might have space roots
+        rmRootOwners.push(...members.userIds)
+      } else if (action === ACTION.UPDATE) {
+        // stores permissions updates and members who might own shares created from the current space
+        // ignore space managers (they have all permissions)
+        for (const m of update) {
+          if (
+            ((m.object.type === MEMBER_TYPE.USER || m.object.type === MEMBER_TYPE.GUEST) &&
+              m.object.spaceRole !== SPACE_ROLE.IS_MANAGER &&
+              members.userIds.indexOf(m.object.id) > -1) ||
+            ((m.object.type === MEMBER_TYPE.GROUP || m.object.type === MEMBER_TYPE.PGROUP) && members.groupIds.indexOf(m.object.id) > -1)
+          ) {
+            // special case, the manager was moved to members without permissions change
+            if (!m.permissions && m.spaceRole!.new === SPACE_ROLE.IS_MEMBER) {
+              m.permissions = { old: SPACE_ALL_OPERATIONS, new: m.object.permissions ?? '' }
+            }
+            // `share inside` permission is only used for spaces
+            const diffPermissions = differencePermissions(m.permissions!.old!, m.permissions!.new!).filter((p) => p !== SPACE_OPERATION.SHARE_INSIDE)
+            if (diffPermissions.length) {
+              upShareOwners.push({ object: m.object, rmPermissions: diffPermissions as SPACE_OPERATION[] })
+            }
+          }
+        }
+      }
+      // clear cache &|| notify
+      this.onSpaceActionForMembers(space, action, members, user).catch((e: Error) =>
+        this.logger.error({ tag: this.updateMembers.name, msg: toErrorMessage(e) })
+      )
+    }
+    // do updates
+    // remove or update potential shares
+    this.sharesManager
+      .updateSharesFromSpace(space.id, currentMembers, rmShareOwners, upShareOwners)
+      .catch((e: Error) => this.logger.error({ tag: this.updateMembers.name, msg: toErrorMessage(e) }))
+    // return potential root owner ids
+    return rmRootOwners
+  }
+
+  private async validateManagers(managers: SpaceMemberDto[]): Promise<void> {
+    const managersHaveUserRole = await this.usersQueries.usersHaveRole(
+      managers.map((manager) => manager.id),
+      USER_ROLE.USER
+    )
+    if (managers.some((manager) => manager.type !== MEMBER_TYPE.USER) || !managersHaveUserRole) {
+      throw new HttpException('Only users can be space managers', HttpStatus.BAD_REQUEST)
+    }
+  }
+
+  private async updateRoots(
+    user: UserModel,
+    space: SpaceIdentity,
+    curRoots: SpaceRootProps[],
+    newRoots: SpaceRootProps[],
+    aliases: string[],
+    names: string[]
+  ) {
+    // diff
+    const [add, toUpdate, toRemove] = diffCollection(curRoots, newRoots, ['name', 'alias', 'permissions'])
+
+    // update
+    for (const props of toUpdate) {
+      const root = props.object
+      if (props.alias) {
+        const aliasesAndNames = aliases.concat(names)
+        const currentName = props.name ? props.name.old : root.name
+        for (const currentValue of [props.alias.old, currentName]) {
+          const currentValueIndex = aliasesAndNames.findIndex((aliasOrName: string) => aliasOrName.toLowerCase() === currentValue.toLowerCase())
+          if (currentValueIndex > -1) {
+            aliasesAndNames.splice(currentValueIndex, 1)
+          }
+        }
+        props.alias.new = (await this.uniqueRootAlias(space.id, props.alias.new, aliasesAndNames, true, root.id, true)) || props.alias.new
+        // remove from space cache permissions
+        this.spacesQueries
+          .clearCachePermissions(space.alias, [props.alias.old, props.alias.new])
+          .catch((e: Error) => this.logger.error({ tag: this.updateRoots.name, msg: toErrorMessage(e) }))
+        // update aliases list for next roots
+        const currentAliasIndex = aliases.indexOf(props.alias.old)
+        if (currentAliasIndex > -1) {
+          aliases.splice(currentAliasIndex, 1, props.alias.new)
+        } else {
+          aliases.push(props.alias.new)
+        }
+      }
+      if (props.name) {
+        props.name.new = this.uniqueRootName(props.name.new, names) || props.name.new
+        // update names list for next roots
+        const currentNameIndex = names.lastIndexOf(props.name.old)
+        if (currentNameIndex > -1) {
+          names.splice(currentNameIndex, 1, props.name.new)
+        } else {
+          names.push(props.name.new)
+        }
+      }
+    }
+
+    // format actions
+    const toAdd = await this.validateNewRoots(user, space, curRoots, add, aliases, names)
+
+    // remove a root implies that all shares with a reference to root.id will be deleted in cascade
+    // however, it is "cleaner" to warn users about the deletion of these shares and to clear the permission caches before the cascade deletion
+    // it must be assumed that the deletion and modifications of space roots will be successful
+    const rmRoots = toRemove.map((r) => r.id)
+    const rmRootPermissions = toUpdate.reduce<SpaceRootPermissionUpdate[]>((acc, r) => {
+      if (r.permissions !== undefined) {
+        const diffPermissions = differencePermissions(r.permissions.old, r.permissions.new) as SPACE_OPERATION[]
+        if (diffPermissions.length) {
+          acc.push({ id: r.object.id, rmPermissions: diffPermissions })
+        }
+      }
+      return acc
+    }, [])
+    // do share updates
+    await this.sharesManager.updateSharesFromSpaceRoots(space.id, rmRoots, rmRootPermissions)
+
+    // do root updates
+    const status: Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, SpaceRootProps[]> = await this.spacesQueries.updateSpaceRoots(
+      user.id,
+      space.id,
+      toAdd,
+      convertDiffUpdate(toUpdate),
+      toRemove
+    )
+    ;(Object.entries(status) as [Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, SpaceRootProps[]][]).forEach(([action, roots]) =>
+      this.clearCachePermissionsAndOrNotify(space, action, user, null, roots).catch((e: Error) =>
+        this.logger.error({ tag: this.updateRoots.name, msg: toErrorMessage(e) })
+      )
+    )
+  }
+
+  private async validateNewRoots(
+    user: UserModel,
+    space: SpaceIdentity,
+    curRoots: SpaceRootProps[],
+    newRoots: SpaceRootProps[],
+    aliases: string[],
+    names: string[]
+  ): Promise<SpaceRootProps[]> {
+    const toAdd: SpaceRootProps[] = []
+    for (const r of newRoots) {
+      if (r.externalPath && !user.isAdmin) {
+        this.logger.warn({
+          tag: this.validateNewRoots.name,
+          msg: `ignore new root *${r.alias}* (${r.externalPath}) : adding an external path requires the admin role`
+        })
+        continue
+      }
+      const rPath = r.externalPath || path.join(user.filesPath, r.file.path)
+      if (!(await isPathExists(rPath))) {
+        this.logger.warn({ tag: this.validateNewRoots.name, msg: `ignore new root *${r.alias}* (${r.file.path}) : *${rPath}* does not exist` })
+        continue
+      }
+      // check if a parent exists for an externalPath or if the file (or parent) is already anchored
+      let rExists: SpaceRootProps | undefined
+      if (r.externalPath) {
+        const externalPath = r.externalPath
+        rExists = curRoots.find((cr) => cr.externalPath && externalPath.startsWith(cr.externalPath))
+      } else {
+        rExists = curRoots.find(
+          (cr) => cr.file?.id === r.file.id || (cr.owner?.id === r.owner.id && cr.file?.path && r.file.path.startsWith(cr.file.path))
+        )
+      }
+      if (rExists) {
+        this.logger.warn({
+          tag: this.validateNewRoots.name,
+          msg: `ignore new root *${r.alias}* (${r.externalPath || r.file.path}) (${r.file?.id}) : parent or file already exists in roots`
+        })
+        continue
+      }
+      // keep the file id (maybe already in db)
+      if (!r.externalPath) {
+        r.file = { ...(await getProps(rPath, r.file.path)), id: r.file.id }
+      }
+      r.alias = (await this.uniqueRootAlias(space.id, r.alias, aliases.concat(names), true, undefined, true)) || r.alias
+      // update aliases list for next roots
+      aliases.push(r.alias)
+      r.name = this.uniqueRootName(r.name, names) || r.name
+      // update names list for next roots
+      names.push(r.name)
+      // reset id
+      r.id = 0
+      toAdd.push(r)
+    }
+    return toAdd
+  }
+
+  private async deleteOrDisableSpace(space: SpaceIdentity, deleteNow: boolean = false) {
+    if (deleteNow) {
+      // clear cache &|| notify
+      const memberIds: { groupIds: number[]; userIds: number[] } = await this.spacesQueries.getSpaceMemberIds(space.id)
+      this.onSpaceActionForMembers(space, ACTION.DELETE_PERMANENTLY, memberIds).catch((e: Error) =>
+        this.logger.error({ tag: this.deleteOrDisableSpace.name, msg: toErrorMessage(e) })
+      )
+      // remove all shares related to the space
+      await this.sharesManager.removeSharesFromSpace(space.id)
+    }
+    await this.spacesQueries.deleteSpace(space.id, deleteNow)
+    if (deleteNow) {
+      this.spacesQueries.cache
+        .del(genQuotaCacheKey(space.id, FILE_REPOSITORY.SPACE))
+        .catch((e: Error) => this.logger.error({ tag: this.deleteOrDisableSpace.name, msg: toErrorMessage(e) }))
+      await this.deleteSpaceLocation(space.alias)
+    }
+  }
+
+  private async deleteSpaceLocation(spaceAlias: string) {
+    const spaceLocation = SpaceModel.getHomePath(spaceAlias)
+    if (await isPathExists(spaceLocation)) {
+      await removeFiles(spaceLocation)
+      this.logger.warn({ tag: this.deleteSpaceLocation.name, msg: `space *${spaceAlias}* location was deleted` })
+    } else {
+      this.logger.warn({ tag: this.deleteSpaceLocation.name, msg: `space *${spaceAlias}* location does not exist : ${spaceLocation}` })
+    }
+  }
+
+  private async renameSpaceLocation(oldSpaceAlias: string, newSpaceAlias: string): Promise<boolean> {
+    const currentSpaceLocation: string = SpaceModel.getHomePath(oldSpaceAlias)
+    if (await isPathExists(currentSpaceLocation)) {
+      const newSpaceLocation: string = SpaceModel.getHomePath(newSpaceAlias)
+      if (await isPathExists(newSpaceLocation)) {
+        this.logger.warn({ tag: this.renameSpaceLocation.name, msg: `*${newSpaceAlias}* home path already exists : ${newSpaceLocation}` })
+        return false
+      } else {
+        try {
+          await moveFiles(currentSpaceLocation, newSpaceLocation)
+          return true
+        } catch (e) {
+          // try to restore
+          await moveFiles(newSpaceLocation, currentSpaceLocation, true)
+          this.logger.error({
+            tag: this.renameSpaceLocation.name,
+            msg: `unable to rename space location from *${currentSpaceLocation}* to *${newSpaceLocation}* : ${toErrorMessage(e)}`
+          })
+          return false
+        }
+      }
+    } else {
+      this.logger.warn({ tag: this.renameSpaceLocation.name, msg: `*${oldSpaceAlias}* space location does not exist : ${currentSpaceLocation}` })
+      return false
+    }
+  }
+
+  private async uniqueSpaceAlias(name: string, excludedSpaceId?: number): Promise<string> {
+    const base = this.createAliasSlug(name).replace(regExpNumberSuffix, '')
+    const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(base)
+    for (let count = 0; ; count += 1) {
+      const suffix = count ? `-${count}` : ''
+      let bytes = Buffer.byteLength(suffix, 'utf8')
+      let prefix = ''
+      // Space aliases are directory names: reserve the suffix within a 255-byte UTF-8 component.
+      for (const { segment } of graphemes) {
+        const segmentBytes = Buffer.byteLength(segment, 'utf8')
+        if (bytes + segmentBytes > 255) break
+        prefix += segment
+        bytes += segmentBytes
+      }
+      // Truncation can leave no letters or numbers; keep a usable base in that case.
+      prefix = prefix.replace(/-+$/g, '')
+      const alias = `${regExpLetterOrNumber.test(prefix) ? prefix : 'space'}${suffix}`
+      if (alias !== SPACE_ALIAS.PERSONAL && !(await this.spacesQueries.spaceExistsForAlias(alias, excludedSpaceId))) return alias
+    }
+  }
+
+  private createAliasSlug(name: string): string {
+    try {
+      return createSlug(name)
+    } catch (e) {
+      if (e instanceof InvalidSlugError) {
+        throw new HttpException(e.message, HttpStatus.BAD_REQUEST)
+      }
+      throw e
+    }
+  }
+
+  private async userCanAccessSpace(user: UserModel, spaceId: number, asManager: true): Promise<SpaceProps>
+  private async userCanAccessSpace(user: UserModel, spaceId: number, asManager?: false): Promise<SpaceIdentity>
+  private async userCanAccessSpace(user: UserModel, spaceId: number, asManager: boolean = false): Promise<SpaceIdentity> {
+    if (asManager) {
+      // Get all space details if user is a manager
+      const space = await this.spacesQueries.getSpaceAsAdminOrManager(user, spaceId)
+      if (!space) {
+        this.logger.warn({ tag: this.userCanAccessSpace.name, msg: `space (${spaceId}) not found or not authorized for user (${user.id})` })
+        throw new HttpException('Unauthorized', HttpStatus.FORBIDDEN)
+      }
+      return space
+    } else {
+      const [space]: SpaceProps[] = await this.spacesQueries.spaces(user.id, true, spaceId)
+      if (!space) {
+        this.logger.warn({ tag: this.userCanAccessSpace.name, msg: `space (${spaceId}) not found or not authorized for user (${user.id})` })
+        throw new HttpException('Space not found', HttpStatus.NOT_FOUND)
+      }
+      return space
+    }
+  }
+
+  private async userIsAdminOrSpaceManager(user: UserModel, spaceId: number, shareId?: number): Promise<void> {
+    if (!(await this.spacesQueries.userIsAdminOrSpaceManager(user, spaceId, shareId))) {
+      this.logger.warn({ tag: this.userIsAdminOrSpaceManager.name, msg: `space (${spaceId}) not found or not authorized for user (${user.id})` })
+      throw new HttpException('Unauthorized', HttpStatus.FORBIDDEN)
+    }
+  }
+
+  private async onSpaceActionForMembers(
+    space: SpaceIdentity,
+    action: ACTION,
+    members: {
+      groupIds: number[]
+      userIds: number[]
+    },
+    user?: UserModel
+  ) {
+    this.clearCachePermissionsAndOrNotify(
+      space,
+      action,
+      user,
+      Array.from(new Set([...(await this.usersQueries.allUserIdsFromGroupsAndSubGroups(members.groupIds)), ...members.userIds]))
+    ).catch((e: Error) => this.logger.error({ tag: this.onSpaceActionForMembers.name, msg: toErrorMessage(e) }))
+  }
+
+  private async clearCachePermissionsAndOrNotify(
+    space: SpaceIdentity,
+    action: ACTION,
+    user?: UserModel,
+    memberIds?: number[] | null,
+    roots?: SpaceRootProps[]
+  ): Promise<void> {
+    if (memberIds?.length) {
+      // clear permissions for space members
+      if (action === ACTION.DELETE_PERMANENTLY) {
+        this.logger.verbose({ tag: this.clearCachePermissionsAndOrNotify.name, msg: `space:${space.alias} ${action}` })
+        this.spacesQueries
+          .clearCachePermissions(space.alias)
+          .catch((e: Error) => this.logger.error({ tag: this.clearCachePermissionsAndOrNotify.name, msg: toErrorMessage(e) }))
+      } else {
+        // update space members cache
+        this.logger.verbose({
+          tag: this.clearCachePermissionsAndOrNotify.name,
+          msg: `space:${space.alias} ${action} members:${JSON.stringify(memberIds)}`
+        })
+        this.spacesQueries
+          .clearCachePermissions(space.alias, undefined, memberIds)
+          .catch((e: Error) => this.logger.error({ tag: this.clearCachePermissionsAndOrNotify.name, msg: toErrorMessage(e) }))
+      }
+      // notify
+      const notificationMemberIds = memberIds.filter((uid) => uid !== user?.id)
+      if (action !== ACTION.UPDATE && notificationMemberIds.length) {
+        // notify the members who have joined or left the space
+        const notification: NotificationContent = {
+          app: NOTIFICATION_APP.SPACES,
+          event: NOTIFICATION_APP_EVENT.SPACES[action],
+          element: space.name,
+          url: ''
+        }
+        this.notificationsManager
+          .create(notificationMemberIds, notification, {
+            action: action
+          })
+          .catch((e: Error) => this.logger.error({ tag: this.clearCachePermissionsAndOrNotify.name, msg: toErrorMessage(e) }))
+      }
+    } else if (roots?.length) {
+      // clear permissions for space roots
+      const rootAliases: string[] = roots.map((r) => r.alias)
+      this.logger.verbose({
+        tag: this.clearCachePermissionsAndOrNotify.name,
+        msg: `space:${space.alias} ${action} roots:${JSON.stringify(rootAliases)}`
+      })
+      if (action !== ACTION.ADD) {
+        this.spacesQueries
+          .clearCachePermissions(space.alias, rootAliases)
+          .catch((e: Error) => this.logger.error({ tag: this.clearCachePermissionsAndOrNotify.name, msg: toErrorMessage(e) }))
+      }
+      // notify
+      if (action !== ACTION.UPDATE) {
+        if (action !== ACTION.ADD && action !== ACTION.DELETE) {
+          return
+        }
+        // notify the space members that a new root was anchored / unanchored
+        const spaceMembers = await this.spacesQueries.getSpaceMemberIds(space.id)
+        const spaceUserIds = Array.from(
+          new Set([...(await this.usersQueries.allUserIdsFromGroupsAndSubGroups(spaceMembers.groupIds)), ...spaceMembers.userIds])
+        ).filter((uid) => uid !== user?.id)
+        if (!spaceUserIds.length) {
+          return
+        }
+        for (const r of roots) {
+          const notification: NotificationContent = {
+            app: NOTIFICATION_APP.SPACE_ROOTS,
+            event: NOTIFICATION_APP_EVENT.SPACE_ROOTS[action],
+            element: r.name,
+            url: `${SPACE_REPOSITORY.FILES}/${space.name}`
+          }
+          this.notificationsManager
+            .create(spaceUserIds, notification, {
+              author: user!,
+              action: action
+            })
+            .catch((e: Error) => this.logger.error({ tag: this.clearCachePermissionsAndOrNotify.name, msg: toErrorMessage(e) }))
+        }
+      }
+    }
+  }
+}

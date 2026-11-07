@@ -1,0 +1,54 @@
+name: 🐞 Bug Report
+description: Report a bug in Sync-in
+labels: ['bug', 'triage']
+
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      placeholder: What’s broken?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - "Docker Compose"
+        - "NPM"
+    validations:
+      required: true
+
+  - type: textarea
+    id: system
+    attributes:
+      label: System information
+      description: Sync-in version / OS / VM Hypervisor / Filesystem / Browser.
+      placeholder: |
+        Sync-in version:
+        VM Hypervisor:
+        OS:
+        Filesystem:
+        Browser:
+    validations:
+      required: true
+
+  - type: dropdown
+    id: demo
+    attributes:
+      label: Reproducible on demo?
+      description: https://sync-in.com/docs/demo
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (server or browser)
+      description: Paste relevant logs if available
+      render: shell

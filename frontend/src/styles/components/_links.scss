@@ -1,0 +1,135 @@
+.link-page {
+  background: $application_background;
+  text-align: center;
+  padding: 0;
+  border: none;
+  min-height: 100vh;
+  width: 100%;
+
+  .header {
+    background: #fff;
+    padding: 10px 0;
+    -webkit-box-shadow: 0 4px 0 rgba(0, 0, 0, 0.1);
+    box-shadow: 0 4px 0 rgba(0, 0, 0, 0.1);
+    transition: background-color .2s ease;
+
+    .sync-in-logo {
+      height: 40px;
+    }
+
+    .public-link-theme-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: .375rem .5rem;
+      border: 0;
+      background: transparent;
+      color: #000;
+      font-size: $font-size-xl;
+
+      &:hover {
+        opacity: .7;
+      }
+
+      &:focus-visible {
+        border-radius: $border-radius-base;
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+    }
+  }
+
+  .link-error-icon {
+    font-size: 5rem;
+  }
+
+  .resource {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: .3rem;
+
+    &:hover {
+      span {
+        @extend .text-gray;
+      }
+    }
+
+    img {
+      height: 80px;
+    }
+
+    .mime {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: rgba(255, 255, 255, 0.2);
+      padding: .3rem;
+      border-radius: 1rem;
+      margin: .8rem;
+
+      .circle-primary-icon {
+        width: 80px;
+        height: 80px;
+        font-size: 2.5rem;
+      }
+    }
+  }
+
+  .btn-group-action {
+    margin-bottom: 0.3rem;
+    margin-top: 0.6rem;
+
+    button {
+      min-height: 40px;
+
+      .lucide {
+        font-size: $font-size-3xl;
+      }
+    }
+  }
+
+  .mime-text {
+    @include no-select-pointer-utility;
+    color: #fff;
+    font-size: $font-size-2xl;
+    font-weight: 600;
+    text-shadow: 0 4px 0 rgba(0, 0, 0, 0.1);
+    line-height: normal;
+  }
+
+  .link-text {
+    @include no-select-utility;
+    color: #fff;
+    color: rgba(0, 0, 0, 0.8);
+    font-weight: 600;
+    padding: 0 20px;
+
+    .owner-text {
+      font-size: $font-size-xl;
+    }
+
+    .hr {
+      background: #fff;
+      background: rgba(0, 0, 0, 0.2);
+      display: inline-block;
+      height: 5px;
+      margin: 15px 0 5px 0;
+      width: 40px;
+    }
+
+    .info {
+      display: inline-block;
+      font-size: $font-size-xl;
+      font-weight: 400;
+    }
+  }
+}
+
+body.theme-dark .link-page .header {
+  background: $navy;
+
+  .public-link-theme-toggle {
+    color: #fff;
+  }
+}

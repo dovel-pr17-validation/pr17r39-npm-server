@@ -1,0 +1,91 @@
+import { HttpErrorResponse } from '@angular/common/http'
+import { Component, HostListener, inject, Input, OnInit } from '@angular/core'
+import { LucideDynamicIcon, LucideLock, LucideLockOpen } from '@lucide/angular'
+import { L10N_LOCALE, L10nLocale, L10nTranslateDirective } from 'angular-l10n'
+import { firstValueFrom } from 'rxjs'
+import { LayoutService } from '../../../../layout/layout.service'
+import { StoreService } from '../../../../store/store.service'
+import { SpacesBrowserService } from '../../../spaces/services/spaces-browser.service'
+import { userAvatarUrl } from '../../../users/user.functions'
+import { FileModel } from '../../models/file.model'
+import { FilesService } from '../../services/files.service'
+import { FileLockFormatPipe } from '../utils/file-lock.utils'
+
+@Component({
+  selector: 'app-files-lock-dialog',
+  imports: [LucideDynamicIcon, L10nTranslateDirective, FileLockFormatPipe],
+  templateUrl: 'files-lock-dialog.component.html'
+})
+export class FilesLockDialogComponent implements OnInit {
+  @Input({ required: true }) file: FileModel
+  protected readonly locale = inject<L10nLocale>(L10N_LOCALE)
+  protected layout = inject(LayoutService)
+  protected readonly icons = { LucideLock, LucideLockOpen }
+  protected submitted = false
+  protected readonly store = inject(StoreService)
+  protected readonly userLogin = this.store.user.getValue().login
+  protected isFileOwner = false
+  protected isLockOwner = false
+  protected hasExclusiveLock = true
+  protected userAvatarUrl: string
+  private readonly spacesBrowserService = inject(SpacesBrowserService)
+  private readonly filesService = inject<FilesService>(FilesService)
+
+  ngOnInit() {
+    this.hasExclusiveLock = this.file.lock.isExclusive
+    this.isFileOwner = this.spacesBrowserService.inPersonalSpace || this.file.root?.owner?.login === this.userLogin
+    this.isLockOwner = this.file.lock.owner.login === this.userLogin
+    this.userAvatarUrl = userAvatarUrl(this.file.lock.owner.login)
+  }
+
+  protected get canUnlock(): boolean {
+    return this.isLockOwner || this.isFileOwner
+  }
+
+  protected get canRequestUnlock(): boolean {
+    return this.hasExclusiveLock && !this.isLockOwner
+  }
+
+  protected get hasAction(): boolean {
+    return this.canUnlock || this.canRequestUnlock
+  }
+
+  @HostListener('document:keyup.enter')
+  async onEnter() {
+    if (this.canUnlock) {
+      await this.onUnlock()
+    } else if (this.canRequestUnlock) {
+      this.onSendUnLockRequest()
+    } else {
+      this.layout.closeDialog()
+    }
+  }
+
+  @HostListener('document:keyup.escape')
+  onEsc() {
+    this.layout.closeDialog()
+  }
+
+  async onUnlock() {
+    try {
+      this.submitted = true
+      await firstValueFrom(this.filesService.unlock(this.file, this.isFileOwner))
+      this.file.removeLock()
+      this.layout.closeDialog()
+    } catch (e: any) {
+      this.submitted = false
+      this.layout.sendNotification('warning', this.file.name, e.error.message)
+    }
+  }
+
+  onSendUnLockRequest() {
+    this.submitted = true
+    this.filesService.unlockRequest(this.file).subscribe({
+      next: () => this.layout.closeDialog(),
+      error: (e: HttpErrorResponse) => {
+        this.submitted = false
+        this.layout.sendNotification('warning', this.file.name, e.error.message)
+      }
+    })
+  }
+}

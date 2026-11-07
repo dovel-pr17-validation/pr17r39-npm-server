@@ -1,0 +1,1207 @@
+import { KeyValuePipe, NgTemplateOutlet } from '@angular/common'
+import { HttpErrorResponse } from '@angular/common/http'
+import { AfterViewInit, Component, ElementRef, inject, NgZone, OnDestroy, OnInit, Renderer2, ViewChild } from '@angular/core'
+import { ActivatedRoute, Data, Router, UrlSegment } from '@angular/router'
+import {
+  LucideAnchor,
+  LucideArchiveArrowUp,
+  LucideArrowDown,
+  LucideArrowUp,
+  LucideCheck,
+  LucideCirclePlus,
+  LucideClipboardList,
+  LucideDynamicIcon,
+  LucideEllipsis,
+  LucideEye,
+  LucideFileArchive,
+  LucideFileText,
+  LucideFileUp,
+  LucideFolderOpen,
+  LucideFolderUp,
+  LucideGlobe,
+  LucideHardDriveDownload,
+  LucideHardDriveUpload,
+  LucideLink,
+  LucideLock,
+  LucideLockOpen,
+  LucideMessageSquareMore,
+  LucideMove,
+  LucidePencil,
+  LucidePlus,
+  LucideRotateCw,
+  LucideSpellCheck,
+  LucideTrash
+} from '@lucide/angular'
+import { ContextMenuComponent, ContextMenuModule } from '@perfectmemory/ngx-contextmenu'
+import { TAR_EXTENSION } from '@sync-in-server/backend/src/applications/files/constants/compress'
+import { FILE_OPERATION } from '@sync-in-server/backend/src/applications/files/constants/operations'
+import type { CompressFileDto } from '@sync-in-server/backend/src/applications/files/dto/file-operations.dto'
+import type { CopyMoveFileResponse } from '@sync-in-server/backend/src/applications/files/interfaces/copy-move-file.interface'
+import type { FileProps } from '@sync-in-server/backend/src/applications/files/interfaces/file-props.interface'
+import type { FileSpace } from '@sync-in-server/backend/src/applications/files/interfaces/file-space.interface'
+import { FileTaskStatus } from '@sync-in-server/backend/src/applications/files/models/file-task'
+import { SHARE_TYPE } from '@sync-in-server/backend/src/applications/shares/constants/shares'
+import { SPACE_OPERATION, SPACE_REPOSITORY } from '@sync-in-server/backend/src/applications/spaces/constants/spaces'
+import type { SpaceFiles } from '@sync-in-server/backend/src/applications/spaces/interfaces/space-files.interface'
+import { USER_PERMISSION } from '@sync-in-server/backend/src/applications/users/constants/user'
+import { intersectPermissions } from '@sync-in-server/backend/src/common/shared'
+import { L10N_LOCALE, L10nLocale, L10nTranslateDirective, L10nTranslatePipe } from 'angular-l10n'
+import { BsDropdownModule } from 'ngx-bootstrap/dropdown'
+import { BsModalRef } from 'ngx-bootstrap/modal'
+import { TooltipModule } from 'ngx-bootstrap/tooltip'
+import { Subscription } from 'rxjs'
+import { take } from 'rxjs/operators'
+import { SERVICE_UNAVAILABLE_ERROR } from '../../../app.constants'
+import { BadgePermissionsComponent } from '../../../common/components/badge-permissions.component'
+import { NavigationViewComponent, ViewMode } from '../../../common/components/navigation-view/navigation-view.component'
+import { VirtualScrollComponent } from '../../../common/components/virtual-scroll.component'
+import { InputEditDirective } from '../../../common/directives/input-edit.directive'
+import { TapDirective } from '../../../common/directives/tap.directive'
+import { UploadFilesDirective } from '../../../common/directives/upload-files.directive'
+import { TableHeaderConfig } from '../../../common/interfaces/table.interface'
+import { SearchFilterPipe } from '../../../common/pipes/search.pipe'
+import { ToBytesPipe } from '../../../common/pipes/to-bytes.pipe'
+import { decrement, elementIsVisible, filterArray, increment, originalOrderKeyValue, pathFromRoutes } from '../../../common/utils/functions'
+import { SortSettings, SortTable } from '../../../common/utils/sort-table'
+import { dragClass, tableTrSelectedClass } from '../../../layout/layout.constants'
+import { TAB_MENU } from '../../../layout/layout.interfaces'
+import { LayoutService } from '../../../layout/layout.service'
+import { NavbarSearchService } from '../../../layout/navbar/services/navbar-search.service'
+import { StoreService } from '../../../store/store.service'
+import { FAVORITES_ICON } from '../../favorites/favorites.constants'
+import { FilesCompressionDialogComponent } from '../../files/components/dialogs/files-compression-dialog.component'
+import { FilesNewDialogComponent } from '../../files/components/dialogs/files-new-dialog.component'
+import { FilesTrashDialogComponent } from '../../files/components/dialogs/files-trash-dialog.component'
+import { FileLockFormatPipe } from '../../files/components/utils/file-lock.utils'
+import { FileEvent } from '../../files/interfaces/file-event.interface'
+import { FileModel } from '../../files/models/file.model'
+import { FilesUploadService } from '../../files/services/files-upload.service'
+import { FilesService } from '../../files/services/files.service'
+import { LinkDialogComponent } from '../../links/components/dialogs/link-dialog.component'
+import { ShareLinkModel } from '../../links/models/share-link.model'
+import { ShareDialogComponent } from '../../shares/components/dialogs/share-dialog.component'
+import { ShareModel } from '../../shares/models/share.model'
+import { SYNC_ICON, SYNC_PATH } from '../../sync/sync.constants'
+import { UserAvatarComponent } from '../../users/components/utils/user-avatar.component'
+import { UserService } from '../../users/user.service'
+import { SpaceModel } from '../models/space.model'
+import { SpacesBrowserService } from '../services/spaces-browser.service'
+import { SPACES_ICON, SPACES_PATH } from '../spaces.constants'
+import { SpaceAnchorFileDialogComponent } from './dialogs/space-anchor-file-dialog.component'
+
+type KeyboardNavigationKey = 'ArrowLeft' | 'ArrowUp' | 'ArrowRight' | 'ArrowDown'
+
+const keyboardNavigationKeys: ReadonlySet<string> = new Set<KeyboardNavigationKey>(['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'])
+
+@Component({
+  selector: 'app-spaces-browser',
+  imports: [
+    L10nTranslatePipe,
+    L10nTranslateDirective,
+    LucideDynamicIcon,
+    TooltipModule,
+    BsDropdownModule,
+    ToBytesPipe,
+    ContextMenuModule,
+    VirtualScrollComponent,
+    InputEditDirective,
+    NavigationViewComponent,
+    NgTemplateOutlet,
+    KeyValuePipe,
+    SearchFilterPipe,
+    UserAvatarComponent,
+    UploadFilesDirective,
+    BadgePermissionsComponent,
+    TapDirective,
+    FileLockFormatPipe
+  ],
+  templateUrl: 'spaces-browser.component.html',
+  styleUrl: 'spaces-browser.component.scss'
+})
+export class SpacesBrowserComponent implements OnInit, AfterViewInit, OnDestroy {
+  @ViewChild(VirtualScrollComponent) scrollView: {
+    element: ElementRef
+    viewPortItems: FileModel[]
+    scrollInto: (arg: FileModel | number) => void
+    itemsPerRow: number
+  }
+  @ViewChild(NavigationViewComponent, { static: true }) btnNavigationView: any
+  @ViewChild('MainContextMenu', { static: true }) mainContextMenu: ContextMenuComponent<any>
+  @ViewChild('MainReadOnlyContextMenu', { static: true }) mainReadOnlyContextMenu: ContextMenuComponent<any>
+  @ViewChild('FileContextMenu', { static: true }) fileContextMenu: ContextMenuComponent<any>
+  @ViewChild('uploadFilesPicker') private uploadFilesPicker: UploadFilesDirective | undefined
+  @ViewChild('uploadFoldersPicker') private uploadFoldersPicker: UploadFilesDirective | undefined
+  protected readonly locale = inject<L10nLocale>(L10N_LOCALE)
+  protected readonly layout = inject(LayoutService)
+  protected readonly navbarSearch = inject(NavbarSearchService)
+  // Static
+  protected readonly icons = {
+    SPACES: SPACES_ICON.SPACES,
+    SHARED: SPACES_ICON.SHARED_WITH_OTHERS,
+    TRASH: SPACES_ICON.TRASH,
+    PERSONAL: SPACES_ICON.PERSONAL,
+    LINKS: SPACES_ICON.LINKS,
+    SYNC: SYNC_ICON.SYNC,
+    FAVORITES: FAVORITES_ICON,
+    SELECTION: SPACES_ICON.SELECTION,
+    LucidePlus,
+    LucideCirclePlus,
+    LucideFileText,
+    LucideFileUp,
+    LucideFolderUp,
+    LucideGlobe,
+    LucideHardDriveUpload,
+    LucideHardDriveDownload,
+    LucideLink,
+    LucideAnchor,
+    LucideArchiveArrowUp,
+    LucideEllipsis,
+    LucidePencil,
+    LucideEye,
+    LucideFolderOpen,
+    LucideRotateCw,
+    LucideMessageSquareMore,
+    LucideFileArchive,
+    LucideSpellCheck,
+    LucideMove,
+    LucideTrash,
+    LucideCheck,
+    LucideArrowUp,
+    LucideArrowDown,
+    LucideLock,
+    LucideLockOpen,
+    LucideClipboardList
+  }
+  // States
+  protected loading = false
+  protected locationNotFound = false
+  protected forbiddenResource = false
+  protected serviceError = false
+  protected serviceErrorMsg = SERVICE_UNAVAILABLE_ERROR
+  protected isFilesRepo: boolean
+  protected isSharesRepo: boolean
+  protected isTrashRepo: boolean
+  protected inSharesList: boolean
+  protected hasRoots = false
+  protected canShare: { inside: boolean; outside: boolean } = { inside: false, outside: false }
+  protected canAdminShares = false
+  protected spacePermissions: string
+  // Actions
+  protected multipleSelection = false
+  protected hasSelection = false
+  protected showSelectionChecks = false
+  protected hasDisabledItemsInSelection = false
+  protected canManageFavorite = false
+  protected canCompress = true
+  protected renamingInProgress = false
+  // Upload
+  protected supportUploadFolder = false
+  // Settings
+  protected readonly originalOrderKeyValue = originalOrderKeyValue
+  protected readonly TAB_MENU = TAB_MENU
+  protected tableHeaders: Record<'name' | 'anchored' | 'info' | 'permissions' | 'size' | 'mtime', TableHeaderConfig> = {
+    name: {
+      label: 'Name',
+      width: 40,
+      textCenter: false,
+      class: '',
+      show: true,
+      sortable: true
+    },
+    anchored: {
+      label: 'Anchored by',
+      width: 5,
+      class: 'd-none d-md-table-cell',
+      textCenter: true,
+      show: this.hasRoots,
+      sortable: true
+    },
+    info: { label: 'Info', width: 15, textCenter: true, class: 'd-none d-md-table-cell', show: true },
+    permissions: {
+      label: 'Permissions',
+      width: 12,
+      textCenter: true,
+      class: 'd-none d-lg-table-cell',
+      show: this.hasRoots
+    },
+    size: {
+      label: 'Size',
+      width: 10,
+      textCenter: true,
+      class: 'd-none d-lg-table-cell',
+      show: true,
+      sortable: true
+    },
+    mtime: {
+      label: 'Modified',
+      width: 10,
+      textCenter: true,
+      class: 'd-none d-sm-table-cell',
+      newly: 'newly',
+      show: true,
+      sortable: true
+    }
+  }
+  protected galleryMode: ViewMode
+  // Data
+  protected files: FileModel[] = []
+  protected selection: FileModel[] = []
+  protected stats = { dirs: 0, files: 0, size: 0, elements: 0 }
+  private readonly router = inject(Router)
+  private readonly activatedRoute = inject(ActivatedRoute)
+  private readonly zone = inject(NgZone)
+  private readonly renderer = inject(Renderer2)
+  private readonly store = inject(StoreService)
+  private readonly userService = inject(UserService)
+  protected isElectronApp = this.store.isElectronApp()
+  private readonly spacesBrowser = inject(SpacesBrowserService)
+  private readonly filesService = inject(FilesService)
+  private readonly filesUpload = inject(FilesUploadService)
+  // Space
+  private baseRepoUrl: string
+  private currentRoute: string
+  protected isPersonalSpace: boolean
+  // Others
+  private subscriptions: Subscription[] = []
+  private focusOnSelect: string
+  private openOnSelect: string
+  private openAfterReload: string
+  private selectionAnchor: FileModel | null = null
+  private selectionFocus: FileModel | null = null
+  private selectionControlMode = false
+  // Sort
+  private readonly sortSettings: SortSettings = {
+    default: [
+      { prop: 'name', type: 'string' },
+      { prop: 'isDir', type: 'number' }
+    ],
+    name: [{ prop: 'name', type: 'string' }],
+    isDir: [{ prop: 'isDir', type: 'number' }],
+    anchored: [
+      { prop: 'root.id', type: 'number' },
+      { prop: 'root.owner.fullName', type: 'string' }
+    ],
+    size: [{ prop: 'size', type: 'number' }],
+    mtime: [{ prop: 'mtime', type: 'number' }]
+  }
+  protected sortTable = new SortTable(this.constructor.name, this.sortSettings)
+  // DnD part
+  private eventDragOverHandler: () => void | undefined
+  private eventDragEnterHandler: () => void | undefined
+  private eventDragStartHandler: () => void | undefined
+  private eventDragLeaveHandler: () => void | undefined
+  private eventDragEndHandler: () => void | undefined
+  private eventDropHandler: () => void | undefined
+  private eventKeysHandler: () => void | undefined
+  private moveFromDrag = false
+
+  ngOnInit() {
+    this.canAdminShares = this.userService.userHavePermission(USER_PERMISSION.SHARES_ADMIN)
+    this.galleryMode = this.btnNavigationView.currentView()
+    this.supportUploadFolder = this.filesUpload.supportUploadDirectory
+    this.activatedRoute.queryParamMap.subscribe((params) => {
+      this.setQueryParams(params.get('select'), params.get('open'))
+      this.focusOn(this.focusOnSelect)
+    })
+    this.activatedRoute.data.subscribe((route: Data) => this.setSpace(route as { repository: SPACE_REPOSITORY; routes: UrlSegment[] }))
+    this.subscriptions.push(this.store.filesOnEvent.subscribe((update: FileEvent) => this.onFileEvent(update)))
+    this.subscriptions.push(
+      this.filesService.fileSelectionRemove.subscribe((file) => this.setSelection(this.selection.filter((selected) => selected !== file)))
+    )
+    this.subscriptions.push(this.filesService.fileSelectionClear.subscribe(() => this.resetFilesSelection()))
+  }
+
+  ngAfterViewInit() {
+    setTimeout(() => this.initEventHandlers(), 500)
+  }
+
+  ngOnDestroy() {
+    this.destroyEventHandlers()
+    this.resetFilesSelection()
+    this.subscriptions.forEach((s) => s.unsubscribe())
+  }
+
+  loadFiles(focusView = false) {
+    // Preserve the initial focus to avoid stealing it if the user interacts while files are loading.
+    const focusOrigin = focusView ? document.activeElement : null
+    this.loading = true
+    this.forbiddenResource = false
+    this.locationNotFound = false
+    this.serviceError = false
+    this.navbarSearch.clearViewFilter()
+    this.resetFilesSelection()
+    this.spacesBrowser.loadFiles().subscribe({
+      next: (spacesFiles: SpaceFiles) => {
+        this.spacePermissions = spacesFiles.permissions
+        this.canManageFavorite = !this.store.user.getValue()?.isLink && !this.isTrashRepo
+        this.canShare.outside = this.canAdminShares && this.spacePermissions.indexOf(SPACE_OPERATION.SHARE_OUTSIDE) > -1
+        // todo: share inside is not used, this should allow the file anchor dialog to add a personal file to the current space (?)
+        this.canShare.inside = this.spacePermissions.indexOf(SPACE_OPERATION.SHARE_INSIDE) > -1
+        this.hasRoots = spacesFiles.hasRoots
+        this.tableHeaders.anchored.show = spacesFiles.hasRoots
+        this.tableHeaders.anchored.label = this.isSharesRepo ? 'Owner' : 'Anchored by'
+        this.tableHeaders.anchored.width = 10
+        this.tableHeaders.permissions.show = spacesFiles.hasRoots
+        this.sortBy(
+          this.sortTable.sortParam.column,
+          false,
+          spacesFiles.files.map((f: FileProps) => new FileModel(f, this.baseRepoUrl, this.isSharesRepo, this.store.server().files.editors))
+        )
+        this.updateFilesStats(this.files)
+        this.loading = false
+        if (this.openOnSelect) {
+          this.focusOn(this.openOnSelect)
+        } else if (this.focusOnSelect) {
+          this.focusOn(this.focusOnSelect)
+        } else {
+          this.scrollView.scrollInto(-1)
+        }
+        this.openCreatedFileAfterReload()
+        if (focusView) {
+          setTimeout(() => this.focusFilesView(focusOrigin), 0)
+        }
+      },
+      error: (e: HttpErrorResponse) => {
+        this.openAfterReload = null
+        this.files = []
+        this.updateFilesStats(this.files)
+        if (e.status !== 401) {
+          this.forbiddenResource = e.status === 403
+          this.locationNotFound = e.status === 404
+          this.serviceError = e.status === 0
+          this.layout.sendNotification('error', 'Files', e.error?.message || this.serviceErrorMsg)
+        }
+        this.loading = false
+      }
+    })
+  }
+
+  sortBy(column: string, toUpdate = true, collection?: FileModel[]) {
+    this.files = this.sortTable.sortBy(column, toUpdate, collection || this.files)
+  }
+
+  switchView(view: ViewMode) {
+    const oldView = this.galleryMode
+    this.galleryMode = view
+    if (this.galleryMode.enabled !== oldView.enabled) {
+      this.destroyEventHandlers()
+      setTimeout(() => this.initEventHandlers(), 500)
+    }
+  }
+
+  onSelect(ev: MouseEvent, file: FileModel) {
+    if (this.loading) {
+      return
+    }
+    if (ev.shiftKey && (this.selection.length > 0 || this.selectionAnchor)) {
+      this.selectRangeFiles(file)
+    } else if (!ev.ctrlKey && !ev.metaKey) {
+      this.setSelection([file], file, file)
+    } else {
+      this.modifySelection(file)
+    }
+  }
+
+  toggleFileSelection(ev: MouseEvent, file: FileModel) {
+    ev.stopPropagation()
+    if (this.loading) return
+    if (ev.shiftKey && (this.selection.length > 0 || this.selectionAnchor)) {
+      this.selectionControlMode = true
+      this.selectRangeFiles(file)
+      return
+    }
+    if (!this.selectionControlMode && this.selection.length === 1) {
+      this.selectionControlMode = true
+      this.setSelection([file], file, file, true)
+      return
+    }
+    if (!this.selection.length) this.selectionControlMode = true
+    this.modifySelection(file)
+  }
+
+  onContextMenu(ev: MouseEvent | Event) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    if (this.isTrashRepo) {
+      this.layout.openContextMenu(ev, this.mainReadOnlyContextMenu)
+    } else {
+      this.layout.openContextMenu(ev, this.mainContextMenu)
+    }
+  }
+
+  onTargetContextMenu(ev: MouseEvent | Event, file: FileModel) {
+    ev.preventDefault()
+    if (ev.type === 'contextmenu') {
+      ev.stopPropagation()
+    }
+    if (this.selection.indexOf(file) === -1) {
+      this.setSelection([file], file, file)
+    } else {
+      this.setSelectionCursor(file, file)
+    }
+    this.layout.openContextMenu(ev, this.fileContextMenu)
+  }
+
+  onFileActivate(file: FileModel, sourceEvent?: PointerEvent) {
+    const multiSelectionWasActive = this.showSelectionChecks
+    const selectOnly = this.closeOpenContextMenu() || multiSelectionWasActive
+    if (this.loading || !this.files.includes(file)) return
+
+    if (
+      sourceEvent &&
+      ((this.userService.user?.preferences?.singleClickNavigation ?? false) || sourceEvent.pointerType === 'touch') &&
+      (sourceEvent.ctrlKey || sourceEvent.metaKey || sourceEvent.shiftKey)
+    ) {
+      this.onSelect(sourceEvent, file)
+      return
+    }
+
+    if (multiSelectionWasActive || this.selection[0] !== file) {
+      this.setSelection([file], file, file)
+    }
+    if (selectOnly) return
+    this.browse(file)
+  }
+
+  private closeOpenContextMenu(): boolean {
+    if (!this.mainContextMenu.isOpen && !this.mainReadOnlyContextMenu.isOpen && !this.fileContextMenu.isOpen) return false
+    this.layout.closeContextMenu()
+    return true
+  }
+
+  browse(file: FileModel) {
+    if (file.isDisabled) {
+      this.layout.sendNotification('warning', file.name, 'Share is disabled')
+      return
+    }
+    if (!file.isRenamed) {
+      if (file.isDir) {
+        this.router.navigate([file.root?.alias || file.name], { relativeTo: this.activatedRoute }).catch(console.error)
+      } else {
+        this.shortcutOpen(file)
+      }
+    }
+  }
+
+  copyMoveFiles() {
+    if (!this.selection.length) return
+    this.filesService.openTreeCopyMove()
+  }
+
+  downloadFiles() {
+    if (this.multipleSelection) {
+      this.openCompressionDialog(false)
+    } else {
+      this.filesService.download(this.selection[0])
+    }
+  }
+
+  shortcutOpen(file: FileModel = this.selection[0]) {
+    if (!file) return
+    if (file.isDir) {
+      this.browse(file)
+    } else if (file.isViewable || file.isEditable) {
+      this.openViewerDialog(file)
+    } else {
+      this.filesService.offerDownload(file)
+    }
+  }
+
+  shortcutUploadFiles() {
+    this.uploadFilesPicker?.open()
+  }
+
+  shortcutUploadFolders() {
+    this.uploadFoldersPicker?.open()
+  }
+
+  shortcutRename() {
+    this.selection[0].isRenamed = !this.selection[0].isRenamed
+  }
+
+  async renameFile(ev: { object: FileModel; name: string }) {
+    const f: FileModel = ev.object
+    const renamedTo = ev.name
+    let overwrite = false
+    const fileExists: FileModel = this.files.find((file) => file.name.toLowerCase() === renamedTo.toLowerCase() && file.id !== f.id)
+    if (fileExists) {
+      const action = await this.filesService.openOverwriteDialog([f], renamedTo)
+      if (action !== 'overwrite') return
+      overwrite = true
+    }
+    this.filesService
+      .rename(f, renamedTo, overwrite)
+      .pipe(take(1))
+      .subscribe({
+        next: (dto: CopyMoveFileResponse) => {
+          f.rename(dto.name)
+          f.updateMime(dto.mime, this.isSharesRepo, this.store.server().files.editors)
+          if (overwrite) {
+            this.sortBy(
+              this.sortTable.sortParam.column,
+              false,
+              this.files.filter((file) => file.id !== fileExists.id)
+            )
+          }
+        },
+        error: (e: HttpErrorResponse) => this.layout.sendNotification('error', 'Rename', f.name, e)
+      })
+  }
+
+  setRenamingInProgress(ev: boolean) {
+    this.renamingInProgress = ev
+  }
+
+  addToSync() {
+    this.router.navigate([SYNC_PATH.BASE, SYNC_PATH.WIZARD, SYNC_PATH.WIZARD_CLIENT], { state: { file: this.selection[0] } }).catch(console.error)
+  }
+
+  addToClipboard() {
+    this.filesService.addToClipboard(this.selection)
+  }
+
+  toggleFavorite(file: FileModel = this.selection[0]) {
+    if (!this.canManageFavorite || !file) return
+    this.filesService
+      .toggleFavorite(file)
+      .pipe(take(1))
+      .subscribe({
+        error: (e: HttpErrorResponse) => this.layout.sendNotification('error', 'Favorites', file.name, e)
+      })
+  }
+
+  openShareDialog() {
+    const f: Partial<FileSpace> = this.setFilePermissionsAndSpace()
+    if (f === null) return
+    const modalRef: BsModalRef<ShareDialogComponent> = this.layout.openDialog(ShareDialogComponent, 'lg', {
+      initialState: {
+        file: f,
+        isSharesRepo: this.isSharesRepo,
+        inSharesList: this.inSharesList,
+        allowFilesOptions: false
+      } as ShareDialogComponent
+    })
+    modalRef.content.shareChange.pipe(take(1)).subscribe((r: ['add' | string, ShareModel]) => {
+      const s = r[1]
+      if (this.selection[0].id < 0) this.selection[0].id = s.file.id
+      this.selection[0].shares.push({ id: s.id, alias: s.alias, name: s.name, type: SHARE_TYPE.COMMON })
+      this.selection[0].updateNbBadges()
+    })
+  }
+
+  openShareLinkDialog() {
+    const f: Partial<FileSpace> = this.setFilePermissionsAndSpace()
+    if (f === null) return
+    const modalRef: BsModalRef<LinkDialogComponent> = this.layout.openDialog(LinkDialogComponent, 'lg', {
+      initialState: {
+        file: f,
+        isSharesRepo: this.isSharesRepo,
+        inSharesList: this.inSharesList
+      } as LinkDialogComponent
+    })
+    modalRef.content.shareChange.pipe(take(1)).subscribe((r: ['update' | 'delete', ShareLinkModel] | ['add', ShareModel]) => {
+      const [action, s] = r
+      if (action === 'add') {
+        if (this.selection[0].id < 0) this.selection[0].id = s.file.id
+        this.selection[0].links.push({ id: s.id, alias: s.alias, name: s.name, type: SHARE_TYPE.LINK })
+        this.selection[0].updateNbBadges()
+      }
+    })
+  }
+
+  openSpaceAnchorFileDialog() {
+    const modalRef: BsModalRef<SpaceAnchorFileDialogComponent> = this.layout.openDialog(SpaceAnchorFileDialogComponent, 'md', {
+      initialState: { files: this.selection } as SpaceAnchorFileDialogComponent
+    })
+    modalRef.content.addAnchoredFiles.pipe(take(1)).subscribe((up: { space: SpaceModel; rootFiles: { id: number; name: string }[] }) => {
+      for (const f of this.selection) {
+        const rootFile = up.rootFiles.find((rf: { id: number; name: string }) => rf.name === f.name)
+        if (rootFile && f.spaces.map((s: Partial<SpaceModel>) => s.id).indexOf(up.space.id) === -1) {
+          if (f.id < 0) f.id = rootFile.id
+          f.spaces.push(up.space)
+          f.updateNbBadges()
+        }
+      }
+    })
+  }
+
+  async onUploadFiles(ev: { files: File[] }, isDirectory = false) {
+    const selectedFiles = [...ev.files]
+    let exist: FileModel[] = []
+    if (isDirectory) {
+      const dirName = selectedFiles[0].webkitRelativePath.split('/')[0].normalize()
+      const dirExists = this.files.find((f) => f.name.normalize().toLowerCase() === dirName.normalize().toLowerCase())
+      if (dirExists) {
+        exist = [dirExists]
+      }
+    } else {
+      exist = this.files.filter((x: FileModel) => selectedFiles.some((f) => f.name.normalize().toLowerCase() === x.name.normalize().toLowerCase()))
+    }
+    this.filesUpload.addFilesWithConflictResolution(selectedFiles, exist).catch(console.error)
+  }
+
+  onDropFiles(ev: { dataTransfer: { files: File[] } }) {
+    const exist: FileModel[] = this.files.filter((x: FileModel) =>
+      [...ev.dataTransfer.files].some((f) => f.name.normalize().toLowerCase() === x.name.normalize().toLowerCase())
+    )
+    this.filesUpload.onDropFiles(ev, exist)
+  }
+
+  decompressFile() {
+    this.filesService.decompress(this.selection[0])
+  }
+
+  openCompressionDialog(inDir = true) {
+    const archiveProps: CompressFileDto = {
+      name: this.selection[0].name,
+      compressInDirectory: this.isTrashRepo || this.inSharesList ? false : inDir,
+      compression: false,
+      files: this.selection.map((f: FileModel) => ({ name: f.name, rootAlias: f.root?.alias })),
+      extension: TAR_EXTENSION
+    }
+    this.layout.openDialog(FilesCompressionDialogComponent, null, {
+      initialState: {
+        archiveProps: archiveProps,
+        disableInDirCompression: this.isTrashRepo || this.inSharesList
+      } as FilesCompressionDialogComponent
+    })
+  }
+
+  openNewDialog(type: 'file' | 'directory' | 'download' = 'directory') {
+    this.layout.openDialog(FilesNewDialogComponent, null, { initialState: { files: this.files, inputType: type } as FilesNewDialogComponent })
+  }
+
+  openTrashDialog(permanently = false) {
+    if (!this.selection.length) return
+    const modalRef: BsModalRef<FilesTrashDialogComponent> = this.layout.openDialog(FilesTrashDialogComponent, null, {
+      initialState: {
+        files: this.selection,
+        permanently: permanently
+      } as FilesTrashDialogComponent
+    })
+    modalRef.content.removeFiles.pipe(take(1)).subscribe(() => this.removeFiles())
+  }
+
+  openLockDialog(f: FileModel) {
+    this.filesService.openLockDialog(f)
+  }
+
+  private setSpace(route: { repository: SPACE_REPOSITORY; routes: UrlSegment[] }) {
+    this.currentRoute = this.filesService.currentRoute = `${route.repository}${pathFromRoutes(route.routes)}`
+    this.setQueryParams(this.activatedRoute.snapshot.queryParamMap.get('select'), this.activatedRoute.snapshot.queryParamMap.get('open'))
+    this.baseRepoUrl = `${route.repository}${route.routes.length ? `/${route.routes[0].path}` : ''}`
+    this.isFilesRepo = route.repository === SPACES_PATH.FILES
+    this.isSharesRepo = route.repository === SPACES_PATH.SHARES
+    this.isTrashRepo = route.repository === SPACES_PATH.TRASH
+    this.inSharesList = this.isSharesRepo && route.routes.length === 0
+    this.spacesBrowser.setEnvironment(route.repository, route.routes)
+    this.isPersonalSpace = this.spacesBrowser.inPersonalSpace
+    this.loadFiles(true)
+  }
+
+  private setQueryParams(selectName: string, openName: string) {
+    this.focusOnSelect = openName || selectName
+    this.openOnSelect = openName
+  }
+
+  private onFileEvent(ev: FileEvent) {
+    if (ev.archiveId) {
+      this.filesService.downloadTaskArchive(ev.archiveId)
+      return
+    }
+    const matchDstPath = ev?.fileDstPath === this.currentRoute
+    if (ev.filePath === this.currentRoute || matchDstPath) {
+      // special case on move task, the src is removed, the dst is added
+      const mustReloadFocus = matchDstPath && ev.reloadFocusOnDst
+      if (ev.fileName) {
+        if (ev.focus || mustReloadFocus) this.focusOnSelect = ev.fileName
+        if (ev.openAfterCreate) this.openAfterReload = ev.fileName
+        if (ev.delete && !mustReloadFocus) {
+          if (ev.status === FileTaskStatus.SUCCESS) {
+            this.files = this.files.filter((file: FileModel) => file.name !== ev.fileName)
+            this.updateFilesStats(this.files)
+            this.resetFilesSelection()
+          } else {
+            const file = this.files.find((file: FileModel) => file.name === ev.fileName)
+            if (file) {
+              file.isBeingDeleted = false
+            }
+          }
+        }
+      }
+      if (ev.reload || mustReloadFocus) this.loadFiles()
+    }
+  }
+
+  private removeFiles() {
+    const selection = this.selection.filter((f: FileModel) => !f.root?.alias)
+    if (this.selection.length !== selection.length) {
+      this.layout.sendNotification('warning', 'Remove', 'You can not remove an anchored file')
+    }
+    // process other files
+    if (selection.length) {
+      this.filesService.delete(selection)
+    }
+  }
+
+  private setFilePermissionsAndSpace(): Partial<FileSpace> {
+    if (this.selection[0]?.root && this.selection[0].root.permissions.indexOf(SPACE_OPERATION.SHARE_OUTSIDE) === -1) {
+      // Space case, if the file is a space root without the share outside permissions
+      this.layout.sendNotification('warning', this.selection[0].name, 'You do not have share permission')
+      return null
+    }
+    const f: Partial<FileSpace> = { ...this.selection[0] }
+    if (this.isPersonalSpace) {
+      f.permissions = this.spacePermissions
+    } else if (this.selection[0]?.root) {
+      f.permissions = this.selection[0].root.permissions
+      if (this.inSharesList) {
+        f.space = { alias: this.selection[0].root.alias, name: this.selection[0].root.alias, root: undefined }
+      } else {
+        const spaceAlias = this.currentRoute.split('/')[1]
+        f.space = { alias: spaceAlias, name: spaceAlias, root: { alias: this.selection[0].root.alias, name: this.selection[0].name } }
+      }
+    } else {
+      f.permissions = this.spacePermissions
+      const [spaceAlias, rootAlias] = this.currentRoute.split('/').slice(1, 3)
+      f.space = { alias: spaceAlias, name: spaceAlias, root: { alias: rootAlias, name: rootAlias } }
+    }
+    return f
+  }
+
+  private openViewerDialog(f: FileModel) {
+    let permissions: string
+    if (this.isTrashRepo) {
+      permissions = ''
+    } else if (this.inSharesList) {
+      permissions = f.root.permissions
+    } else {
+      permissions = f?.root ? intersectPermissions(this.spacePermissions, f?.root.permissions) : this.spacePermissions
+    }
+    this.filesService.openViewerDialog(f, this.files, permissions).catch(console.error)
+  }
+
+  private openCreatedFileAfterReload() {
+    if (!this.openAfterReload) return
+    const fileName = this.openAfterReload
+    this.openAfterReload = null
+    const file = this.files.find((item) => item.name.toLowerCase() === fileName.toLowerCase())
+    if (!file || (!file.isDir && !file.isViewable && !file.isEditable)) return
+    this.setSelection([file], file, file)
+    this.shortcutOpen()
+  }
+
+  private focusOn(selectName: string) {
+    if (!selectName) {
+      this.focusOnSelect = null
+      return
+    }
+    const route = this.activatedRoute.snapshot.data
+    if (this.loading || !Array.isArray(route.routes) || this.currentRoute !== `${route.repository}${pathFromRoutes(route.routes)}`) {
+      // wait for the `loadFiles`
+      this.focusOnSelect = selectName
+      return
+    }
+    const open = this.openOnSelect === selectName
+    let f = this.files.find((file) => file.name.toLowerCase() === selectName.toLowerCase())
+    if (!f && this.hasRoots) {
+      f = this.files.find((file) => file.root?.alias.toLowerCase() === selectName.toLowerCase())
+    }
+    if (f) {
+      setTimeout(() => this.scrollView.scrollInto(f), 100)
+      this.setSelection([f], f, f)
+      if (open) {
+        this.openOnSelect = null
+        this.focusOnSelect = selectName
+        if (!f.isDir) this.browse(f)
+      }
+    } else {
+      // wait for the `loadFiles`
+      this.focusOnSelect = selectName
+      if (open) {
+        this.openOnSelect = null
+      }
+    }
+  }
+
+  private updateFilesStats(files: FileModel[]) {
+    this.stats = { dirs: 0, files: 0, size: 0, elements: 0 }
+    for (const file of files) {
+      this.updateCounters(file)
+    }
+  }
+
+  private updateCounters(file: FileModel, added = true) {
+    const op = added ? increment : decrement
+    this.stats.elements = op(this.stats.elements, 1)
+    this.stats.size = op(this.stats.size, file.size)
+    if (file.isDir) {
+      this.stats.dirs = op(this.stats.dirs, 1)
+    } else {
+      this.stats.files = op(this.stats.files, 1)
+    }
+  }
+
+  private resetFilesSelection() {
+    this.setSelection([], null, null)
+  }
+
+  private modifySelection(file: FileModel) {
+    if (!file) return
+    this.setSelection(file.isSelected ? this.selection.filter((selected) => selected !== file) : [file, ...this.selection], file, file, true)
+  }
+
+  private setSelection(
+    selection: FileModel[],
+    selectionAnchor: FileModel | null = null,
+    selectionFocus: FileModel | null = selectionAnchor,
+    keepSelectionControlMode = false
+  ) {
+    const enabledSelection = selection.filter((file: FileModel) => !file.isDisabled)
+    const focusedDisabledFile = selectionFocus?.isDisabled && selection.includes(selectionFocus) ? selectionFocus : null
+    const normalizedSelection = enabledSelection.length ? enabledSelection : focusedDisabledFile ? [focusedDisabledFile] : selection.slice(0, 1)
+    const selected = new Set(normalizedSelection)
+    this.selection = this.files.filter((file: FileModel) => {
+      file.isSelected = selected.has(file)
+      return file.isSelected
+    })
+    if (!keepSelectionControlMode || !this.selection.length) {
+      this.selectionControlMode = false
+    }
+    this.showSelectionChecks = this.selection.length > 1 || this.selectionControlMode
+    const normalizedAnchor = selectionAnchor && selected.has(selectionAnchor) ? selectionAnchor : this.selection[0] || null
+    const normalizedFocus =
+      selectionFocus && (selected.has(selectionFocus) || (keepSelectionControlMode && this.files.includes(selectionFocus)))
+        ? selectionFocus
+        : normalizedAnchor
+    this.setSelectionCursor(normalizedAnchor, normalizedFocus)
+    // update states
+    this.hasSelection = !!this.selection.length
+    this.hasDisabledItemsInSelection = !!this.selection.find((f: FileModel) => f.isDisabled)
+    this.canCompress =
+      !this.hasDisabledItemsInSelection && (this.selection.length > 1 || (this.selection.length === 1 && this.selection[0].isCompressible))
+    this.multipleSelection = this.selection.length > 1 || (this.selection.length === 1 && this.selection[0].isDir)
+    this.store.filesSelection.set(this.selection)
+  }
+
+  private setSelectionCursor(anchor: FileModel | null, focus: FileModel | null = anchor) {
+    this.selectionAnchor = anchor && this.files.indexOf(anchor) > -1 ? anchor : null
+    this.selectionFocus = focus && this.files.indexOf(focus) > -1 ? focus : this.selectionAnchor
+  }
+
+  private getFilteredFiles(): FileModel[] {
+    const search = this.navbarSearch.viewFilter()
+    return search ? filterArray(search, this.files, 'name') : this.files
+  }
+
+  private selectAllFiles() {
+    const files = this.getFilteredFiles()
+    this.setSelection(files, files[0] || null, files[0] || null)
+  }
+
+  private selectRangeFiles(file: FileModel) {
+    const files = this.getFilteredFiles()
+    const fileIndex = files.indexOf(file)
+    if (fileIndex === -1) {
+      this.setSelection([file], file, file, true)
+      return
+    }
+    let anchor = this.selectionAnchor
+    let anchorIndex = anchor ? files.indexOf(anchor) : -1
+    if (anchorIndex === -1) {
+      anchor = this.selection.find((f: FileModel) => files.indexOf(f) > -1) || file
+      anchorIndex = files.indexOf(anchor)
+    }
+    const minIndex = Math.min(anchorIndex, fileIndex)
+    const maxIndex = Math.max(anchorIndex, fileIndex)
+    const filteredFiles = new Set(files)
+    const hiddenSelection = this.selection.filter((f: FileModel) => !filteredFiles.has(f))
+    this.setSelection([...hiddenSelection, ...files.slice(minIndex, maxIndex + 1)], anchor, file, true)
+  }
+
+  private getKeyboardNavigationTarget(
+    files: FileModel[],
+    key: KeyboardNavigationKey,
+    extendSelection: boolean
+  ): { file: FileModel; key: KeyboardNavigationKey } {
+    let direction = key
+    let useGalleryColumns = this.galleryMode.enabled
+    if (direction === 'ArrowLeft') {
+      useGalleryColumns = false
+      direction = 'ArrowUp'
+    } else if (direction === 'ArrowRight') {
+      useGalleryColumns = false
+      direction = 'ArrowDown'
+    }
+    const referenceIndexes = this.getSelectionReferenceIndexes(files, extendSelection)
+    const step = useGalleryColumns ? this.scrollView.itemsPerRow : 1
+    let index: number
+    if (!referenceIndexes.length) {
+      index = direction === 'ArrowUp' ? files.length - 1 : 0
+    } else if (direction === 'ArrowUp') {
+      index = Math.min(...referenceIndexes) - step
+      if (index <= -1) index = files.length - 1
+    } else {
+      index = Math.max(...referenceIndexes) + step
+      if (index >= files.length) index = 0
+    }
+    return { file: files[index], key: direction }
+  }
+
+  private getSelectionReferenceIndexes(files: FileModel[], extendSelection: boolean): number[] {
+    const focusIndex = this.selectionFocus ? files.indexOf(this.selectionFocus) : -1
+    if (extendSelection && focusIndex > -1) {
+      return [focusIndex]
+    }
+    const selectedIndexes = this.selection.map((f: FileModel) => files.indexOf(f)).filter((index: number) => index > -1)
+    if (selectedIndexes.length) {
+      return selectedIndexes
+    }
+    const anchorIndex = this.selectionAnchor ? files.indexOf(this.selectionAnchor) : -1
+    return anchorIndex > -1 ? [anchorIndex] : []
+  }
+
+  private applyKeyboardSelection(ev: KeyboardEvent, file: FileModel) {
+    if (ev.shiftKey) {
+      this.selectRangeFiles(file)
+    } else if (!ev.ctrlKey && !ev.metaKey) {
+      this.setSelection([file], file, file)
+    } else {
+      this.modifySelection(file)
+    }
+  }
+
+  private handleKeyboardShortcut(ev: KeyboardEvent): boolean {
+    if (!ev.ctrlKey && !ev.metaKey) {
+      return false
+    }
+    const key = ev.key.toLowerCase()
+    if (key !== 'a' && key !== 'c' && key !== 'x' && key !== 'v') {
+      return false
+    }
+    ev.preventDefault()
+    ev.stopPropagation()
+    this.zone.run(() => {
+      switch (key) {
+        case 'a':
+          this.selectAllFiles()
+          break
+        case 'c':
+        case 'x':
+          if (this.selection.length) {
+            this.filesService.clipboardAction = key === 'c' ? 'copyPaste' : 'cutPaste'
+            this.filesService.addToClipboard(this.selection)
+          }
+          break
+        case 'v':
+          this.filesService.onPasteClipboard()
+          break
+      }
+    })
+    return true
+  }
+
+  private handleKeyboardAction(ev: KeyboardEvent): boolean {
+    if (ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) {
+      return false
+    }
+    let action: (() => void) | undefined
+    switch (ev.key) {
+      case 'Enter':
+        if (this.selection.length === 1) {
+          action = () => this.browse(this.selection[0])
+        }
+        break
+      case 'F2':
+        if (this.selection.length === 1 && !this.isTrashRepo && !this.inSharesList) {
+          action = () => this.shortcutRename()
+        }
+        break
+      case 'Delete':
+        if (this.selection.length && !this.inSharesList) {
+          action = () => this.openTrashDialog(this.isTrashRepo)
+        }
+        break
+    }
+    if (!action) {
+      return false
+    }
+    ev.preventDefault()
+    ev.stopPropagation()
+    this.zone.run(action)
+    return true
+  }
+
+  private isEditableKeyboardTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
+  }
+
+  private focusFilesView(focusOrigin: Element | null) {
+    const activeElement = document.activeElement
+    // Focus the files view only if focus stayed unchanged or fell back to the body after the previous view disappeared.
+    if (
+      (activeElement !== focusOrigin && activeElement !== document.body) ||
+      this.isEditableKeyboardTarget(activeElement) ||
+      (activeElement instanceof Element && !!activeElement.closest('.modal.show, [role="dialog"][aria-modal="true"]'))
+    ) {
+      return
+    }
+    const selector = this.galleryMode.enabled ? '#thumb-files' : '#table-files'
+    const filesView = this.scrollView.element.nativeElement.querySelector(selector) as HTMLElement | null
+    filesView?.focus({ preventScroll: true })
+  }
+
+  private scrollKeyboardSelectionIntoView(file: FileModel, key: KeyboardNavigationKey) {
+    if (this.scrollView.viewPortItems.indexOf(file) === -1) {
+      setTimeout(() => this.scrollView.scrollInto(file), 0)
+      return
+    }
+    const selectedRows = this.scrollView.element.nativeElement.querySelectorAll(tableTrSelectedClass)
+    if (!selectedRows.length) {
+      setTimeout(() => this.scrollView.scrollInto(file), 0)
+      return
+    }
+    const element: HTMLElement = key === 'ArrowUp' ? selectedRows[0] : selectedRows[selectedRows.length - 1]
+    if (!elementIsVisible(element)) {
+      element.scrollIntoView(key === 'ArrowUp')
+    }
+  }
+
+  private initEventHandlers() {
+    this.zone.runOutsideAngular(() => {
+      this.eventDragOverHandler = this.renderer.listen(this.scrollView.element.nativeElement, 'dragover', (ev): boolean | void => {
+        if (this.inSharesList || (this.isTrashRepo && !this.moveFromDrag)) {
+          ev.preventDefault()
+          return false
+        }
+        if (['TD', 'TR', 'DIV', 'APP-VIRTUAL-SCROLL', 'IMG'].indexOf(ev.target.nodeName) > -1) {
+          ev.preventDefault()
+          if (this.moveFromDrag) {
+            ev.dataTransfer.dropEffect = 'move'
+          } else {
+            ev.dataTransfer.dropEffect = 'copy'
+          }
+        }
+      })
+      this.eventDragStartHandler = this.renderer.listen(this.scrollView.element.nativeElement, 'dragstart', (ev) => {
+        if (this.isTrashRepo || this.inSharesList) {
+          ev.preventDefault()
+        }
+        if (ev.target.parentElement.nodeName === 'TD' || ev.target.parentElement.nodeName === 'DIV') {
+          const f: FileModel =
+            this.scrollView.viewPortItems[
+              this.galleryMode.enabled ? ev.target.parentElement.getAttribute('rowIndex') : ev.target.parentElement.parentElement.rowIndex
+            ]
+          if (f) {
+            if (this.selection.indexOf(f) === -1) {
+              this.zone.run(() => this.setSelection([f], f, f))
+            }
+            this.moveFromDrag = true
+          }
+        }
+      })
+      this.eventDragEnterHandler = this.renderer.listen(this.scrollView.element.nativeElement, 'dragenter', (ev) => {
+        ev.preventDefault()
+        if (this.moveFromDrag && (ev.target.parentElement.nodeName === 'TD' || ev.target.parentElement.nodeName === 'DIV')) {
+          const f =
+            this.scrollView.viewPortItems[
+              this.galleryMode.enabled ? ev.target.parentElement.getAttribute('rowIndex') : ev.target.parentElement.parentElement.rowIndex
+            ]
+          if (f && f.isDir && this.selection.indexOf(f) === -1) {
+            if (ev.target.parentElement.nodeName === 'TD') {
+              this.renderer.addClass(ev.target.parentElement, dragClass)
+            } else if (ev.target.parentElement.classList.contains('card-body')) {
+              this.renderer.addClass(ev.target.parentElement.parentElement, dragClass)
+            }
+          }
+        }
+      })
+      this.eventDragLeaveHandler = this.renderer.listen(this.scrollView.element.nativeElement, 'dragleave', (ev) => {
+        ev.preventDefault()
+        if (this.moveFromDrag) {
+          if (ev.target.parentElement.nodeName === 'TD') {
+            this.renderer.removeClass(ev.target.parentElement, dragClass)
+          } else if (ev.target.parentElement.classList.contains('card-body')) {
+            this.renderer.removeClass(ev.target.parentElement.parentElement, dragClass)
+          }
+        }
+      })
+      this.eventDragEndHandler = this.renderer.listen(this.scrollView.element.nativeElement, 'dragend', (ev) => {
+        ev.preventDefault()
+        this.moveFromDrag = false
+      })
+      this.eventDropHandler = this.renderer.listen(this.scrollView.element.nativeElement, 'drop', (ev): boolean | void => {
+        if (this.inSharesList || (this.isTrashRepo && !this.moveFromDrag)) {
+          ev.preventDefault()
+          return false
+        }
+        if (this.moveFromDrag && (ev.target.parentElement.nodeName === 'TD' || ev.target.parentElement.nodeName === 'DIV')) {
+          ev.preventDefault()
+          const f: FileModel =
+            this.scrollView.viewPortItems[
+              this.galleryMode.enabled ? ev.target.parentElement.getAttribute('rowIndex') : ev.target.parentElement.parentElement.rowIndex
+            ]
+          if (f && f.isDir && this.selection.indexOf(f) === -1) {
+            this.renderer.removeClass(ev.target.parentElement, dragClass)
+            // start move action
+            if (this.selection.length) {
+              void this.zone.run(() => this.filesService.copyMove(this.selection, f.path, FILE_OPERATION.MOVE))
+            }
+          }
+        } else if (ev.dataTransfer.files.length) {
+          ev.preventDefault()
+          this.zone.run(() => this.onDropFiles(ev))
+          return false
+        } else {
+          ev.preventDefault()
+          return false
+        }
+      })
+      this.eventKeysHandler = this.renderer.listen(this.scrollView.element.nativeElement, 'keydown', (ev: KeyboardEvent) => {
+        if (this.renamingInProgress || this.isEditableKeyboardTarget(ev.target)) {
+          return
+        }
+        if (this.handleKeyboardShortcut(ev)) {
+          return
+        }
+        if (this.handleKeyboardAction(ev)) {
+          return
+        }
+        if (!keyboardNavigationKeys.has(ev.key)) {
+          return
+        }
+        const key = ev.key as KeyboardNavigationKey
+        if ((key === 'ArrowLeft' || key === 'ArrowRight') && !this.galleryMode.enabled) {
+          return
+        }
+        ev.preventDefault()
+        ev.stopPropagation()
+        const files = this.getFilteredFiles()
+        if (!files.length) {
+          return
+        }
+        const target = this.getKeyboardNavigationTarget(files, key, ev.shiftKey)
+        this.zone.run(() => this.applyKeyboardSelection(ev, target.file))
+        this.scrollKeyboardSelectionIntoView(target.file, target.key)
+      })
+    })
+  }
+
+  private destroyEventHandlers() {
+    for (const eventHandler of [
+      this.eventDragStartHandler,
+      this.eventDragOverHandler,
+      this.eventDragEnterHandler,
+      this.eventDragLeaveHandler,
+      this.eventDragEndHandler,
+      this.eventDropHandler,
+      this.eventKeysHandler
+    ].filter((evHandler: () => void) => evHandler)) {
+      try {
+        eventHandler()
+      } catch (e) {
+        console.warn(e)
+      }
+    }
+  }
+}

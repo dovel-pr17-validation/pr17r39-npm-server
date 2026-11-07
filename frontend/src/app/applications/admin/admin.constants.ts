@@ -1,0 +1,62 @@
+import { LucideLayers, LucideSettings, LucideUserRoundCog, LucideUsersRound, LucideWrench } from '@lucide/angular'
+import { AppMenu } from '../../layout/layout.interfaces'
+
+export const ADMIN_PATH = {
+  BASE: 'admin',
+  USERS: 'users',
+  GUESTS: 'guests',
+  GROUPS: 'groups',
+  PGROUPS: 'personal_groups',
+  SPACES: 'spaces',
+  TOOLS: 'tools'
+} as const
+
+export const ADMIN_TITLE = {
+  ADMIN: 'Administration',
+  USERS: 'Users',
+  GROUPS: 'Groups',
+  GUESTS: 'Guests',
+  PGROUPS: 'Personal groups',
+  SPACES: 'Spaces',
+  TOOLS: 'Tools'
+} as const
+
+export const ADMIN_ICON = {
+  BASE: LucideSettings,
+  USERS: LucideUserRoundCog,
+  GROUPS: LucideUsersRound,
+  SPACES: LucideLayers,
+  TOOLS: LucideWrench
+} as const
+
+export const ADMIN_MENU: AppMenu = {
+  title: ADMIN_TITLE.ADMIN,
+  link: `${ADMIN_PATH.BASE}/${ADMIN_PATH.USERS}`,
+  icon: ADMIN_ICON.BASE,
+  matchLink: new RegExp(`^${ADMIN_PATH.BASE}`),
+  checks: [{ prop: 'user', value: 'isAdmin' }],
+  submenus: [
+    {
+      title: ADMIN_TITLE.USERS,
+      icon: ADMIN_ICON.USERS,
+      link: `${ADMIN_PATH.BASE}/${ADMIN_PATH.USERS}`,
+      matchLink: RegExp(`^${ADMIN_PATH.BASE}/${ADMIN_PATH.USERS}$|^${ADMIN_PATH.BASE}/${ADMIN_PATH.GUESTS}$`)
+    },
+    {
+      title: ADMIN_TITLE.GROUPS,
+      icon: ADMIN_ICON.GROUPS,
+      link: `${ADMIN_PATH.BASE}/${ADMIN_PATH.GROUPS}`,
+      matchLink: RegExp(`^${ADMIN_PATH.BASE}/${ADMIN_PATH.GROUPS}|^${ADMIN_PATH.BASE}/${ADMIN_PATH.PGROUPS}`)
+    },
+    {
+      title: ADMIN_TITLE.SPACES,
+      icon: ADMIN_ICON.SPACES,
+      link: `${ADMIN_PATH.BASE}/${ADMIN_PATH.SPACES}`
+    },
+    {
+      title: ADMIN_TITLE.TOOLS,
+      icon: ADMIN_ICON.TOOLS,
+      link: `${ADMIN_PATH.BASE}/${ADMIN_PATH.TOOLS}`
+    }
+  ]
+} as const

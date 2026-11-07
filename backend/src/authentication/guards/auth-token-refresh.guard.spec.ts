@@ -1,0 +1,179 @@
+import { sign } from '@fastify/cookie'
+import { createMock, DeepMocked } from '@golevelup/ts-vitest'
+import { ExecutionContext } from '@nestjs/common'
+import { JwtModule, JwtService } from '@nestjs/jwt'
+import { PassportModule } from '@nestjs/passport'
+import { Test, TestingModule } from '@nestjs/testing'
+import { PinoLogger } from 'nestjs-pino'
+import crypto from 'node:crypto'
+import { UserModel } from '../../applications/users/models/user.model.js'
+import { UsersManager } from '../../applications/users/services/users-manager.service.js'
+import { configuration } from '../../configuration/config.environment.js'
+import { AuthConfig } from '../auth.config.js'
+import { AuthManager } from '../auth.service.js'
+import { CSRF_ERROR } from '../constants/auth.js'
+import type { JwtPayload } from '../interfaces/jwt-payload.interface.js'
+import { TOKEN_TYPE } from '../interfaces/token.interface.js'
+import { AuthTokenRefreshGuard } from './auth-token-refresh.guard.js'
+import { AuthTokenRefreshStrategy } from './auth-token-refresh.strategy.js'
+
+describe(AuthTokenRefreshGuard.name, () => {
+  const csrfToken: string = crypto.randomUUID()
+  let authConfig: AuthConfig
+  let jwtService: JwtService
+  let authRefreshGuard: AuthTokenRefreshGuard
+  let refreshToken: string
+  let refreshTokenWithoutCSRF: string
+  let accessTokenSignedWithRefreshSecret: string
+  let context: DeepMocked<ExecutionContext>
+  const usersManager = {
+    fromAuthToken: vi.fn(async (user: UserModel): Promise<UserModel | null> => user)
+  }
+
+  beforeAll(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      imports: [JwtModule.register({ global: true }), PassportModule],
+      providers: [
+        AuthTokenRefreshGuard,
+        AuthTokenRefreshStrategy,
+        AuthManager,
+        { provide: UsersManager, useValue: usersManager },
+        {
+          provide: PinoLogger,
+          useValue: {
+            assign: () => undefined
+          }
+        }
+      ]
+    }).compile()
+
+    authConfig = configuration.auth
+    jwtService = module.get<JwtService>(JwtService)
+    authRefreshGuard = module.get<AuthTokenRefreshGuard>(AuthTokenRefreshGuard)
+    refreshToken = await jwtService.signAsync(
+      { tokenType: TOKEN_TYPE.REFRESH, identity: { id: 1, login: 'foo' }, [TOKEN_TYPE.CSRF]: csrfToken } as JwtPayload,
+      {
+        secret: authConfig.token.refresh.secret,
+        expiresIn: 30
+      }
+    )
+    refreshTokenWithoutCSRF = await jwtService.signAsync({ tokenType: TOKEN_TYPE.REFRESH, identity: { id: 1, login: 'foo' } } as JwtPayload, {
+      secret: authConfig.token.refresh.secret,
+      expiresIn: 30
+    })
+    accessTokenSignedWithRefreshSecret = await jwtService.signAsync(
+      { tokenType: TOKEN_TYPE.ACCESS, identity: { id: 1, login: 'foo' } } as JwtPayload,
+      {
+        secret: authConfig.token.refresh.secret,
+        expiresIn: 30
+      }
+    )
+    context = createMock<ExecutionContext>()
+  })
+
+  it('should be defined', () => {
+    expect(authConfig).toBeDefined()
+    expect(jwtService).toBeDefined()
+    expect(authRefreshGuard).toBeDefined()
+    expect(refreshToken).toBeDefined()
+    expect(refreshTokenWithoutCSRF).toBeDefined()
+    expect(accessTokenSignedWithRefreshSecret).toBeDefined()
+    expect(csrfToken).toBeDefined()
+  })
+
+  it('should pass with a valid refresh token in cookies with CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: sign(csrfToken, authConfig.token.csrf.secret) },
+      cookies: {
+        [authConfig.token.refresh.name]: refreshToken
+      }
+    })
+    expect(await authRefreshGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should pass with a valid refresh token in request header with no CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer ${refreshToken}`
+      }
+    })
+    expect(await authRefreshGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should reject a valid refresh token when the current user is unavailable', async () => {
+    usersManager.fromAuthToken.mockResolvedValueOnce(null)
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer ${refreshToken}`
+      }
+    })
+    await expect(authRefreshGuard.canActivate(context)).rejects.toThrow('Unauthorized')
+  })
+
+  it('should throw an error with an invalid refresh token in cookies', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {},
+      cookies: {
+        [authConfig.token.refresh.name]: 'bar'
+      }
+    })
+    await expect(authRefreshGuard.canActivate(context)).rejects.toThrow('Unauthorized')
+  })
+
+  it('should throw an error with an invalid refresh token in request header', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer bar`
+      }
+    })
+    await expect(authRefreshGuard.canActivate(context)).rejects.toThrow('Unauthorized')
+  })
+
+  it('should reject a token with an invalid type', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer ${accessTokenSignedWithRefreshSecret}`
+      }
+    })
+    await expect(authRefreshGuard.canActivate(context)).rejects.toThrow('Unauthorized')
+  })
+
+  it('should throw an error with a valid refresh token in cookies and a missing CSRF in request header', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {},
+      cookies: {
+        [authConfig.token.refresh.name]: refreshToken
+      }
+    })
+    await expect(authRefreshGuard.canActivate(context)).rejects.toThrow(new RegExp(CSRF_ERROR.MISSING_HEADERS))
+  })
+
+  it('should throw an error with a valid refresh token in cookies and a missing CSRF claim in the refresh token', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: csrfToken },
+      cookies: {
+        [authConfig.token.refresh.name]: refreshTokenWithoutCSRF
+      }
+    })
+    await expect(authRefreshGuard.canActivate(context)).rejects.toThrow(new RegExp(CSRF_ERROR.MISSING_JWT))
+  })
+
+  it('should throw an error with a valid refresh token in cookies and a mismatch CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: csrfToken + '*' },
+      cookies: {
+        [authConfig.token.refresh.name]: refreshToken
+      }
+    })
+    await expect(authRefreshGuard.canActivate(context)).rejects.toThrow(new RegExp(CSRF_ERROR.MISMATCH))
+  })
+})

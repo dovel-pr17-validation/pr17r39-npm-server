@@ -1,0 +1,76 @@
+import { Test, TestingModule } from '@nestjs/testing'
+import { CONNECT_ERROR_CODE } from '../../../app.constants.js'
+import { NotificationsManager } from '../../../applications/notifications/services/notifications-manager.service.js'
+import { UserModel } from '../../../applications/users/models/user.model.js'
+import { AdminUsersManager } from '../../../applications/users/services/admin-users-manager.service.js'
+import { AdminUsersQueries } from '../../../applications/users/services/admin-users-queries.service.js'
+import { UsersManager } from '../../../applications/users/services/users-manager.service.js'
+import { UsersQueries } from '../../../applications/users/services/users-queries.service.js'
+import { generateUserTest } from '../../../applications/users/utils/test.js'
+import { hashPassword } from '../../../common/functions.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { DB_TOKEN_PROVIDER } from '../../../infrastructure/database/constants.js'
+import { AuthManager } from '../../auth.service.js'
+import { AuthProviderMySQL } from './auth-provider-mysql.service.js'
+
+describe(AuthProviderMySQL.name, () => {
+  let authProviderMySQL: AuthProviderMySQL
+  let usersManager: UsersManager
+  let userTest: UserModel
+
+  beforeAll(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AuthProviderMySQL,
+        UsersManager,
+        UsersQueries,
+        AdminUsersQueries,
+        { provide: AdminUsersManager, useValue: {} },
+        { provide: AuthManager, useValue: {} },
+        { provide: DB_TOKEN_PROVIDER, useValue: {} },
+        {
+          provide: Cache,
+          useValue: { consumeRateLimit: vi.fn().mockResolvedValue({ totalHits: 1, timeToExpire: 60, isBlocked: false, timeToBlockExpire: 0 }) }
+        },
+        { provide: NotificationsManager, useValue: {} }
+      ]
+    }).compile()
+
+    authProviderMySQL = module.get<AuthProviderMySQL>(AuthProviderMySQL)
+    usersManager = module.get<UsersManager>(UsersManager)
+    module.useLogger(['fatal'])
+    // mocks
+    userTest = new UserModel(generateUserTest(), false)
+    usersManager.updateAccesses = vi.fn(() => Promise.resolve())
+  })
+
+  it('should be defined', () => {
+    expect(authProviderMySQL).toBeDefined()
+    expect(usersManager).toBeDefined()
+    expect(userTest).toBeDefined()
+  })
+
+  it('should validate the user', async () => {
+    userTest.makePaths = vi.fn()
+    usersManager.findUser = vi.fn().mockReturnValue({ ...userTest, password: await hashPassword(userTest.password!) })
+    expect(await authProviderMySQL.validateUser(userTest.login, userTest.password!)).toBeDefined()
+    expect(userTest.makePaths).toHaveBeenCalled()
+  })
+
+  it('should not validate the user', async () => {
+    usersManager.findUser = vi
+      .fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({ ...userTest, password: await hashPassword('bar') })
+      .mockRejectedValueOnce({ message: 'db error', code: 'OTHER' })
+      .mockRejectedValueOnce(
+        new Error('Authentication service error', {
+          cause: { code: Array.from(CONNECT_ERROR_CODE)[0] }
+        })
+      )
+    expect(await authProviderMySQL.validateUser(userTest.login, userTest.password!)).toBeNull()
+    expect(await authProviderMySQL.validateUser(userTest.login, userTest.password!)).toBeNull()
+    await expect(authProviderMySQL.validateUser(userTest.login, userTest.password!)).rejects.toThrow(/db error/i)
+    await expect(authProviderMySQL.validateUser(userTest.login, userTest.password!)).rejects.toThrow(/authentication service/i)
+  })
+})

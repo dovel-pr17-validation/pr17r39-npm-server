@@ -1,0 +1,29 @@
+<header class="main-header">
+  <nav class="navbar navbar-content" [class.navbar-content--search]="navbarSearch.searchRouteActive()">
+    <a (click)="toggleLeftSideBar()"
+       [class.navbar-logo-button--delayed]="!leftSideBarIsOpen"
+       [class.navbar-logo-button--placeholder]="leftSideBarIsOpen"
+       class="navbar-button navbar-logo-button"
+       role="button">
+      <span class="logo-container">
+        <span aria-hidden="true" class="sync-in-favicon logo-spin-in"></span>
+      </span>
+    </a>
+    @if (!navbarSearch.searchRouteActive()) {
+      <div class="navbar-breadcrumb">
+        <app-breadcrumb></app-breadcrumb>
+      </div>
+    }
+    <app-navbar-search></app-navbar-search>
+    <div class="navbar-right-side">
+      <div (click)="openSidebarUser()" class="menu">
+        <div class="d-flex align-items-center avatar">
+          @if (userAvatar) {
+            <img class="avatar-img bg-gray-light-important" [src]="userAvatar" alt="">
+          }
+          <span class="avatar-{{allOnlineStatus[user?.onlineStatus]}}"></span>
+        </div>
+      </div>
+    </div>
+  </nav>
+</header>

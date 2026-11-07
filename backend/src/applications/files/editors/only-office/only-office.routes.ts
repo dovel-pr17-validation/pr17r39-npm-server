@@ -1,0 +1,14 @@
+import { SPACES_ROUTE } from '../../../spaces/constants/routes.js'
+
+export const ONLY_OFFICE_ROUTE = {
+  BASE: SPACES_ROUTE.BASE,
+  ONLY_OFFICE: 'onlyoffice',
+  SETTINGS: 'settings',
+  DOCUMENT: 'document',
+  CALLBACK: 'callback'
+} as const
+
+export const API_ONLY_OFFICE = `${ONLY_OFFICE_ROUTE.BASE}/${ONLY_OFFICE_ROUTE.ONLY_OFFICE}`
+export const API_ONLY_OFFICE_SETTINGS = `${API_ONLY_OFFICE}/${ONLY_OFFICE_ROUTE.SETTINGS}`
+export const API_ONLY_OFFICE_DOCUMENT = `${API_ONLY_OFFICE}/${ONLY_OFFICE_ROUTE.DOCUMENT}`
+export const API_ONLY_OFFICE_CALLBACK = `${API_ONLY_OFFICE}/${ONLY_OFFICE_ROUTE.CALLBACK}`

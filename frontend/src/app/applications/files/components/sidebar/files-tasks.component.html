@@ -1,0 +1,117 @@
+<div class="sidebar-component-title app-top-menu-tool-bar justify-content-between">
+  <div class="sidebar-component-title-side"></div>
+  <div class="sidebar-component-title-label">
+    @switch (nbActiveTasks) {
+      @case (0) {
+        <span>{{ (nbTotalTasks === 0 ? 'no_task' : nbTotalTasks > 1 ? 'nb_tasks' : 'one_task') | translate:locale.language:{ nb: nbTotalTasks } }}</span>
+      }
+      @default {
+        <span>{{
+            (nbActiveTasks > 1 ? 'nb_active_tasks' : 'one_active_task') | translate:locale.language:{
+              nba: nbActiveTasks,
+              nb: nbTotalTasks
+            }
+          }}
+      </span>
+      }
+    }
+  </div>
+  <div class="sidebar-component-title-side gap-1">
+    @if (nbTotalTasks) {
+      @if (hasCancellableTasks) {
+        <button type="button"
+                (click)="cancelTasks()"
+                [tooltip]="'Stop' | translate:locale.language"
+                class="btn btn-default"
+                placement="top">
+          <svg [lucideIcon]="icons.LucideOctagonX"></svg>
+        </button>
+      }
+      <button type="button"
+              (click)="removeTasks()"
+              class="btn btn-default">
+        <svg [lucideIcon]="icons.LucideX"></svg>
+      </button>
+    }
+  </div>
+</div>
+<!-- Inner menu: contains the tasks -->
+<div appAutoResize>
+  @for (task of tasks; track task.id) {
+    <div class="task-list"
+         [class.task-list--cancelled]="task.ui.cancelled"
+         [class.task-list--error]="task.ui.error"
+         [class.task-list--interactive]="task.ui.openable"
+         [class.task-list--pending]="task.ui.pending"
+         [class.task-list--queued]="task.ui.queued"
+         [tooltip]="task.result ? (task.result | translate:locale.language) : ''"
+         (click)="openTask(task)"
+         placement="bottom">
+      <div class="task-list__content">
+        <div class="task-list__header">
+          <svg [class]="'task-list__status' +
+                        (task.ui.error ? ' text-danger' : '') +
+                        (task.ui.cancelled || task.ui.queued ? ' text-muted' : '') +
+                        (task.ui.pending ? ' icon-spin-pulse' : '')"
+               [lucideIcon]="task.ui.statusIcon"></svg>
+          <span class="task-list__operation">
+            <svg [lucideIcon]="task.ui.operationIcon"></svg>
+          </span>
+          <span class="task-list__name">{{ task.displayName ?? task.name }}</span>
+        </div>
+        @if (task.ui.error && task.result) {
+          <div class="text-danger task-list__result">
+            {{ task.result | translate:locale.language }}
+          </div>
+        }
+      </div>
+      <div class="task-list__progress-row">
+        <div class="task-list__progress">
+          <progressbar [max]="100"
+                       [value]="task.ui.progress"
+                       [type]="task.ui.progressType"
+                       [class.custom-progress-bar--cancelled]="task.ui.cancelled"
+                       class="custom-progress-bar position-relative">
+              <span class="task-list__progress-label d-flex align-items-center justify-content-center position-absolute w-100">
+                @for (item of task.ui.progressItems; track item.type) {
+                  @if (!$first) {
+                    <span>&nbsp;•&nbsp;</span>
+                  }
+                  @if (item.icon) {
+                    <svg [lucideIcon]="item.icon"></svg>
+                    <span>&nbsp;</span>
+                  }
+                  @switch (item.type) {
+                    @case ('currentSize') {
+                      <span>{{ item.value | toBytes:2 }}</span>
+                    }
+                    @case ('totalSize') {
+                      <span>{{ item.value | toBytes:2 }}</span>
+                    }
+                    @case ('size') {
+                      <span>{{ item.value | toBytes:2 }}</span>
+                    }
+                    @case ('endedAt') {
+                      <span>{{ item.value | amTimeAgo:true }}</span>
+                    }
+                    @default {
+                      <span>{{ item.value }}</span>
+                    }
+                  }
+                }
+              </span>
+          </progressbar>
+        </div>
+        @if (task.ui.cancellable) {
+          <button type="button"
+                  (click)="cancelTask($event, task)"
+                  [tooltip]="'Stop' | translate:locale.language"
+                  class="btn btn-sm btn-default task-list__cancel"
+                  placement="top">
+            <svg [lucideIcon]="icons.LucideOctagonX"></svg>
+          </button>
+        }
+      </div>
+    </div>
+  }
+</div>

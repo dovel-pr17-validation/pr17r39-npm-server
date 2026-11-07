@@ -1,0 +1,136 @@
+import { createReadStream } from 'node:fs'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { Readable } from 'node:stream'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+import sharp from 'sharp'
+import TextToSVG from 'text-to-svg'
+import type { FileThumbnail } from '../applications/files/interfaces/file-thumbnail.interface.js'
+import { maxFileSizeExceededError } from '../applications/files/utils/errors.js'
+import { moveFiles } from '../applications/files/utils/files.js'
+
+// Sharp settings
+sharp.cache(false)
+sharp.concurrency(Math.min(2, os.cpus()?.length || 1))
+// SVG files must only be loaded from buffers so librsvg has no base directory
+// from which it can resolve local external resources.
+sharp.block({ operation: ['VipsForeignLoadSvgFile'] })
+
+// Constants
+export const imgMimeTypePrefix = 'image/'
+export const pngMimeType = 'image/png'
+export const svgMimeType = 'image/svg+xml'
+export const webpMimeType = 'image/webp'
+export const maxThumbnailInputSize = 25 * 1024 * 1024
+const avatarSize = 512
+const fontPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fonts', 'avatar.ttf')
+const loadTextToSVG = promisify(TextToSVG.load.bind(TextToSVG))
+const sharpInputFormats = Object.values(sharp.format).filter(({ input }) => input.file || input.buffer)
+let textToSvgCache: Promise<TextToSVG> | null = null
+
+export async function generateThumbnail(filePath: string, size: number, sourceMimeType: string): Promise<FileThumbnail> {
+  const sourceSize = (await fs.stat(filePath)).size
+  if (sourceSize > maxThumbnailInputSize) {
+    throw maxFileSizeExceededError()
+  }
+  const normalizedFilePath = filePath.toLowerCase()
+  const inputFormat = sharpInputFormats.find(({ input }) => input.fileSuffix?.some((suffix: string) => normalizedFilePath.endsWith(suffix)))
+  if (!inputFormat) {
+    return {
+      mimeType: sourceMimeType.replace('image-', imgMimeTypePrefix),
+      size: sourceSize,
+      stream: createReadStream(filePath)
+    }
+  }
+  const input = inputFormat.id === 'svg' || !inputFormat.input.file ? await fs.readFile(filePath) : filePath
+  const thumbnail = await sharp(input, {
+    failOn: 'none',
+    sequentialRead: true, // sequential read = more efficient I/O
+    limitInputPixels: 268e6 // protects against extremely large images
+  })
+    .rotate()
+    .resize({
+      width: size,
+      height: size,
+      fit: 'inside',
+      kernel: 'nearest',
+      withoutEnlargement: true,
+      fastShrinkOnLoad: true // true by default, added for clarity
+    })
+    .webp({ quality: 80, effort: 0, alphaQuality: 90 })
+    .toBuffer()
+  return { mimeType: webpMimeType, size: thumbnail.length, stream: Readable.from([thumbnail]) }
+}
+
+export async function generateAvatar(initials: string): Promise<NodeJS.ReadableStream> {
+  const tts = await getTextToSvg()
+  const { backgroundColor, foregroundColor } = randomColor()
+  const fontSize = fitFontSize(tts, initials, avatarSize * 0.67)
+
+  const d = tts.getD(initials, {
+    x: avatarSize / 2,
+    y: avatarSize / 2.1,
+    fontSize,
+    anchor: 'center middle'
+  })
+
+  const svg = `
+<svg width="${avatarSize}" height="${avatarSize}" viewBox="0 0 ${avatarSize} ${avatarSize}"
+     xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="${backgroundColor}"/>
+  <path d="${d}" fill="${foregroundColor}" />
+</svg>`.trim()
+
+  return sharp(Buffer.from(svg, 'utf8')).png()
+}
+
+export async function convertImageToBase64(imgPath: string) {
+  const base64String = await fs.readFile(imgPath, { encoding: 'base64' })
+  return `data:image/png;base64,${base64String}`
+}
+
+export async function convertTempImageToPng(temporaryImagePath: string, outputPngPath: string, size?: number): Promise<void> {
+  size ??= avatarSize
+  const srcBuffer = await fs.readFile(temporaryImagePath)
+  const pngBuffer = await sharp(srcBuffer).rotate().resize(size, size, { fit: 'cover' }).png().toBuffer()
+  await fs.writeFile(temporaryImagePath, pngBuffer)
+  await moveFiles(temporaryImagePath, outputPngPath, true)
+}
+
+function randomColor() {
+  let color = ''
+  while (color.length < 6) {
+    /* sometimes the returned value does not have
+     * the 6 digits needed, so we do it again until
+     * it does
+     */
+    color = Math.floor(Math.random() * 16777215).toString(16)
+  }
+  const red = parseInt(color.substring(0, 2), 16)
+  const green = parseInt(color.substring(2, 4), 16)
+  const blue = parseInt(color.substring(4, 6), 16)
+  const brightness = red * 0.299 + green * 0.587 + blue * 0.114
+
+  return {
+    backgroundColor: `#${color}`,
+    foregroundColor: brightness > 180 ? '#000000' : '#ffffff'
+  }
+}
+
+function fitFontSize(tts: TextToSVG, text: string, box: number, start = box): number {
+  // Heuristic for fitting text to the available width
+  let size = Math.max(20, Math.floor(start))
+  // Lower bound to prevent infinite loops when the font renders very small
+  while (size > 20) {
+    const m = tts.getMetrics(text, { fontSize: size, anchor: 'center middle' })
+    if (m.width <= box) break
+    size -= 4
+  }
+  return size
+}
+
+function getTextToSvg(): Promise<TextToSVG> {
+  return (textToSvgCache ??= loadTextToSVG(fontPath) as Promise<TextToSVG>)
+}

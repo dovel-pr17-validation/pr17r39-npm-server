@@ -1,0 +1,75 @@
+.wizard {
+  display: flex;
+  flex-direction: column;
+  font-size: $font-size-base;
+  height: 100%;
+  padding: 10px;
+
+  th {
+    background-color: #545b62;
+    border: 1px solid #545b62 !important;
+    color: white;
+  }
+
+  thead {
+    font-size: $font-size-base !important;
+  }
+
+  .sync-wizard-reset-icon {
+    font-size: 2rem;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid #9faecb !important;
+  }
+
+  .wizard-nav-header {
+    border-style: hidden;
+
+    th {
+      border-radius: $border-radius-base $border-radius-base 0 0;
+      padding: 0.5rem !important;
+    }
+  }
+
+  .wizard-nav-content {
+    border-radius: 0 0 $border-radius-base $border-radius-base;
+  }
+
+  .app-top-menu {
+    border: none !important;
+    background: transparent !important;
+  }
+
+  .wizard-actions .btn {
+    min-height: 35px;
+    padding: .3rem .75rem;
+    font-size: $font-size-base;
+
+    > .lucide {
+      font-size: $font-size-lg;
+    }
+  }
+
+  .area {
+    padding: 15px;
+    height: 100%;
+
+    .dropzone {
+      display: flex;
+      justify-content: center;
+      border: 2px dashed $gray;
+      border-radius: $border-radius-base;
+      padding: 80px;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: $gray;
+      height: 100%;
+
+      &.active {
+        border: 2px dashed $dark-blue;
+        color: $dark-blue;
+      }
+    }
+  }
+}

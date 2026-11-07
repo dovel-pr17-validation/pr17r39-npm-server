@@ -1,0 +1,592 @@
+import type { TreeNode } from '@ali-hm/angular-tree-component'
+import { HttpClient, HttpErrorResponse, HttpParams, HttpResponse } from '@angular/common/http'
+import { inject, Injectable } from '@angular/core'
+import { TAR_EXTENSION, TAR_GZ_EXTENSION } from '@sync-in-server/backend/src/applications/files/constants/compress'
+import {
+  FILE_MODE,
+  FILE_OPERATION,
+  FORCE_AS_FILE_OWNER,
+  SEND_FILE_ERROR_MSG
+} from '@sync-in-server/backend/src/applications/files/constants/operations'
+import {
+  API_FILES_FAVORITES,
+  API_FILES_OPERATION,
+  API_FILES_OPERATION_GET_PROPS,
+  API_FILES_OPERATION_MAKE,
+  API_FILES_RECENTS,
+  API_FILES_SEARCH,
+  API_FILES_TASK_OPERATION,
+  API_FILES_TASK_OPERATION_COMPRESS,
+  API_FILES_TASK_OPERATION_DECOMPRESS,
+  API_FILES_TASK_OPERATION_DOWNLOAD,
+  API_FILES_TASKS_DOWNLOAD
+} from '@sync-in-server/backend/src/applications/files/constants/routes'
+import type { DeleteFileFavoriteDto, FileFavoriteDto } from '@sync-in-server/backend/src/applications/files/dto/file-favorite.dto'
+import type {
+  CompressFileDto,
+  CopyMoveFileDto,
+  DownloadFileDto,
+  MakeFileDto,
+  SearchFilesDto
+} from '@sync-in-server/backend/src/applications/files/dto/file-operations.dto'
+import type { CopyMoveFileResponse } from '@sync-in-server/backend/src/applications/files/interfaces/copy-move-file.interface'
+import type { FileLockProps, FilePropsWithPermissions } from '@sync-in-server/backend/src/applications/files/interfaces/file-props.interface'
+import type { FileTree } from '@sync-in-server/backend/src/applications/files/interfaces/file-tree.interface'
+import type { FileTask } from '@sync-in-server/backend/src/applications/files/models/file-task'
+import {
+  COLLABORA_EDITOR,
+  COLLABORA_ONLINE_EXTENSIONS
+} from '@sync-in-server/backend/src/applications/files/editors/collabora-online/collabora-online.constants'
+import type { FileEditorProviders } from '@sync-in-server/backend/src/applications/files/editors/file-editor-providers.interface'
+import {
+  EURO_OFFICE_EDITOR,
+  ONLY_OFFICE_EDITOR,
+  ONLY_OFFICE_EXTENSIONS
+} from '@sync-in-server/backend/src/applications/files/editors/only-office/only-office.constants'
+import type { FileContent } from '@sync-in-server/backend/src/applications/files/schemas/file-content.interface'
+import type { FileFavorite, FileFavoriteIdentity } from '@sync-in-server/backend/src/applications/files/schemas/file-favorite.interface'
+import type { FileRecent } from '@sync-in-server/backend/src/applications/files/schemas/file-recent.interface'
+import { API_SPACES_TREE } from '@sync-in-server/backend/src/applications/spaces/constants/routes'
+import { SPACE_OPERATION, SPACE_REPOSITORY } from '@sync-in-server/backend/src/applications/spaces/constants/spaces'
+import { encodeUrl, forbiddenChars, isValidFileName } from '@sync-in-server/backend/src/common/shared'
+import { BsModalRef } from 'ngx-bootstrap/modal'
+import {
+  BehaviorSubject,
+  catchError,
+  EMPTY,
+  filter,
+  firstValueFrom,
+  map,
+  Observable,
+  of,
+  shareReplay,
+  Subject,
+  switchMap,
+  take,
+  tap,
+  timer
+} from 'rxjs'
+import { downloadWithAnchor } from '../../../common/utils/functions'
+import { TAB_MENU } from '../../../layout/layout.interfaces'
+import { LayoutService } from '../../../layout/layout.service'
+import { StoreService } from '../../../store/store.service'
+import { UserService } from '../../users/user.service'
+import { FilesLockDialogComponent } from '../components/dialogs/files-lock-dialog.component'
+import { type FilesOverwriteAction, FilesOverwriteDialogComponent } from '../components/dialogs/files-overwrite-dialog.component'
+import type { FilesViewerDialogComponent as FilesViewerDialogComponentState } from '../components/dialogs/files-viewer-dialog.component'
+import { FilesViewerSelectDialog } from '../components/dialogs/files-viewer-select-dialog.component'
+import { fileLockPropsToString } from '../components/utils/file-lock.utils'
+import { MAX_CLIENT_EDITOR_FILE_SIZE, SHORT_MIME } from '../files.constants'
+import type { FileOpenOptions, ResolvedFile } from '../interfaces/file-open.interface'
+import { FileContentModel } from '../models/file-content.model'
+import { FileFavoriteModel } from '../models/file-favorite.model'
+import { FileRecentModel } from '../models/file-recent.model'
+import { FileModel } from '../models/file.model'
+import { FilesTasksService } from './files-tasks.service'
+
+type ViewerHookResult = { action: 'open'; shortMime: string } | { action: 'offerDownload'; message?: string }
+
+@Injectable({ providedIn: 'root' })
+export class FilesService {
+  // Tree section
+  public treeNodeSelected: TreeNode = null
+  private readonly treeCopyMoveRequested = new BehaviorSubject(false)
+  public readonly treeCopyMoveOn = this.treeCopyMoveRequested.pipe(filter(Boolean))
+  // Selection section
+  public readonly fileSelectionRemove = new Subject<FileModel>()
+  public readonly fileSelectionClear = new Subject<void>()
+  // Clipboard section
+  public clipboardAction: 'copyPaste' | 'cutPaste' = 'copyPaste'
+  // Files
+  public currentRoute: string
+  private readonly editorMetadataReconciliationDelay = 2_000
+  private readonly fileSizeLimitExceededMessage = 'File size limit exceeded'
+  private readonly textBinaryProbeBytes = 4096
+  private readonly http = inject(HttpClient)
+  private readonly layout = inject(LayoutService)
+  private readonly store = inject(StoreService)
+  private readonly filesTasksService = inject(FilesTasksService)
+  private readonly userService = inject(UserService)
+
+  openTreeCopyMove() {
+    this.layout.showRSideBarTab(TAB_MENU.TREE, true)
+    this.treeCopyMoveRequested.next(true)
+  }
+
+  consumeTreeCopyMove() {
+    this.treeCopyMoveRequested.next(false)
+  }
+
+  getTreeNode(nodePath: string, showFiles = false): Promise<FileTree[]> {
+    return firstValueFrom(
+      this.http.get<FileTree[]>(`${API_SPACES_TREE}/${nodePath}`, { params: showFiles ? new HttpParams().set('showFiles', showFiles) : null })
+    )
+  }
+
+  addToClipboard(files: FileModel[]) {
+    if (!files.length) return
+    if (!this.store.filesClipboard.getValue().length) {
+      this.layout.showRSideBarTab(TAB_MENU.CLIPBOARD, true)
+      this.store.filesClipboard.next(files)
+    } else {
+      const uniq = files.filter((f: FileModel) => this.store.filesClipboard.getValue().indexOf(f) === -1)
+      if (uniq.length) {
+        this.store.filesClipboard.next([...uniq, ...this.store.filesClipboard.getValue()])
+      }
+    }
+  }
+
+  removeFromClipboard(file: FileModel) {
+    this.store.filesClipboard.next(this.store.filesClipboard.getValue().filter((f: FileModel) => f.id !== file.id))
+  }
+
+  clearClipboard() {
+    this.store.filesClipboard.next([])
+  }
+
+  onPasteClipboard(action?: 'copyPaste' | 'cutPaste') {
+    const operation = action ? action : this.clipboardAction
+    if (this.store.filesClipboard.getValue().length) {
+      const dirPath: string = this.currentRoute
+      this.copyMove([...this.store.filesClipboard.getValue()], dirPath, operation === 'copyPaste' ? FILE_OPERATION.COPY : FILE_OPERATION.MOVE).catch(
+        console.error
+      )
+      this.clearClipboard()
+    }
+  }
+
+  download(file: FileModel) {
+    downloadWithAnchor(file.dataUrl)
+  }
+
+  offerDownload(file: FileModel, reason = 'No preview available for this file') {
+    const message = `
+      <div>${this.layout.translateString(reason)}</div>
+      <div class="mt-3 fw-bold">${this.layout.translateString('Click to download')}</div>
+    `
+    const notification = this.layout.sendNotification('info', file.name, message, null, { enableHtml: true }, true)
+    if (notification) {
+      notification.onTap.pipe(take(1)).subscribe(() => this.download(file))
+    }
+  }
+
+  async copyMove(files: FileModel[], dstDirectory: string, type: FILE_OPERATION.COPY | FILE_OPERATION.MOVE): Promise<void> {
+    let overwrite = false
+    let filesToProcess = files
+    const dstFiles = await this.getTreeNode(dstDirectory, true)
+    const exist: FileModel[] = files.filter((f: FileModel) => dstFiles.some((x) => x.name.toLowerCase() === f.name.toLowerCase()))
+    if (exist.length > 0) {
+      const action = await this.openOverwriteDialog(exist)
+      if (action === 'cancel') return
+      overwrite = action === 'overwrite'
+      if (action === 'skip') {
+        filesToProcess = files.filter((file) => !exist.includes(file))
+        if (!filesToProcess.length) return
+      }
+    }
+    const isMove = type === FILE_OPERATION.MOVE
+    for (const file of filesToProcess) {
+      if (isMove) file.isBeingDeleted = true
+      const op: CopyMoveFileDto = { dstDirectory: dstDirectory, overwrite: overwrite }
+      this.http.request<FileTask>(type, file.taskUrl, { body: op }).subscribe({
+        next: (t: FileTask) => this.filesTasksService.addTask(t),
+        error: (e: HttpErrorResponse) => {
+          if (isMove) file.isBeingDeleted = false
+          this.layout.sendNotification('error', type === 'move' ? 'Move failed' : 'Copy failed', file.name, e)
+        }
+      })
+    }
+  }
+
+  rename(file: FileModel, name: string, overwrite = false): Observable<CopyMoveFileResponse> {
+    if (!this.isValidName(name)) return EMPTY
+    const dstDirectory = file.path.split('/').slice(0, -1).join('/') || '.'
+    const op: CopyMoveFileDto = { dstDirectory: dstDirectory, dstName: name, overwrite: overwrite }
+    return this.http.request<CopyMoveFileResponse>(FILE_OPERATION.MOVE, file.dataUrl, { body: op })
+  }
+
+  delete(files: FileModel[]) {
+    for (const file of files) {
+      file.isBeingDeleted = true
+      this.http.delete<FileTask>(file.taskUrl).subscribe({
+        next: (t: FileTask) => this.filesTasksService.addTask(t),
+        error: (e: HttpErrorResponse) => {
+          file.isBeingDeleted = false
+          this.layout.sendNotification('error', 'Deletion failed', file.name, e)
+        }
+      })
+    }
+  }
+
+  emptyTrash(alias: string, displayName: string): Observable<FileTask> {
+    return this.http
+      .delete<FileTask>(`${API_FILES_TASK_OPERATION}/${SPACE_REPOSITORY.TRASH}/${encodeURIComponent(alias)}`)
+      .pipe(tap((task: FileTask) => this.filesTasksService.addTask(task, displayName)))
+  }
+
+  make(type: 'file' | 'directory', name: string, dirPath: string, asCallBack: true): Observable<any>
+  make(type: 'file' | 'directory', name: string, dirPath?: string, asCallBack?: false, openAfterCreate?: boolean): void
+  make(type: 'file' | 'directory', name: string, dirPath: string = null, asCallBack = false, openAfterCreate = false): Observable<any> | void {
+    if (!this.isValidName(name)) return
+    dirPath = dirPath || this.currentRoute
+    const op: MakeFileDto = { type: type }
+    if (asCallBack) {
+      return this.http.post(`${API_FILES_OPERATION_MAKE}/${dirPath}/${name}`, op)
+    } else {
+      this.http.post(`${API_FILES_OPERATION_MAKE}/${dirPath}/${name}`, op).subscribe({
+        next: () => this.store.filesOnEvent.next({ filePath: dirPath, fileName: name, focus: true, reload: true, openAfterCreate }),
+        error: (e: HttpErrorResponse) => this.layout.sendNotification('error', 'Creation failed', name, e)
+      })
+    }
+  }
+
+  compress(op: CompressFileDto) {
+    const outputExtension = op.extension === TAR_EXTENSION && op.compression ? TAR_GZ_EXTENSION : op.extension
+    this.http.post<FileTask>(`${API_FILES_TASK_OPERATION_COMPRESS}/${this.currentRoute}/${op.name}.${outputExtension}`, op).subscribe({
+      next: (t: FileTask) => this.filesTasksService.addTask(t),
+      error: (e: HttpErrorResponse) => this.layout.sendNotification('error', 'Compression failed', op.name, e)
+    })
+  }
+
+  decompress(file: FileModel) {
+    this.http.post<FileTask>(`${API_FILES_TASK_OPERATION_DECOMPRESS}/${this.currentRoute}/${file.name}`, null).subscribe({
+      next: (t: FileTask) => this.filesTasksService.addTask(t),
+      error: (e: HttpErrorResponse) => this.layout.sendNotification('error', 'Compression failed', file.name, e)
+    })
+  }
+
+  downloadFromUrl(url: string, name: string) {
+    if (!this.isValidName(name)) return
+    const op: DownloadFileDto = { url: url }
+    this.http.post<FileTask>(`${API_FILES_TASK_OPERATION_DOWNLOAD}/${this.currentRoute}/${name}`, op).subscribe({
+      next: (t: FileTask) => this.filesTasksService.addTask(t),
+      error: (e: HttpErrorResponse) => this.layout.sendNotification('error', 'Download failed', url, e)
+    })
+  }
+
+  downloadTaskArchive(taskId: string) {
+    downloadWithAnchor(`${API_FILES_TASKS_DOWNLOAD}/${taskId}`)
+  }
+
+  listFavorites(): Observable<FileFavoriteModel[]> {
+    return this.http.get<FileFavorite[]>(API_FILES_FAVORITES).pipe(map((files) => files.map((file) => new FileFavoriteModel(file))))
+  }
+
+  addFavorite(file: FileModel): Observable<FileFavoriteIdentity> {
+    const body = { fileId: file.id } satisfies FileFavoriteDto
+    return this.http.post<FileFavoriteIdentity>(`${API_FILES_FAVORITES}/${file.encodedPath}`, body)
+  }
+
+  removeFavorite(fileId: number): Observable<void> {
+    const body = { fileId } satisfies DeleteFileFavoriteDto
+    return this.http.request<void>('delete', API_FILES_FAVORITES, { body })
+  }
+
+  toggleFavorite(file: FileModel): Observable<boolean> {
+    if (file.isFavorite) {
+      return this.removeFavorite(file.id).pipe(
+        tap(() => this.updateFavoriteState(file, false)),
+        map(() => false)
+      )
+    }
+    return this.addFavorite(file).pipe(
+      tap(({ fileId }) => {
+        if (file.id < 0) file.id = fileId
+        this.updateFavoriteState(file, true)
+      }),
+      map(() => true)
+    )
+  }
+
+  private updateFavoriteState(file: FileModel, isFavorite: boolean) {
+    file.isFavorite = isFavorite
+    file.updateNbBadges()
+    if (this.store.filesSelection().includes(file)) {
+      this.store.filesSelection.update((files) => [...files])
+    }
+  }
+
+  loadRecents() {
+    this.http
+      .get<FileRecent[]>(API_FILES_RECENTS)
+      .pipe(map((fs) => fs.map((f) => new FileRecentModel(f))))
+      .subscribe({
+        next: (fs: FileRecentModel[]) => this.store.filesRecents.set(fs),
+        error: (e: HttpErrorResponse) => this.layout.sendNotification('error', 'Files', 'Unable to load', e)
+      })
+  }
+
+  search(search: SearchFilesDto): Observable<FileContentModel[]> {
+    return this.http.request<FileContent[]>('search', API_FILES_SEARCH, { body: search }).pipe(map((fs) => fs.map((f) => new FileContentModel(f))))
+  }
+
+  lock(file: FileModel): Observable<FileLockProps> {
+    return this.http.request<FileLockProps>(FILE_OPERATION.LOCK, file.dataUrl)
+  }
+
+  unlock(file: FileModel, forceAsFileOwner = false): Observable<void> {
+    const params = forceAsFileOwner ? new HttpParams().set(FORCE_AS_FILE_OWNER, 'true') : null
+    return this.http.request<void>(FILE_OPERATION.UNLOCK, file.dataUrl, { params: params })
+  }
+
+  unlockRequest(file: FileModel): Observable<void> {
+    return this.http.request<void>(FILE_OPERATION.UNLOCK, `${API_FILES_OPERATION}/${FILE_OPERATION.UNLOCK_REQUEST}/${file.path}`)
+  }
+
+  private getFileProps(filePath: string): Observable<FilePropsWithPermissions> {
+    return this.http.get<FilePropsWithPermissions>(`${API_FILES_OPERATION_GET_PROPS}/${encodeUrl(filePath)}`)
+  }
+
+  async open(filePath: string, options: FileOpenOptions = {}): Promise<void> {
+    let resolved: ResolvedFile | undefined
+    try {
+      resolved = await this.resolveFile(filePath)
+      const file = resolved.file
+      if (options.expectedShortMime && file.shortMime !== options.expectedShortMime) throw new Error('Document not found')
+      if (options.fragment !== undefined) file.markdownFragment = options.fragment
+      if (file.isViewable || file.isEditable) {
+        await this.openViewerAfterAvailabilityCheck(file, [file], resolved.permissions)
+      } else {
+        this.offerDownload(file)
+      }
+    } catch (error) {
+      this.sendOpenDocumentError(resolved?.file ?? (filePath.split('/').pop() || filePath), error)
+    }
+  }
+
+  getSize(file: FileModel): Observable<number> {
+    return this.http.get<{ size: number }>(`${API_FILES_OPERATION}/${FILE_OPERATION.GET_SIZE}/${file.path}`).pipe(map((r) => r.size))
+  }
+
+  getSizeLazy(file: FileModel): Observable<number | undefined> {
+    return (file.dirSize ??= this.getSize(file).pipe(
+      tap((size) => file.updateSize(size)),
+      catchError(() => of(undefined)),
+      shareReplay(1)
+    ))
+  }
+
+  openLockDialog(file: FileModel): void {
+    this.layout.openDialog(FilesLockDialogComponent, null, {
+      initialState: {
+        file: file
+      }
+    })
+  }
+
+  async openOverwriteDialog(files: File[] | FileModel[], renamedTo?: string): Promise<FilesOverwriteAction> {
+    const modalRef: BsModalRef<FilesOverwriteDialogComponent> = this.layout.openDialog(FilesOverwriteDialogComponent, null, {
+      initialState: { files, renamedTo } as FilesOverwriteDialogComponent
+    })
+    return new Promise<FilesOverwriteAction>((resolve) => {
+      let resolved = false
+      const subAction = modalRef.content!.action.subscribe((action: FilesOverwriteAction) => {
+        resolved = true
+        cleanup()
+        resolve(action)
+      })
+      // Triggered when the modal is closed (close button, backdrop click, ESC key, or programmatic hide)
+      const subHidden = modalRef.onHidden?.subscribe(() => {
+        if (!resolved) {
+          cleanup()
+          resolve('cancel')
+        }
+      })
+      const cleanup = () => {
+        subAction.unsubscribe()
+        subHidden?.unsubscribe()
+      }
+    })
+  }
+
+  async openSelectViewerDialog(file: FileModel, editorProvider: FileEditorProviders): Promise<void> {
+    const modalRef: BsModalRef<FilesViewerSelectDialog> = this.layout.openDialog(FilesViewerSelectDialog, null, {
+      initialState: { file, editorProvider } as FilesViewerSelectDialog
+    })
+    return new Promise<void>((resolve) => {
+      // Fired when the modal is closed (button, backdrop, or ESC)
+      const subHidden = modalRef.onHidden?.subscribe(() => {
+        cleanup()
+        resolve(null)
+      })
+      const cleanup = () => {
+        subHidden?.unsubscribe()
+      }
+    })
+  }
+
+  async openViewerDialog(file: FileModel, directoryFiles: FileModel[], permissions: string): Promise<void> {
+    try {
+      if (!this.useTextProbeAsAvailabilityCheck(file)) {
+        const response = await firstValueFrom(this.http.head(file.dataUrl, { observe: 'response' }))
+        this.syncFileMetadata(file, response)
+      }
+      await this.openViewerAfterAvailabilityCheck(file, directoryFiles, permissions)
+    } catch (error) {
+      this.sendOpenDocumentError(file, error)
+    }
+  }
+
+  reconcileMetadataAfterEditorClose(file: FileModel, delay = this.editorMetadataReconciliationDelay): void {
+    const fileDirectory = file.path.split('/').slice(0, -1).join('/')
+    timer(delay)
+      .pipe(
+        filter(() => this.currentRoute === fileDirectory),
+        switchMap(() => this.http.head(file.dataUrl, { observe: 'response' })),
+        catchError(() => EMPTY)
+      )
+      .subscribe((response) => this.syncFileMetadata(file, response))
+  }
+
+  private async openViewerAfterAvailabilityCheck(file: FileModel, directoryFiles: FileModel[], permissions: string): Promise<void> {
+    // Client-side editable viewers use this flag; office editors enforce permissions on the backend.
+    const fromMarkdownLink = file.markdownFragment !== undefined
+    const isWriteable = !file?.lock?.isExclusive && permissions.includes(SPACE_OPERATION.MODIFY)
+    const mode: FILE_MODE = isWriteable ? FILE_MODE.EDIT : FILE_MODE.VIEW
+
+    const hookResult = await this.viewerHook(file)
+
+    if (hookResult.action === 'offerDownload') {
+      this.offerDownload(file, hookResult.message)
+      return
+    }
+
+    const hookedShortMime = hookResult.shortMime
+    const { FilesViewerDialogComponent } = await import('../components/dialogs/files-viewer-dialog.component')
+    const reopeningMarkdownViewer = fromMarkdownLink && this.layout.modalRefs.get(file.path)?.content instanceof FilesViewerDialogComponent
+    if (file?.lock?.isExclusive && !reopeningMarkdownViewer) {
+      this.layout.sendNotification('info', 'The file is locked', fileLockPropsToString(file.lock))
+    }
+
+    const editorProvider: FileEditorProviders = { collabora: false, drawio: false, eurooffice: false, onlyoffice: false }
+    if (hookedShortMime === SHORT_MIME.DOCUMENT) {
+      const officeEditorProvider = this.store.server().files.editors.onlyoffice ? ONLY_OFFICE_EDITOR : EURO_OFFICE_EDITOR
+      const officeEditorEnabled = this.store.server().files.editors[officeEditorProvider]
+      if (this.store.server().files.editors.collabora && officeEditorEnabled) {
+        // Case with multiple editors
+        const collaboraHasExtension = COLLABORA_ONLINE_EXTENSIONS.has(file.getExtension())
+        const officeEditorHasExtension = ONLY_OFFICE_EXTENSIONS.has(file.getExtension())
+        if (collaboraHasExtension && officeEditorHasExtension) {
+          // Get user's saved preference
+          const userEditorPreference = this.userService.getEditorProviderPreference()
+          if (userEditorPreference === COLLABORA_EDITOR || userEditorPreference === officeEditorProvider) {
+            editorProvider[userEditorPreference] = true
+          } else {
+            // Both editors support this file extension, let the user choose
+            await this.openSelectViewerDialog(file, editorProvider)
+            if (!editorProvider.onlyoffice && !editorProvider.eurooffice && !editorProvider.collabora) return
+          }
+        } else {
+          // Based on the supported extension
+          editorProvider.collabora = collaboraHasExtension
+          editorProvider[officeEditorProvider] = officeEditorHasExtension
+        }
+      } else {
+        // Based on availability
+        editorProvider.collabora = this.store.server().files.editors.collabora
+        editorProvider[officeEditorProvider] = officeEditorEnabled
+      }
+    }
+
+    this.layout.openDialog(FilesViewerDialogComponent, 'full', {
+      id: file.path,
+      initialState: {
+        currentFile: file,
+        directoryFiles: directoryFiles,
+        mode: mode,
+        isWriteable: isWriteable,
+        hookedShortMime: hookedShortMime,
+        editorProvider: editorProvider
+      } satisfies Partial<FilesViewerDialogComponentState>
+    })
+  }
+
+  sendOpenDocumentError(file: FileModel | string, e: HttpErrorResponse | any): void {
+    // Availability checks do not include a body or custom message.
+    if (e?.status) {
+      e.message = e.status in SEND_FILE_ERROR_MSG ? SEND_FILE_ERROR_MSG[e.status] : e.statusText
+    }
+    this.layout.sendNotification('error', 'Unable to open document', typeof file === 'string' ? file : file.name, e)
+  }
+
+  private async resolveFile(filePath: string): Promise<ResolvedFile> {
+    const pathSegments = filePath.split('/')
+    const inSharesRepository = pathSegments[0] === SPACE_REPOSITORY.SHARES
+    const basePath = inSharesRepository && pathSegments.length === 2 ? SPACE_REPOSITORY.SHARES : pathSegments.slice(0, 2).join('/')
+    const { file: fileProps, permissions, root } = await firstValueFrom(this.getFileProps(filePath))
+    const file = new FileModel(fileProps, basePath, inSharesRepository, this.store.server().files.editors)
+    // Anchored roots and shares can expose a DB path different from the visible requested path.
+    file.path = filePath
+    file.isRoot = Boolean(root)
+    file.rootAlias = root?.alias
+    return { file, permissions: pathSegments[0] === SPACE_REPOSITORY.TRASH ? '' : permissions }
+  }
+
+  private syncFileMetadata(file: FileModel, response: HttpResponse<unknown>): void {
+    const lastModified = response.headers.get('last-modified')
+    const contentLength = response.headers.get('content-length')
+    const mtime = lastModified ? Date.parse(lastModified) : NaN
+    const size = contentLength !== null ? Number(contentLength) : NaN
+    const mtimeChanged = Number.isFinite(mtime) && mtime !== Math.floor(file.mtime / 1_000) * 1_000
+    const sizeChanged = Number.isFinite(size) && size !== file.size
+    if (!mtimeChanged && !sizeChanged) return
+    if (Number.isFinite(mtime)) {
+      file.mtime = mtime
+      file.updateHTimeAgo(mtime)
+    }
+    if (Number.isFinite(size)) file.updateSize(size)
+  }
+
+  private async viewerHook(file: FileModel): Promise<ViewerHookResult> {
+    if (file.shortMime === SHORT_MIME.DIAGRAM && file.size >= MAX_CLIENT_EDITOR_FILE_SIZE) {
+      return { action: 'offerDownload', message: this.fileSizeLimitExceededMessage }
+    }
+    if (file.shortMime === SHORT_MIME.TEXT || file.shortMime === SHORT_MIME.MARKDOWN) {
+      if (file.shortMime === SHORT_MIME.TEXT && (await this.hasBinaryContent(file))) {
+        return { action: 'offerDownload', message: 'This file contains binary data that can not be read' }
+      }
+      if (file.size >= MAX_CLIENT_EDITOR_FILE_SIZE) {
+        return { action: 'offerDownload', message: this.fileSizeLimitExceededMessage }
+      }
+      return { action: 'open', shortMime: file.shortMime }
+    }
+    return { action: 'open', shortMime: file.shortMime }
+  }
+
+  private useTextProbeAsAvailabilityCheck(file: FileModel): boolean {
+    return file.shortMime === SHORT_MIME.TEXT && file.isTextProbeRequired && file.size > 0
+  }
+
+  private async hasBinaryContent(file: FileModel): Promise<boolean> {
+    if (!file.isTextProbeRequired || file.size === 0) return false
+    const content = await firstValueFrom(
+      this.http.get(file.dataUrl, {
+        headers: { Range: `bytes=0-${this.textBinaryProbeBytes - 1}` },
+        responseType: 'arraybuffer'
+      })
+    )
+    return this.looksBinary(new Uint8Array(content))
+  }
+
+  private looksBinary(bytes: Uint8Array): boolean {
+    if (!bytes.length) return false
+    let controlBytes = 0
+    for (const byte of bytes) {
+      if (byte === 0) return true
+      if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
+        controlBytes++
+      }
+    }
+    return controlBytes / bytes.length > 0.02
+  }
+
+  private isValidName(fileName: string): boolean {
+    try {
+      isValidFileName(fileName)
+      return true
+    } catch (e: any) {
+      this.layout.sendNotification('error', 'Rename', `${this.layout.translateString(e.message)} : ${forbiddenChars}`)
+      return false
+    }
+  }
+}

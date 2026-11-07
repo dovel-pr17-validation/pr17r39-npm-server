@@ -1,0 +1,140 @@
+<aside class="left-sidebar">
+  <div class="sidebar-apps-menus">
+    <div class="menu-title">
+      <div class="menu-title-content">
+        <button (click)="toggleSideBar()" class="logo-toggle" type="button">
+          <span aria-hidden="true" class="sync-in-favicon logo-toggle-spin-in" [class.icon-spin]="!!(store.clientSyncs | async)?.length"></span>
+        </button>
+        <div class="sidebar-brand">
+          <span class="sidebar-app-name">{{ appName }}</span>
+          <span class="sidebar-title" l10nTranslate>{{ dynamicTitle }}</span>
+        </div>
+        <button (click)="navigateInHistory('back')"
+                aria-label="Back"
+                class="d-none d-md-flex menu-title-history-button"
+                type="button">
+          <svg [lucideIcon]="icons.LucideChevronLeft"></svg>
+        </button>
+        <button (click)="navigateInHistory('next')"
+                aria-label="Forward"
+                class="d-none d-md-flex menu-title-history-button"
+                type="button">
+          <svg [lucideIcon]="icons.LucideChevronRight"></svg>
+        </button>
+      </div>
+    </div>
+    <div class="apps-shortcuts">
+      @for (menu of appMenus; track $index) {
+        @if (showAppShortcut(menu)) {
+          <button (click)="navigateToMenu(menu)"
+                  (mouseenter)="previewMenuTitle(menu.title)"
+                  (mouseleave)="restoreMenuTitle()"
+                  [class.active]="menu.isActive"
+                  class="app-shortcut"
+                  type="button">
+            <svg [class]="menu.iconAnimated ? 'icon-spin' : ''" [lucideIcon]="menu.icon"></svg>
+            @if (menu.count) {
+              <span class="menu-badge-icon">
+              @if (menu.count.value | async; as count) {
+                <span class="badge bg-{{menu.count.level}}">{{ count }}</span>
+              }
+              </span>
+            }
+          </button>
+        }
+      }
+      @if (showLogoutShortcut) {
+        <button (click)="logOut()"
+                (mouseenter)="previewMenuTitle('Logout')"
+                (mouseleave)="restoreMenuTitle()"
+                aria-label="Logout"
+                class="app-shortcut"
+                type="button">
+          <svg [lucideIcon]="icons.LucideLogOut"></svg>
+        </button>
+      }
+      @if (store.userImpersonate()) {
+        <button (click)="logOutImpersonate()"
+                (mouseenter)="previewMenuTitle('Logout')"
+                (mouseleave)="restoreMenuTitle()"
+                class="app-shortcut"
+                type="button">
+          <svg [lucideIcon]="icons.LucideVenetianMask"></svg>
+        </button>
+      }
+    </div>
+    <div class="menus-content">
+      <div class="menus-group">
+        <div class="menus-top">
+          @for (menu of navigationSubmenus; track $index; let menuIndex = $index) {
+            @if (!isBottomMenu(menu)) {
+              <ng-container [ngTemplateOutlet]="MenuEntry"
+                            [ngTemplateOutletContext]="{menus: navigationSubmenus, menu: menu, menuIndex: menuIndex}"></ng-container>
+            }
+          }
+        </div>
+        <div class="menus-bottom">
+          @for (menu of navigationSubmenus; track $index; let menuIndex = $index) {
+            @if (isBottomMenu(menu)) {
+              <ng-container [ngTemplateOutlet]="MenuEntry"
+                            [ngTemplateOutletContext]="{menus: navigationSubmenus, menu: menu, menuIndex: menuIndex}"></ng-container>
+            }
+          }
+        </div>
+      </div>
+    </div>
+  </div>
+</aside>
+<!--Start Templates-->
+<ng-template #MenuEntry let-menus="menus" let-menu="menu" let-menuIndex="menuIndex">
+  @if (isMenu(menu)) {
+    @if (showNavigationMenu(menu)) {
+      <ng-container [ngTemplateOutlet]="MenuApps" [ngTemplateOutletContext]="{menu: menu}"></ng-container>
+    }
+  } @else if (showMenuSeparator(menus, menuIndex, menu)) {
+    <ng-container [ngTemplateOutlet]="MenuSeparator" [ngTemplateOutletContext]="{menu: menu}"></ng-container>
+  }
+</ng-template>
+<ng-template #MenuTemplate let-menu="menu">
+  <svg [lucideIcon]="menu.icon" [class]="menu.iconAnimated ? 'icon-spin' : ''"></svg>
+  <span l10nTranslate>{{ menu.title }}</span>
+  @if (menu.count) {
+    <span class="menu-badge">
+    @if (menu.count.value | async; as count) {
+      <span class="badge bg-{{menu.count.level}}">{{ count }}</span>
+    }
+    </span>
+  }
+</ng-template>
+<!--Start Apps Menu Template-->
+<ng-template #MenuApps let-menu="menu">
+  <div class="menu" [class.active]="menu.isActive">
+    <a (click)="closeSideBarOnMobile()" [routerLink]="menu.link" draggable="false">
+      <ng-container [ngTemplateOutlet]="MenuTemplate" [ngTemplateOutletContext]="{menu: menu}"></ng-container>
+    </a>
+  </div>
+  @if (menu.hasSubmenus) {
+    @for (submenu of menu.submenus; track $index; let submenuIndex = $index) {
+      @if (isMenu(submenu)) {
+        @if (showNavigationMenu(submenu)) {
+          <div class="menu submenu" [class.active]="submenu.isActive">
+            <a (click)="closeSideBarOnMobile()" [routerLink]="submenu.link" draggable="false">
+              <ng-container [ngTemplateOutlet]="MenuTemplate" [ngTemplateOutletContext]="{menu: submenu}"></ng-container>
+            </a>
+          </div>
+        }
+      } @else if (showMenuSeparator(menu.submenus, submenuIndex, submenu)) {
+        <ng-container [ngTemplateOutlet]="MenuSeparator" [ngTemplateOutletContext]="{menu: submenu}"></ng-container>
+      }
+    }
+  }
+</ng-template>
+<!--Start Menu Separator Template-->
+<ng-template #MenuSeparator let-menu="menu">
+  <div class="menu-separator" [class.has-label]="menu.title" [class.is-wide]="menu.wide" [attr.aria-hidden]="menu.title ? null : true">
+    @if (menu.title) {
+      <span l10nTranslate>{{ menu.title }}</span>
+    }
+  </div>
+</ng-template>
+<!--End Templates-->

@@ -1,0 +1,121 @@
+import { NgTemplateOutlet } from '@angular/common'
+import { Component, computed, HostListener, inject, Input, model, OnDestroy, OnInit, signal } from '@angular/core'
+import { LucideDynamicIcon, LucideEye, LucidePencil } from '@lucide/angular'
+import { FILE_MODE } from '@sync-in-server/backend/src/applications/files/constants/operations'
+import type { FileEditorProviders } from '@sync-in-server/backend/src/applications/files/editors/file-editor-providers.interface'
+import { L10nTranslateDirective } from 'angular-l10n'
+import { Subscription } from 'rxjs'
+import { LayoutService } from '../../../../layout/layout.service'
+import { StoreService } from '../../../../store/store.service'
+import { SHORT_MIME } from '../../files.constants'
+import { FileModel } from '../../models/file.model'
+import { FilesViewerCollaboraOnlineComponent } from '../viewers/files-viewer-collabora-online.component'
+import { FilesViewerDrawioComponent } from '../viewers/files-viewer-drawio.component'
+import { FilesViewerImageComponent } from '../viewers/files-viewer-image.component'
+import { FilesViewerMarkdownComponent } from '../viewers/files-viewer-markdown.component'
+import { FilesViewerMediaComponent } from '../viewers/files-viewer-media.component'
+import { FilesViewerOnlyOfficeComponent } from '../viewers/files-viewer-only-office.component'
+import { FilesViewerPdfComponent } from '../viewers/files-viewer-pdf.component'
+import { FilesViewerTextComponent } from '../viewers/files-viewer-text.component'
+
+@Component({
+  selector: 'app-files-viewer-dialog',
+  imports: [
+    NgTemplateOutlet,
+    FilesViewerPdfComponent,
+    FilesViewerMediaComponent,
+    FilesViewerTextComponent,
+    FilesViewerMarkdownComponent,
+    FilesViewerImageComponent,
+    LucideDynamicIcon,
+    FilesViewerOnlyOfficeComponent,
+    FilesViewerCollaboraOnlineComponent,
+    FilesViewerDrawioComponent,
+    L10nTranslateDirective
+  ],
+  templateUrl: 'files-viewer-dialog.component.html'
+})
+export class FilesViewerDialogComponent implements OnInit, OnDestroy {
+  @Input({ required: true }) currentFile: FileModel
+  @Input({ required: true }) directoryFiles: FileModel[]
+  @Input({ required: true }) mode: FILE_MODE
+  @Input({ required: true }) isWriteable: boolean
+  @Input({ required: true }) hookedShortMime: string
+  @Input({ required: true }) editorProvider: FileEditorProviders
+  modalClosing = signal<boolean>(false)
+  protected activeViewer = signal<string>('')
+  protected editableViewerReady = signal(false)
+  protected isReadonly = model<boolean>(true)
+  protected currentHeight: number
+  protected readonly SHORT_MIME = SHORT_MIME
+  protected readonly icons = { LucideEye, LucidePencil }
+  protected directoryImages = computed(() => this.directoryFiles.filter((file) => file.isImage))
+  protected canToggleViewer = false
+  protected readonly store = inject(StoreService)
+  private openedFile: { path: string; name: string; mimeUrl: string }
+  private readonly layout = inject(LayoutService)
+  private readonly subscription: Subscription = this.layout.resizeEvent.subscribe(() => this.onResize())
+  private readonly offsetTop = 42
+
+  ngOnInit() {
+    this.canToggleViewer = this.isWriteable && !!this.currentFile?.isEditable && this.hookedShortMime === SHORT_MIME.PDF
+    this.activeViewer.set(this.hookedShortMime)
+    this.isReadonly.set(this.hookedShortMime === SHORT_MIME.PDF || this.mode === FILE_MODE.VIEW || !this.currentFile.isEditable)
+    this.openedFile = { path: this.currentFile.path, name: this.currentFile.name, mimeUrl: this.currentFile.mimeUrl }
+    this.onResize()
+  }
+
+  ngOnDestroy() {
+    this.subscription.unsubscribe()
+  }
+
+  onClose() {
+    const isEditableViewer =
+      this.hookedShortMime === SHORT_MIME.TEXT || this.hookedShortMime === SHORT_MIME.MARKDOWN || this.hookedShortMime === SHORT_MIME.DIAGRAM
+    if (isEditableViewer && this.editableViewerReady()) {
+      // Prevent closing the modal without saving when using text-based editors
+      this.modalClosing.set(true)
+      // Force the next state change
+      setTimeout(() => this.modalClosing.set(false), 1000)
+    } else {
+      this.layout.closeDialog(null, this.openedFile.path)
+    }
+  }
+
+  onMinimize() {
+    this.layout.minimizeDialog(this.openedFile.path, { name: this.openedFile.name, mimeUrl: this.openedFile.mimeUrl })
+  }
+
+  @HostListener('window:beforeunload', ['$event'])
+  onBeforeUnload(event: BeforeUnloadEvent) {
+    const activeViewer = this.activeViewer()
+    if (activeViewer === SHORT_MIME.IMAGE || activeViewer === SHORT_MIME.PDF) return
+
+    event.preventDefault()
+    event.returnValue = ''
+  }
+
+  protected toggleViewer(): void {
+    if (this.activeViewer() === SHORT_MIME.PDF) {
+      this.activeViewer.set(SHORT_MIME.DOCUMENT)
+      this.isReadonly.set(false)
+    } else {
+      this.activeViewer.set(SHORT_MIME.PDF)
+      this.isReadonly.set(true)
+    }
+  }
+
+  protected get officeEditorName(): string {
+    return this.store.server().files.editors.onlyoffice ? 'OnlyOffice' : 'Euro-Office'
+  }
+
+  protected get toggleViewerText(): string {
+    return this.isReadonly()
+      ? this.layout.translateString('edit_in_office_editor', { editor: this.officeEditorName })
+      : this.layout.translateString('View in PDF.js')
+  }
+
+  private onResize() {
+    this.currentHeight = window.innerHeight - this.offsetTop
+  }
+}

@@ -1,0 +1,369 @@
+import { HttpClient, HttpEventType, HttpUploadProgressEvent } from '@angular/common/http'
+import { inject, Injectable, NgZone } from '@angular/core'
+import { API_FILES_OPERATION_UPLOAD } from '@sync-in-server/backend/src/applications/files/constants/routes'
+import type { FileTask } from '@sync-in-server/backend/src/applications/files/models/file-task'
+import { FileTaskStatus } from '@sync-in-server/backend/src/applications/files/models/file-task'
+import { currentTimeStamp } from '@sync-in-server/backend/src/common/shared'
+import { Observable, Subscription } from 'rxjs'
+import { supportUploadDirectory } from '../../../common/utils/functions'
+import { LayoutService } from '../../../layout/layout.service'
+import type { FileUpload, FileUploadTaskRequest } from '../interfaces/file-upload.interface'
+import { FileModel } from '../models/file.model'
+import { FilesTasksService } from './files-tasks.service'
+import { FilesService } from './files.service'
+
+@Injectable({ providedIn: 'root' })
+export class FilesUploadService {
+  public supportUploadDirectory = supportUploadDirectory()
+  private readonly http = inject(HttpClient)
+  private readonly filesService = inject(FilesService)
+  private readonly filesTasksService = inject(FilesTasksService)
+  private readonly layout = inject(LayoutService)
+  private readonly ngZone = inject(NgZone)
+  private readonly maxConcurrentUploads = 3
+  private readonly progressUpdateInterval = 1000
+  private readonly progressUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly progressUpdatedAt = new Map<string, number>()
+  private queuedUploads: FileUploadTaskRequest[] = []
+  private runningUploads = 0
+
+  async addFiles(files: FileUpload[], overwrite: boolean) {
+    const apiRoute = `${API_FILES_OPERATION_UPLOAD}/${this.filesService.currentRoute}`
+    const taskReqs: FileUploadTaskRequest[] = []
+
+    for (const [key, data] of Object.entries(this.sortFiles(files))) {
+      const path = `${this.filesService.currentRoute}/${key}`.split('/').slice(0, -1).join('/')
+      const name = `${this.filesService.currentRoute}/${key}`.split('/').slice(-1)[0]
+      const task: FileTask = this.filesTasksService.createUploadTask(path, name, data.size)
+      const taskReq = this.createUploadTaskRequest(task, this.uploadFiles(`${apiRoute}/${key}`, data.form, overwrite), files.length === 1)
+      this.filesTasksService.registerUploadCancellation(task.id, () => this.cancelUploadTask(taskReq))
+      taskReqs.unshift(taskReq)
+    }
+    this.queuedUploads.push(...taskReqs)
+    this.drainUploadQueue()
+    await Promise.all(taskReqs.map((taskReq: FileUploadTaskRequest) => taskReq.completed))
+    if (files.length > 1) {
+      this.ngZone.run(() => this.notifyUploadBatch(taskReqs))
+    }
+  }
+
+  async addFilesWithConflictResolution(files: FileUpload[], exist: FileModel[]): Promise<void> {
+    let filesToUpload = files
+    let overwrite = false
+    if (exist.length) {
+      const action = await this.filesService.openOverwriteDialog(exist)
+      if (action === 'cancel') return
+      overwrite = action === 'overwrite'
+      if (action === 'skip') {
+        const existingNames = new Set(exist.map((file) => file.name.normalize().toLowerCase()))
+        filesToUpload = files.filter((file) => {
+          const relativePath = file.relativePath || file.webkitRelativePath
+          const topLevelName = relativePath ? relativePath.split('/')[0] : file.name
+          return !existingNames.has(topLevelName.normalize().toLowerCase())
+        })
+        if (!filesToUpload.length) return
+      }
+    }
+    await this.addFiles(filesToUpload, overwrite)
+  }
+
+  onDropFiles(ev: any, exist: FileModel[]) {
+    /*
+     Important: dataTransfer.items must be accessed synchronously before any async operation; overwrite is handled after all analyses.
+     Parameter `exist`: files already present in the current drop target.
+    */
+    if (ev.dataTransfer.items && ev.dataTransfer.items[0]?.webkitGetAsEntry) {
+      this.webkitReadDataTransfer(ev, exist)
+    } else {
+      this.addFilesWithConflictResolution([...ev.dataTransfer.files], exist).catch(console.error)
+    }
+  }
+
+  uploadFileContent(file: FileModel, content: string, updateContent = false, overwrite = false) {
+    const url = `${API_FILES_OPERATION_UPLOAD}/${file.path}`
+    const fileName = (file.rootAlias || file.name).normalize()
+    const fileContent = new File([new Blob([content])], fileName, { type: file.mime.replace('-', '/') })
+    const formData = new FormData()
+    formData.append('file', fileContent)
+    return this.http.request<void>(updateContent ? 'patch' : overwrite ? 'put' : 'post', url, { body: formData })
+  }
+
+  uploadNewFileContent(directoryPath: string, fileName: string, content: string) {
+    const formData = new FormData()
+    formData.append('file', new File([new Blob([content])], fileName, { type: 'application/x-drawio' }))
+    return this.http.post<void>(`${API_FILES_OPERATION_UPLOAD}/${directoryPath}/${fileName}`, formData)
+  }
+
+  private uploadFiles(url: string, form: FormData, overwrite: boolean) {
+    return this.http.request(overwrite ? 'put' : 'post', url, {
+      body: form,
+      reportProgress: true,
+      observe: 'events'
+    })
+  }
+
+  private notifyUploadBatch(taskReqs: FileUploadTaskRequest[]) {
+    let succeeded = 0
+    let failed = 0
+    let cancelled = 0
+    // A directory upload can partially succeed, so count task statuses rather than individual files.
+    for (const { task } of taskReqs) {
+      switch (task.status) {
+        case FileTaskStatus.SUCCESS:
+          succeeded++
+          break
+        case FileTaskStatus.ERROR:
+          failed++
+          break
+        case FileTaskStatus.CANCELLED:
+          cancelled++
+          break
+      }
+    }
+    const message = [
+      succeeded ? this.layout.translateString(succeeded === 1 ? 'one_element_uploaded' : 'nb_elements_uploaded', { nb: succeeded }) : null,
+      failed ? this.layout.translateString(failed === 1 ? 'one_element_failed' : 'nb_elements_failed', { nb: failed }) : null,
+      cancelled ? this.layout.translateString(cancelled === 1 ? 'one_element_cancelled' : 'nb_elements_cancelled', { nb: cancelled }) : null
+    ]
+      .filter(Boolean)
+      .join(' · ')
+    this.layout.sendNotification(
+      failed ? 'error' : cancelled ? 'warning' : 'info',
+      failed ? 'Upload failed' : cancelled ? 'Cancelled' : 'Upload done',
+      message
+    )
+  }
+
+  private createUploadTaskRequest(task: FileTask, req: Observable<any>, notifyCompletion: boolean): FileUploadTaskRequest {
+    let resolveCompleted: () => void = () => undefined
+    const completed = new Promise<void>((resolve) => {
+      resolveCompleted = () => resolve()
+    })
+    return {
+      completed,
+      controller: new AbortController(),
+      done: false,
+      notifyCompletion,
+      req,
+      resolveCompleted,
+      started: false,
+      task
+    }
+  }
+
+  private drainUploadQueue() {
+    while (this.runningUploads < this.maxConcurrentUploads && this.queuedUploads.length) {
+      const taskReq = this.queuedUploads.shift()
+      if (!taskReq || taskReq.done) continue
+      this.runningUploads++
+      void this.runUploadTask(taskReq).finally(() => {
+        this.runningUploads--
+        this.drainUploadQueue()
+      })
+    }
+  }
+
+  private async runUploadTask(taskReq: FileUploadTaskRequest): Promise<void> {
+    const { controller, req, task } = taskReq
+    if (taskReq.done) return
+    taskReq.started = true
+    task.status = FileTaskStatus.PENDING
+    task.startedAt = currentTimeStamp(null, true)
+    this.updateTaskInAngular(task)
+    try {
+      await this.runUpload(task, req, controller.signal)
+      task.props.progress = 100
+      task.status = FileTaskStatus.SUCCESS
+    } catch (e: any) {
+      if (this.isUploadCancelled(e)) {
+        this.setUploadCancelled(task)
+      } else {
+        this.setUploadError(task, e)
+      }
+    } finally {
+      this.finishUploadTask(taskReq)
+    }
+  }
+
+  private finishUploadTask(taskReq: FileUploadTaskRequest) {
+    if (taskReq.done) return
+    this.clearProgressUpdate(taskReq.task.id)
+    taskReq.done = true
+    if (taskReq.task.status !== FileTaskStatus.PENDING && taskReq.task.status !== FileTaskStatus.QUEUED) {
+      taskReq.task.endedAt = currentTimeStamp(null, true)
+    }
+    this.filesTasksService.unregisterUploadCancellation(taskReq.task.id)
+    this.updateTaskInAngular(taskReq.task, taskReq.notifyCompletion)
+    taskReq.resolveCompleted()
+  }
+
+  private runUpload(task: FileTask, req: Observable<any>, signal: AbortSignal): Promise<void> {
+    return this.ngZone.runOutsideAngular(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          if (signal.aborted) {
+            reject(signal.reason)
+            return
+          }
+          let settled = false
+          const subscription = new Subscription()
+          const onAbort = () => {
+            subscription.unsubscribe()
+            settle(() => reject(signal.reason))
+          }
+          const settle = (done: () => void) => {
+            if (settled) return
+            settled = true
+            signal.removeEventListener('abort', onAbort)
+            done()
+          }
+          signal.addEventListener('abort', onAbort, { once: true })
+          subscription.add(
+            req.subscribe({
+              next: (ev: any) => {
+                if (ev.type === HttpEventType.UploadProgress) {
+                  this.updateProgress(task, ev)
+                }
+              },
+              error: (e) => settle(() => reject(e)),
+              complete: () => settle(resolve)
+            })
+          )
+        })
+    )
+  }
+
+  private cancelUploadTask(taskReq: FileUploadTaskRequest) {
+    if (taskReq.done) return
+    taskReq.controller.abort(new Error('Cancelled'))
+    if (taskReq.started) return
+    this.queuedUploads = this.queuedUploads.filter((queuedTaskReq: FileUploadTaskRequest) => queuedTaskReq !== taskReq)
+    this.setUploadCancelled(taskReq.task)
+    this.finishUploadTask(taskReq)
+  }
+
+  private isUploadCancelled(e: any): boolean {
+    return e?.message === 'Cancelled'
+  }
+
+  private setUploadCancelled(task: FileTask) {
+    task.status = FileTaskStatus.CANCELLED
+    task.result = 'Cancelled'
+  }
+
+  private setUploadError(task: FileTask, e: any) {
+    task.status = FileTaskStatus.ERROR
+    task.result = e.status === 0 ? e.statusText : e.error?.message || e.message
+  }
+
+  private updateProgress(task: FileTask, ev: HttpUploadProgressEvent) {
+    task.props.size = ev.loaded
+    task.props.progress = ev.total ? Math.round((100 * ev.loaded) / ev.total) : task.props.progress || 1
+    this.scheduleProgressUpdate(task)
+  }
+
+  private scheduleProgressUpdate(task: FileTask) {
+    const now = Date.now()
+    const lastUpdate = this.progressUpdatedAt.get(task.id) || 0
+    const elapsed = now - lastUpdate
+    if (elapsed >= this.progressUpdateInterval) {
+      this.emitProgressUpdate(task)
+      return
+    }
+    if (this.progressUpdateTimers.has(task.id)) return
+    const timer = setTimeout(() => {
+      this.progressUpdateTimers.delete(task.id)
+      this.emitProgressUpdate(task)
+    }, this.progressUpdateInterval - elapsed)
+    this.progressUpdateTimers.set(task.id, timer)
+  }
+
+  private emitProgressUpdate(task: FileTask) {
+    this.progressUpdatedAt.set(task.id, Date.now())
+    this.updateTaskInAngular(task)
+  }
+
+  private clearProgressUpdate(taskId: string) {
+    const timer = this.progressUpdateTimers.get(taskId)
+    if (timer) {
+      clearTimeout(timer)
+      this.progressUpdateTimers.delete(taskId)
+    }
+    this.progressUpdatedAt.delete(taskId)
+  }
+
+  private updateTaskInAngular(task: FileTask, notifyCompletion = true) {
+    this.ngZone.run(() => this.filesTasksService.updateTask(task, notifyCompletion))
+  }
+
+  private sortFiles(files: FileUpload[]): Record<string, { nb: number; size: number; form: FormData }> {
+    /* Separate files in root directory and directories */
+    const sort: Record<string, { nb: number; size: number; form: FormData }> = {}
+    for (const f of files) {
+      const relPath = f.relativePath || f.webkitRelativePath
+      const key = (relPath ? relPath.split('/')[0] : f.name).normalize()
+      if (!(key in sort)) sort[key] = { nb: 0, size: 0, form: new FormData() }
+      sort[key].form.append('file', f, (relPath || f.name).normalize())
+      sort[key].nb++
+      sort[key].size += f.size
+    }
+    return sort
+  }
+
+  private webkitReadDataTransfer(ev: any, exist: FileModel[]) {
+    let queue = ev.dataTransfer.items.length
+    const files: FileUpload[] = []
+    const readDirectory = (reader: any) => {
+      reader.readEntries(function (entries: any[]) {
+        if (entries.length) {
+          queue += entries.length
+          for (const entry of entries) {
+            if (entry.isFile) {
+              entry.file((file: FileUpload) => {
+                fileReadSuccess(entry, file)
+              }, readError)
+            } else if (entry.isDirectory) {
+              readDirectory(entry.createReader())
+            }
+          }
+          readDirectory(reader)
+        } else {
+          decrement()
+        }
+      }, readError)
+    }
+    const fileReadSuccess = (entry: { fullPath?: string }, file: FileUpload) => {
+      setRelativePath(entry, file)
+      files.push(file)
+      decrement()
+    }
+    const readError = (fileError: any) => {
+      decrement()
+      throw fileError
+    }
+    const decrement = () => {
+      if (--queue == 0) {
+        this.addFilesWithConflictResolution(files, exist).catch(console.error)
+      }
+    }
+
+    const setRelativePath = (entry: { fullPath?: string }, file: FileUpload) => {
+      if (entry.fullPath && entry.fullPath !== `/${file.name}`) {
+        file.relativePath = entry.fullPath.startsWith('/') ? entry.fullPath.slice(1) : entry.fullPath
+      }
+    }
+
+    for (const item of ev.dataTransfer.items) {
+      const entry = item.webkitGetAsEntry()
+      if (!entry) {
+        decrement()
+        return
+      }
+      if (entry.isFile) {
+        fileReadSuccess(entry, item.getAsFile())
+      } else {
+        readDirectory(entry.createReader())
+      }
+    }
+  }
+}

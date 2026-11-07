@@ -1,0 +1,439 @@
+server:
+  # default host : `0.0.0.0`
+  host: 0.0.0.0
+  # default port : `8080`
+  port: 8080
+  # publicUrl: Canonical public URL used to build notification links and document editor URLs.
+  # When unset, notification emails are sent without action links and document editors fall back to the request origin.
+  # It will become required in a future major release.
+  # e.g.: https://sync-in.domain.com
+  # optional
+  publicUrl:
+  # workers: `auto` or `0` (use all cpus) | number of CPUs to use
+  # default: 1
+  workers: 1
+  # trust proxy: `true` (trust all proxies) | `false` | `127.0.0.1,192.168.1.1/24`
+  # legacy numeric values >= 1 are treated as `true` for compatibility
+  # default: true
+  trustProxy: true
+  # restartOnFailure: automatically restart workers if they are killed or die
+  # default: `true`
+  restartOnFailure: true
+logger:
+  # level: `trace` | `debug` | `info` | `warn` | `error` | `fatal`
+  # default: `info`
+  level: info
+  # stdout: if false logs are written to `filePath`
+  # default: `true`
+  stdout: true
+  # Colorize output.
+  # Disabled by default when stdout is set to false.
+  # default: `true`
+  colorize: true
+  # JSON output. When enabled, `colorize` is ignored.
+  # default: `false`
+  jsonOutput: false
+  # Path to the log file used when stdout is set to false
+  filePath:
+mysql:
+  # required
+  url: 'mysql://root:MySQLRootPassword@localhost:3306/database'
+  # default: `false`
+  logQueries: false
+cache:
+  # adapter: `mysql` | `redis`
+  # default: `mysql`
+  adapter: mysql
+  # TTL in seconds
+  # default: `60`
+  ttl: 60
+  # Redis adapter url
+  # default: `redis://127.0.0.1:6379`
+  redis: redis://127.0.0.1:6379
+websocket:
+  # adapter: `cluster` (Node.js Workers: default) | `redis`
+  # default: `cluster`
+  adapter: cluster
+  # Redis adapter url
+  # default: `redis://127.0.0.1:6379`
+  redis: redis://127.0.0.1:6379
+mail:
+  host: smtp.server.com
+  # default: `25`
+  port: 25
+  # default: `Sync-in<notification@sync-in.com>`
+  sender: 'Sync-in<notification@sync-in.com>'
+  # optional
+  auth:
+    user: user
+    pass: 'password'
+  # Defines if the connection should use SSL (if true) or not (if false)
+  # Note: setting `secure: false` does not necessarily mean messages are sent in plaintext
+  # If the server supports STARTTLS, the connection is usually upgraded to TLS automatically
+  # default: `false`
+  secure: false
+  # ignoreTLS: if true, disables the use of STARTTLS even if the server advertises it
+  # default: false
+  ignoreTLS: false
+  # rejectUnauthorized: reject the connection if the server's TLS certificate is invalid
+  # default: true
+  rejectUnauthorized: true
+  # Enable Nodemailer internal SMTP logs
+  # Their verbosity follows the general logger.level; debug and trace enable detailed SMTP traffic
+  # default: `false`
+  logger: false
+auth:
+  # provider : `mysql` | `ldap` | `oidc`
+  # default: `mysql`
+  provider: mysql
+  # Key used to encrypt user secret keys in the database
+  # Optional but strongly recommended
+  # Warning: do not change or remove the encryption key after MFA activation, or the codes will become invalid
+  encryptionKey:
+  # cookie sameSite setting: `lax` | `strict`
+  # default: `strict`
+  cookieSameSite: strict
+  token:
+    access:
+      # Used for token and cookie signatures
+      # required
+      secret:
+      # token expiration = cookie maxAge
+      # default: `15m`
+      expiration: 15m
+    refresh:
+      # Used for token and cookie signatures
+      # required
+      secret:
+      # token expiration = cookie maxAge
+      # default: `4h`
+      expiration: 4h
+  # Multifactor authentication
+  mfa:
+    # Sync-in MFA is enforced for local password authentication.
+    # When OIDC is used, MFA is expected to be enforced by the identity provider.
+    # TOTP configuration
+    totp:
+      # Enable TOTP authentication
+      # default: true
+      enabled: true
+      # Name displayed in the authentication app (FreeOTP, Proton Authenticator, Aegis Authenticator etc.)
+      # default: Sync-in
+      issuer: Sync-in
+  # LDAP authentication
+  ldap:
+    # e.g.: [ldap://localhost:389, ldaps://localhost:636] (array required)
+    # Multiple servers are tried in order until a bind/search succeeds.
+    # required
+    servers: []
+    # tlsOptions: Node.js TLS options used for the LDAP secure connection.
+    # Supports standard TLS options such as `ca`, `rejectUnauthorized`, etc.
+    # See: https://nodejs.org/api/tls.html
+    #      https://nodejs.org/api/tls.html#tlscreatesecurecontextoptions
+    # Example:
+    #   tlsOptions:
+    #     rejectUnauthorized: true
+    #     ca: [/app/certs/ca.pem]
+    # optional
+    tlsOptions:
+    # baseDN: Distinguished name (e.g.: ou=people,dc=ldap,dc=sync-in,dc=com)
+    # Used as the search base for users, and for groups when adminGroup is a CN.
+    # required
+    baseDN: ou=people,dc=ldap,dc=sync-in,dc=com
+    # filter, e.g: (acl=admin)
+    # Appended as-is to the LDAP search filter (trusted config).
+    # optional
+    filter:
+    # upnSuffix: AD domain suffix used with `userPrincipalName` to build UPN-style logins (e.g.: user@`sync-in.com`)
+    # Only used when login is set to userPrincipalName.
+    # optional
+    upnSuffix:
+    # netbiosName: NetBIOS domain name used with `sAMAccountName` to build legacy logins (e.g.: `SYNC_IN`\user)
+    # Only used when login is set to sAMAccountName.
+    # optional
+    netbiosName:
+    # serviceBindDN: Distinguished Name for a service account used to search users/groups.
+    # When set, searches are performed with this account; user bind is used only to validate the password.
+    # e.g.: cn=syncin,ou=services,dc=ldap,dc=sync-in,dc=com
+    # optional
+    serviceBindDN:
+    # serviceBindPassword: Password for the service account used to search users/groups.
+    # optional
+    serviceBindPassword:
+    attributes:
+      # LDAP attribute that matches the login stored in the database.
+      # With a service bind, it is used to locate the user (then bind with the found DN).
+      # Without a service bind, it is used to construct the user's DN for binding (except AD: UPN/DOMAIN\\user).
+      # If you choose mail, local logins should be the user's email address.
+      # e.g.: uid | cn | mail | sAMAccountName | userPrincipalName
+      # default: uid
+      login: uid
+      # Attribute used to retrieve the user's email address
+      # email: `mail` or `email`
+      # default: `mail`
+      email: mail
+      # Attribute used to retrieve the user's storage quota in bytes.
+      # If the attribute is missing, the local storageQuota is not updated.
+      # If the attribute exists with null or 0, local storageQuota is set to null (unlimited).
+      # default: `storageQuota`
+      storageQuota: storageQuota
+    options:
+      # autoCreateUser: Automatically create a local user on first successful LDAP authentication.
+      # The local account is created from LDAP attributes:
+      # - login: from the configured LDAP login attribute (e.g.: uid, cn, sAMAccountName, userPrincipalName)
+      # - email: from the configured email attribute (required)
+      # - firstName / lastName: from givenName+sn, or displayName, or cn (fallback)
+      # When disabled, only existing users can authenticate via LDAP.
+      # default: true
+      autoCreateUser: true
+      # autoCreatePermissions: Permissions assigned to users automatically created via LDAP.
+      # Applied only at user creation time when autoCreateUser is enabled.
+      # Has no effect on existing users.
+      # A complete list of permissions is available in the documentation: https://sync-in.com/docs/admin-guide/permissions
+      # e.g.: [personal_space, spaces_access] (array required)
+      # default: []
+      autoCreatePermissions: []
+      # adminGroup: LDAP group that grants Sync-in administrator privileges.
+      # Accepts either a simple CN (e.g.: "Admins") or a full DN (e.g.: "CN=Admins,OU=Groups,DC=ldap,DC=sync-in,DC=com").
+      # If set, users whose LDAP `memberOf` contains this CN (or whose group DN matches) are assigned the administrator role.
+      # If `memberOf` is missing, Sync-in can also check membership by searching `groupOfNames` groups.
+      # If users cannot read `groupOfNames`, use a service bind account to perform this lookup.
+      # If not set, existing administrator users keep their role and it cannot be removed via LDAP.
+      # optional
+      adminGroup:
+      # enablePasswordAuthFallback: Allow local password authentication for regular users when the LDAP service is unavailable.
+      # Applies only to LDAP connection/DNS/timeout errors after all configured LDAP servers fail.
+      # Always allowed for administrator users (break-glass access).
+      # Administrator accounts should have a local Sync-in password configured and kept available for break-glass recovery.
+      # default: false
+      enablePasswordAuthFallback: false
+  oidc:
+    # OIDC authentication, including MFA, is delegated to the identity provider.
+    # Sync-in TOTP login enforcement applies only to local password authentication.
+    # Users can configure Sync-in TOTP from their profile while authenticated through OIDC; enable/reset/disable still verifies the local Sync-in password.
+    # Users are resolved by the OIDC `sub` first, then by email only when no external identity is linked yet.
+    # The first successful email match stores `sub` as the user's external identity for subsequent logins.
+    # `preferred_username` initializes the local login for a new user. A deterministic `sub`-based suffix resolves collisions.
+    # The assigned local login remains stable on subsequent authentications.
+    # issuerUrl: The URL of the OIDC provider's discovery endpoint
+    # e.g.:
+    # - Keycloak:  https://auth.example.com/realms/my-realm
+    # - Authentik: https://auth.example.com/application/o/my-app/
+    # - Google:    https://accounts.google.com
+    # - Microsoft: https://login.microsoftonline.com/<tenant-id>/v2.0
+    # The server will automatically discover the authorization, token, and userinfo endpoints.
+    # required
+    issuerUrl:
+    # clientId: OAuth 2.0 Client ID obtained from your OIDC provider
+    # required
+    clientId:
+    # clientSecret: OAuth 2.0 Client Secret obtained from your OIDC provider
+    # required
+    clientSecret: 'changeOIDCClientSecret'
+    # redirectUri: The callback URL where users are redirected after authentication
+    # This URL must be registered in your OIDC provider's allowed redirect URIs
+    # e.g.: (API callback): https://sync-in.domain.com/api/auth/oidc/callback
+    #
+    # To allow authentication from the desktop application, the following redirect URLs must also be registered in your OIDC provider:
+    #   - http://127.0.0.1:49152/oidc/callback
+    #   - http://127.0.0.1:49153/oidc/callback
+    #   - http://127.0.0.1:49154/oidc/callback
+    #
+    # required
+    redirectUri: https://sync-in.domain.com/api/auth/oidc/callback
+    options:
+      # autoCreateUser: Automatically create a local user account on first successful OIDC login.
+      # When enabled, the user `login` is derived from `preferred_username`, or from the email local-part when that claim is absent.
+      # When disabled, only existing users are allowed to authenticate via OIDC.
+      # default: true
+      autoCreateUser: true
+      # autoCreatePermissions: Permissions assigned to users automatically created via OIDC.
+      # Applied only when autoCreateUser is enabled and only applied at user creation time.
+      # This option has no effect on existing users.
+      # A complete list of permissions is available in the documentation: https://sync-in.com/docs/admin-guide/permissions
+      # e.g.: [personal_space, spaces_access] (array required)
+      # default: []
+      autoCreatePermissions: []
+      # storageQuotaClaim: OIDC claim used to retrieve the user's storage quota in bytes.
+      # If the claim is missing, the local storageQuota is not updated.
+      # If the claim exists with null or 0, local storageQuota is set to null (unlimited).
+      # default: `storageQuota`
+      storageQuotaClaim: storageQuota
+      # adminRoleOrGroup: Name of the role or group that grants Sync-in administrator access
+      # Users with this value will be granted administrator privileges.
+      # The value is matched against `roles` or `groups` claims provided by the IdP.
+      # Note: depending on the provider (e.g.: Keycloak), roles/groups may be exposed only in tokens
+      # and require proper IdP mappers to be included in the ID token or UserInfo response.
+      # optional
+      adminRoleOrGroup:
+      # enablePasswordAuth: Allow local password-based authentication when using OIDC.
+      # When enabled, users may authenticate with their Sync-in password instead of OIDC.
+      # Sync-in MFA applies to this local password flow.
+      # OIDC logins rely on the identity provider to enforce MFA/SSO policies.
+      # Local password authentication is always allowed for:
+      # - guest users
+      # - administrator users (break-glass access)
+      # - application scopes (app passwords)
+      # For this local login flow, regular users are allowed only when this option is enabled and they know their local Sync-in password.
+      # Users created through OIDC can set a known local password from their profile while authenticated with OIDC.
+      # That local password is also required to enable, reset, or disable Sync-in TOTP from an OIDC browser session.
+      # Administrator accounts should have a local Sync-in password configured and kept available for break-glass recovery.
+      # default: false
+      enablePasswordAuth: false
+      # autoSyncAvatar: Automatically download and synchronize the user avatar from the OIDC `picture` claim.
+      # default: false
+      autoSyncAvatar: false
+      # autoRedirect: Automatically redirect users to the OIDC login flow.
+      # When enabled, the login page is skipped and users are sent directly to the OIDC provider.
+      # default: false
+      autoRedirect: false
+      # buttonText: Label displayed on the OIDC login button.
+      # default: Continue with OpenID Connect
+      buttonText: Continue with OpenID Connect
+    security:
+      # scope: OAuth 2.0 scopes to request (space-separated string)
+      # Common scopes: openid (required), email, profile, groups, roles
+      # default: `openid email profile`
+      scope: openid email profile
+      # supportPKCE: Enable PKCE (Proof Key for Code Exchange) in the authorization code flow.
+      # When true, PKCE is used if supported by the OIDC provider.
+      # default: true
+      supportPKCE: true
+      # allowInsecureRequests: Allow OIDC discovery and token requests over insecure HTTP.
+      # Set to true only for local development or trusted legacy providers.
+      # default: false
+      allowInsecureRequests: false
+      # OAuth 2.0 / OIDC client authentication method used at the token endpoint.
+      # Possible values:
+      # - client_secret_basic (DEFAULT): HTTP Basic auth using client_id and client_secret.
+      #   Recommended for backend (confidential) clients.
+      # - client_secret_post: client_id and client_secret sent in the request body.
+      # - none (or undefined): no client authentication (public clients: mobile / SPA with PKCE).
+      # default: `client_secret_basic`
+      tokenEndpointAuthMethod: client_secret_basic
+      # tokenSigningAlg: Algorithm used to verify the signature of ID tokens (JWT) returned by the OpenID Connect provider.
+      # Common values: RS256, RS384, RS512, ES256, ES384, ES512
+      # default: `RS256`
+      tokenSigningAlg: RS256
+      # userInfoSigningAlg: Algorithm used to request a signed UserInfo response from the OpenID Connect provider.
+      # When not set, the UserInfo endpoint returns a standard JSON response (not signed). This is the most common and recommended configuration.
+      # Common values: (empty), RS256, RS384, RS512, ES256, ES384, ES512
+      # default: empty
+      userInfoSigningAlg:
+      # skipSubjectCheck: Disable verification that the `sub` claim returned by the UserInfo endpoint
+      # matches the `sub` claim from the ID token.
+      # Set to true only for non-compliant or legacy OIDC providers.
+      # default: false
+      skipSubjectCheck: false
+      # requireVerifiedEmail: Require the OIDC provider to mark profile emails as verified before account linking or profile synchronization.
+      # Recommended when your provider exposes a reliable `email_verified` claim.
+      # Some providers omit this claim unless specific scopes/mappers are configured.
+      # default: true
+      requireVerifiedEmail: true
+      # allowPrivateIpAvatarDownload: Allow OIDC avatar downloads from private/internal IP ranges.
+      # Set to true only when the OIDC provider returns trusted internal avatar URLs.
+      # default: false
+      allowPrivateIpAvatarDownload: false
+applications:
+  users:
+    # showUngroupedUsers: make users without a group globally visible to regular users/admins.
+    # Guest accounts are excluded from this global visibility (both as listed accounts and as requesters).
+    # default: `true`
+    showUngroupedUsers: true
+  files:
+    # required
+    dataPath: /home/sync-in
+    # maxUploadSize: Maximum size in bytes for a file received through uploads, WebDAV, sync, remote downloads, or editor callbacks.
+    # default: 5368709120 (5 GB)
+    maxUploadSize: 5368709120
+    links:
+      # Include the public link password in notification emails.
+      # Keep disabled so the password can be shared through a separate channel.
+      # default: false
+      sendPasswordByEmail: false
+    contentIndexing:
+      # Enable indexing of file contents for search (disabling this turns off full-text search)
+      # default: true
+      enabled: true
+      ocr:
+        # Enable OCR on PDF
+        # default: true
+        enabled: true
+        # OCR languages used by tesseract.js
+        # Supports ISO 639-2/T three-letter codes: 'eng', 'spa', 'fra', 'deu', etc.
+        # examples: `[eng,fra]`, `[fra]`
+        # default: [eng]
+        languages: [eng]
+        # Offline mode: do not download OCR languages, only use local language files from the built-in OCR folder
+        # To download languages, use this scheme: https://cdn.jsdelivr.net/npm/@tesseract.js-data/<lang>@1.0.0/4.0.0_best_int/<lang>.traineddata.gz
+        # default: false
+        offline: false
+        # Path to local OCR language files
+        # Used when offline mode is enabled or to override default location
+        # default: built-in OCR directory
+        languagesPath:
+    # Trash retention in days. Set each value to a number of days to enable automatic trash cleanup.
+    # Set to `false` or `0` to disable cleanup for that repository type.
+    # default: users/spaces false
+    trashRetention:
+      users: false
+      spaces: false
+    # Optional document groups shown in the "new document" dialog.
+    # options: `microsoft` | `opendocument` | `drawio`
+    # use [] to only show Text and Markdown
+    # default: [opendocument, microsoft, drawio]
+    sampleDocuments: [opendocument, microsoft, drawio]
+    editors:
+      onlyoffice:
+        # enable onlyoffice integration
+        # default: false
+        enabled: false
+        # Secret used for jwt tokens, it must be the same on the onlyoffice server
+        # required
+        secret:
+        # If unset, the local Docker Compose service is used through Nginx.
+        # If set, this external URL is used instead and must be accessible from the client/browser.
+        # example: https://onlyoffice.domain.com
+        # default: null
+        externalServer:
+        # If you use https, set to `true`.
+        # default: false
+        verifySSL: false
+      eurooffice:
+        # enable Euro-Office integration
+        # default: false
+        enabled: false
+        # Secret used for jwt tokens, it must be the same on the Euro-Office server
+        # required
+        secret:
+        # If unset, the local Docker Compose service is used through Nginx.
+        # If set, this external URL is used instead and must be accessible from the client/browser.
+        # example: https://eurooffice.domain.com
+        # default: null
+        externalServer:
+        # If you use https, set to `true`.
+        # default: false
+        verifySSL: false
+      collabora:
+        # enable collabora online integration
+        # default: false
+        enabled: false
+        # If unset, the local Docker Compose service is used through Nginx.
+        # If set, this external URL is used instead and must be accessible from the client/browser.
+        # example: https://collabora.domain.com
+        # default: null
+        externalServer:
+      drawio:
+        # enable draw.io integration
+        # default: false
+        enabled: false
+        # If unset, the local Docker Compose service is used through Nginx.
+        # If set, this external URL is used instead and must be accessible from the client/browser.
+        # example: https://drawio.domain.com
+        # default: null
+        externalServer:
+  # Client application repository configuration
+  appStore:
+    # repository: `public` | `local`
+    # default: `public`
+    repository: public

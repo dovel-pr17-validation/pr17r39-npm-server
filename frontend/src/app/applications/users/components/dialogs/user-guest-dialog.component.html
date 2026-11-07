@@ -1,0 +1,243 @@
+<div class="modal-header">
+  <h4 class="modal-title">
+    @if (guest) {
+      <svg [lucideIcon]="icons.LucidePencil"></svg>
+      <span>{{ guest.fullName }}</span>
+    } @else {
+      <svg [lucideIcon]="icons.LucidePlus"></svg>
+      <span l10nTranslate>New guest</span>
+    }
+    @if (loading) {
+      <svg [lucideIcon]="icons.LucideLoader" class="ms-2 icon-spin"></svg>
+    }
+  </h4>
+  @if (guest) {
+    <h4 class="modal-title ms-auto">
+      <span l10nTranslate>Edit guest</span>
+    </h4>
+  }
+  <button (click)="layout.closeDialog()" aria-label="Close" class="btn-close btn-close-white {{guest ? 'ms-2' : 'ms-auto'}} ms-2" type="button"></button>
+</div>
+<div class="modal-body" [formGroup]="guestForm">
+  <tabset [justified]="true" type="pills">
+
+    <tab (selectTab)="tabView=null" customClass="tab-dialog form-validation">
+      <ng-template tabHeading>
+        <span class="app-tab-heading">
+          <svg [lucideIcon]="icons.LucideUserRoundCog"></svg>
+          <span class="app-tab-label" l10nTranslate>Account</span>
+        </span>
+      </ng-template>
+      <div class="app-tab-content row g-3">
+        <div class="col-12 col-lg-6 d-flex flex-column">
+          <div class="card dialog-tab-card w-100 mb-3">
+            <div class="card-body d-flex flex-column gap-3">
+              <div class="row g-3">
+                <div class="col-12">
+                  <label class="form-label" for="login" l10nTranslate>Login</label>
+                  <input id="login"
+                         appAutofocus
+                         [autoSelect]="false"
+                         formControlName="login"
+                         [class.is-invalid]="guestForm.controls['login'].invalid"
+                         class="form-control"
+                         autocomplete="off"
+                         type="text">
+                </div>
+                <div class="col-12">
+                  <label class="form-label" for="email" l10nTranslate>Email</label>
+                  <input id="email"
+                         formControlName="email"
+                         [class.is-invalid]="guestForm.controls['email'].invalid"
+                         class="form-control"
+                         autocomplete="off"
+                         type="email">
+                </div>
+                <div class="col-12">
+                  <label class="form-label" for="firstName" l10nTranslate>First name</label>
+                  <input id="firstName"
+                         formControlName="firstName"
+                         [class.is-invalid]="guestForm.controls['firstName'].invalid"
+                         class="form-control"
+                         autocomplete="off"
+                         type="text">
+                </div>
+                <div class="col-12">
+                  <label class="form-label" for="lastName" l10nTranslate>Last name</label>
+                  <input id="lastName"
+                         formControlName="lastName"
+                         class="form-control"
+                         autocomplete="off"
+                         type="text">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card dialog-tab-card w-100">
+            <div class="card-body d-flex flex-column gap-3">
+              <div>
+                <div class="d-flex align-items-center gap-2 mb-1">
+                  <label class="form-label mb-0" for="guestPassword" l10nTranslate>Password</label>
+                  @if (guestForm.value.password !== defaultPassword) {
+                    <div class="d-flex align-items-center ms-auto">
+                      <app-password-strength-bar [passwordToCheck]="guestForm.value.password"></app-password-strength-bar>
+                    </div>
+                  }
+                </div>
+                <app-input-password inputId="guestPassword"
+                                    class="w-100"
+                                    [password]="guestForm.value.password"
+                                    (passwordChange)="updatePassword($event)"
+                                    [showGenerator]="true"
+                                    [showLabel]="false"
+                                    [isRequired]="true"
+                                    placeholder="Set a password">
+                </app-input-password>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 col-lg-6 d-flex flex-column">
+          <div class="card dialog-tab-card w-100 mb-3">
+            <div class="card-body d-flex flex-column gap-3">
+              <div>
+                <label class="form-label" for="language" l10nTranslate>Language</label>
+                <select id="language"
+                        formControlName="language"
+                        class="form-control form-select">
+                  @for (l of languages; track $index) {
+                    <option [ngValue]="l">{{ i18nLanguageText[l] }}</option>
+                  }
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label" for="notification" l10nTranslate>Notification</label>
+                <select id="notification"
+                        formControlName="notification"
+                        class="form-control form-select">
+                  @for (n of allNotifications; track $index) {
+                    <option [ngValue]="allNotifications.indexOf(n)" l10nTranslate>{{ n }}</option>
+                  }
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card dialog-tab-card w-100 mb-3">
+            <div class="card-body d-flex flex-column gap-2">
+              <label class="form-label mb-1" for="isActive" l10nTranslate>Account status</label>
+              <div class="card dialog-check-card dialog-check-card--interactive"
+                   [class.dialog-check-card--active]="guestForm.value.isActive">
+                <div class="card-body p-2">
+                  <div class="d-flex align-items-center form-check form-switch cursor-pointer mb-0">
+                    <input class="form-check-input" formControlName="isActive" id="isActive" type="checkbox">
+                    <label class="form-label form-check-label mb-0 ms-2" for="isActive" [class.text-danger]="!guestForm.value.isActive">
+                      {{ (guestForm.value.isActive ? 'active' : 'suspended') | translate:locale.language | titlecase }}
+                    </label>
+                  </div>
+                </div>
+              </div>
+              @if (guest?.isTemporarilyLocked) {
+                <small class="text-danger" l10nTranslate>Temporarily locked</small>
+              }
+            </div>
+          </div>
+
+          @if (guest) {
+            <div class="card dialog-tab-card w-100">
+              <div class="card-body">
+                <div class="row g-3">
+                  <div class="col-12 col-md-5">
+                    <div class="d-flex flex-column">
+                      <label class="form-label" for="created" l10nTranslate>Creation date</label>
+                      <div class="fs-sm" id="created">{{ guest.createdAt | amDateFormat }}</div>
+                    </div>
+                  </div>
+                  <div class="col-12 col-md-7">
+                    <div class="d-flex flex-column text-md-end">
+                      <label class="form-label" for="access" l10nTranslate>Last accesses</label>
+                      <div class="fs-sm" id="access">
+                        @if (guest.lastAccess) {
+                          <div class="d-flex flex-column mb-2">
+                            <span>{{ guest.currentAccess | amDateFormat }}</span>
+                            <span>{{ guest.currentIp }}</span>
+                          </div>
+                          <div class="d-flex flex-column">
+                            <span>{{ guest.lastAccess | amDateFormat }}</span>
+                            <span>{{ guest.lastIp }}</span>
+                          </div>
+                        } @else {
+                          <span class="text-danger" l10nTranslate>never</span>
+                        }
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+    </tab>
+
+    <tab (selectTab)="tabView='managers'" customClass="tab-dialog">
+      <ng-template tabHeading>
+        <span class="app-tab-heading">
+          <svg [lucideIcon]="icons.LucideUsersRound"></svg>
+          <span class="app-tab-label" l10nTranslate>Managers</span>
+          <span class="app-tab-count">{{ guestForm.value.managers.length || 0 }}</span>
+        </span>
+      </ng-template>
+      <div class="app-tab-content my-3">
+        <app-user-search
+          [members]="guestForm.value.managers"
+          (membersChange)="updateManagers($event)"
+          [withPermissions]="false"
+          [customPlaceholder]="'Type to search for managers to add'"
+          [searchFunction]="searchManagers.bind(this)">
+        </app-user-search>
+        @if (!guestForm.value.managers.length) {
+          <small class="text-danger" l10nTranslate>At least one manager is required</small>
+        }
+      </div>
+    </tab>
+
+    <tab (selectTab)="tabView='groups'" customClass="tab-dialog">
+      <ng-template tabHeading>
+        <span class="app-tab-heading">
+          <svg [lucideIcon]="icons.LucideUsersRound"></svg>
+          <span class="app-tab-label" l10nTranslate>Groups</span>
+          <span class="app-tab-count">{{ guestForm.value.groups.length || 0 }}</span>
+        </span>
+      </ng-template>
+      <div class="app-tab-content my-3">
+        <app-user-search
+          [members]="guestForm.value.groups"
+          (membersChange)="updateGroups($event)"
+          [withPermissions]="false"
+          [customPlaceholder]="'Type to search for groups to add'"
+          [searchFunction]="searchGroups.bind(this)">
+        </app-user-search>
+      </div>
+    </tab>
+  </tabset>
+</div>
+<div class="modal-footer">
+  @if (guest?.id) {
+    <button (click)="confirmDeletion = true"
+            [disabled]="confirmDeletion"
+            class="btn btn-danger" type="button" l10nTranslate>
+      Remove
+    </button>
+  }
+  <button (click)="onCancel()" class="btn btn-secondary ms-auto" data-dismiss="modal" type="button" l10nTranslate>Cancel</button>
+  <button (click)="onSubmit()"
+          [disabled]="guestForm.invalid || submitted" class="btn {{confirmDeletion ? 'btn-danger' : 'btn-primary'}}"
+          type="button"
+          l10nTranslate>
+    {{ confirmDeletion ? 'Confirm deletion' : 'Confirm' }}
+  </button>
+</div>

@@ -1,0 +1,97 @@
+import { Component, EventEmitter, Input, OnChanges, OnDestroy, OnInit, Output, SimpleChanges } from '@angular/core'
+import type { OnlyOfficeConfig } from '@sync-in-server/backend/src/applications/files/editors/only-office/only-office.interface'
+import loadScript from './only-office.utils'
+
+@Component({
+  selector: 'app-files-onlyoffice-document',
+  template: '<div [id]="id"></div>'
+})
+export class OnlyOfficeComponent implements OnInit, OnChanges, OnDestroy {
+  @Input({ required: true }) id: string
+  @Input({ required: true }) editorName: string
+  @Input({ required: true }) documentServerUrl: string
+  @Input({ required: true }) config: OnlyOfficeConfig
+  @Output() loadError = new EventEmitter<{ title: string; titleArgs: { editor: string }; message: string }>()
+  private isFirstOnChanges = true
+
+  ngOnInit(): void {
+    let url = this.documentServerUrl
+    if (!url.endsWith('/')) url += '/'
+    const docApiUrl = `${url}web-apps/apps/api/documents/api.js`
+    loadScript(docApiUrl, 'onlyoffice-api-script')
+      .then(() => this.onLoad())
+      .catch(() => {
+        this.onError(-2)
+      })
+  }
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (this.isFirstOnChanges) {
+      this.isFirstOnChanges = false
+      return
+    }
+
+    if ('config' in changes) {
+      if (window?.DocEditor?.instances[this.id]) {
+        window.DocEditor.instances[this.id].destroyEditor()
+        window.DocEditor.instances[this.id] = undefined
+        console.warn('Important props have been changed, reloading ...')
+        this.onLoad()
+        return
+      }
+    }
+  }
+
+  ngOnDestroy() {
+    if (window?.DocEditor?.instances[this.id]) {
+      window.DocEditor.instances[this.id].destroyEditor()
+      window.DocEditor.instances[this.id] = undefined
+      delete window.DocEditor.instances[this.id]
+    }
+  }
+
+  private onLoad = () => {
+    try {
+      if (!window.DocsAPI) {
+        this.onError(-3)
+        return
+      }
+
+      if (window?.DocEditor?.instances[this.id]) {
+        console.log('Skip loading, instance already exists', this.id)
+        return
+      }
+
+      if (!window?.DocEditor?.instances) {
+        window.DocEditor = { instances: {} }
+      }
+
+      const config: OnlyOfficeConfig = JSON.parse(JSON.stringify(this.config))
+      window.DocEditor.instances[this.id] = window.DocsAPI.DocEditor(this.id, config)
+    } catch (err) {
+      console.error(err)
+      this.onError(-1)
+    }
+  }
+
+  private onError(errorCode: number) {
+    const error = {
+      title: 'office_editor_unknown_error',
+      titleArgs: { editor: this.editorName },
+      message: `Code: ${errorCode}`
+    }
+
+    switch (errorCode) {
+      case -2:
+        error.title = 'office_editor_load_error'
+        error.message = 'The document server may be unreachable or the configuration is invalid'
+        break
+      case -3:
+        error.title = 'office_editor_init_error'
+        error.message = 'DocsAPI not available'
+        break
+    }
+
+    this.loadError.emit(error)
+  }
+}

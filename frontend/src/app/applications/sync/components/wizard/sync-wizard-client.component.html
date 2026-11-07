@@ -1,0 +1,46 @@
+<div class="wizard">
+  <div class="d-flex flex-column text-center fs-md">
+    <div class="mb-2" l10nTranslate>This wizard will help you synchronize a directory on your computer with a Sync-in directory.</div>
+    <div>
+      <div l10nTranslate>To begin, select a folder on your computer.</div>
+      <div l10nTranslate>You can drag the folder into the area below or click on the "Select" button.</div>
+    </div>
+  </div>
+  <div class="d-flex flex-column h-100">
+    @if (syncService.wizard.localPath) {
+      <div class="d-flex flex-column my-auto">
+        <svg (click)="onReset()" [lucideIcon]="icons.LucideCircleX" class="position-absolute align-self-center cursor-pointer sync-wizard-reset-icon" style="margin-left: 85px"></svg>
+        <img [src]="syncService.wizard.localPath.mimeUrl" alt="" class="align-self-center mb-2" height="96">
+        <div class="align-self-center mt-2 fs-md word-break-all fw-500">{{ syncService.wizard.localPath.path }}</div>
+        @if (infoMsg) {
+          <div class="align-self-center text-warning mt-4">
+            <span l10nTranslate>{{ infoMsg }}</span>
+            <span class="text-bold ms-1">:&nbsp;{{ syncService.wizard.localPath.origin }}</span>
+          </div>
+        }
+      </div>
+    } @else {
+      <div (dragleave)="dragLeave($event)" (dragover)="dragOver($event)" (drop)="drop($event)" class="area">
+        <div class="dropzone" l10nTranslate>
+          <span class="d-flex flex-column justify-content-center align-self-center">Drop folder here</span>
+        </div>
+      </div>
+    }
+  </div>
+  <div class="d-flex flex-column">
+    <div class="d-flex align-items-start wizard-actions">
+      <button (click)="onCancel()" class="btn btn-secondary me-auto" type="button" l10nTranslate>
+        <svg [lucideIcon]="icons.LucideCircleX"></svg>
+        Cancel
+      </button>
+      <button (click)="onSelect()" class="btn btn-default" type="button" l10nTranslate>
+        <svg [lucideIcon]="icons.LucideHardDriveDownload"></svg>
+        Select a folder
+      </button>
+      <button (click)="onNext()" [disabled]="!pathIsValid" class="btn btn-default ms-auto" type="button" l10nTranslate>
+        <svg [lucideIcon]="icons.LucideCircleArrowRight"></svg>
+        Next
+      </button>
+    </div>
+  </div>
+</div>

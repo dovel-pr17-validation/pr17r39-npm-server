@@ -1,0 +1,230 @@
+<div class="profile-page" appAutoResize [resizeOffset]="45">
+  <div class="container-fluid p-2">
+    @if (user) {
+      <div class="row g-3">
+        <div class="col-12 col-lg-6 d-flex flex-column gap-3">
+          <div class="card dialog-tab-card">
+            <div class="card-body">
+              <div class="user-header p-0">
+                <div class="d-flex flex-column justify-content-center">
+                  <div class="avatar-xl">
+                    <img [src]="userAvatar" class="avatar-img profile-user-img" alt="">
+                    <span class="avatar-{{allOnlineStatus[user.onlineStatus]}}"></span>
+                  </div>
+                </div>
+
+                <div class="user-details">
+                  <div class="mb-1">{{ user.fullName }}</div>
+                  <div class="mb-2 fs-sm text-nowrap">{{ user.email }}</div>
+                  <div class="text-muted fs-sm">
+                    {{ 'Member since' | translate:locale.language }} {{ user.createdAt | amTimeAgo:true }}
+                  </div>
+
+                  <select [(ngModel)]="user.onlineStatus"
+                          (ngModelChange)="setOnlineStatus($event)"
+                          class="form-select my-auto mt-2">
+                    @for (n of allOnlineStatus; track $index) {
+                      <option [ngValue]="allOnlineStatus.indexOf(n)">
+                        {{ n | translate:locale.language | capitalize }}
+                      </option>
+                    }
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <div class="px-1 mt-4">
+                  @if (user.isUser) {
+                    <div class="row g-2 align-items-center py-2 border-bottom border-secondary-subtle">
+                      <div class="col-5 col-sm-4" l10nTranslate>Avatar</div>
+                      <div class="col-7 col-sm-8 d-flex flex-wrap justify-content-end gap-2">
+                        <button (click)="genAvatar()" class="btn btn-success" type="button" l10nTranslate>Generate</button>
+                        <button class="btn-file-upload btn btn-default" type="button">
+                          <span l10nTranslate>Import</span>
+                          <input (change)="uploadAvatar($event)" accept="image/*" name="file" role="button" type="file" />
+                        </button>
+                      </div>
+                    </div>
+                  }
+
+                  <div class="row g-2 align-items-center py-2 border-bottom border-secondary-subtle">
+                    <div class="col-5 col-sm-4" l10nTranslate>Login</div>
+                    <span class="col-7 col-sm-8 text-end">{{ user.login }}</span>
+                  </div>
+
+                  <div class="row g-2 align-items-center py-2 border-bottom border-secondary-subtle">
+                    <div class="col-5 col-sm-4" l10nTranslate>IP Addresses</div>
+                    <div class="col-7 col-sm-8 d-flex flex-wrap justify-content-end">
+                      <span class="badge bg-warning">{{ user.currentIp }}</span>
+                      <span class="badge bg-default ms-1">{{ user.lastIp }}</span>
+                    </div>
+                  </div>
+
+                  <div class="row g-2 align-items-center py-2 border-bottom border-secondary-subtle">
+                    <div class="col-5 col-sm-4" l10nTranslate>Connections</div>
+                    <div class="col-7 col-sm-8 d-flex flex-wrap justify-content-end">
+                      <span class="badge bg-warning">{{ user.currentAccess | amDateFormat }}</span>
+                      <span class="badge bg-default ms-1">{{ user.lastAccess | amDateFormat }}</span>
+                    </div>
+                  </div>
+
+                  @if (user.isUser) {
+                    <div class="row g-2 align-items-center py-2 border-bottom border-secondary-subtle">
+                      <div class="col-5 col-sm-4" l10nTranslate>Permissions</div>
+                      <div class="col-7 col-sm-8 d-flex flex-wrap justify-content-end">
+                        @if (user.isAdmin) {
+                          <span class="badge bg-purple">
+                            <svg [lucideIcon]="icons.LucideKeyRound"></svg>
+                            <span l10nTranslate>Administrator</span>
+                          </span>
+                        } @else {
+                          @for (app of user.applications; track $index) {
+                            <span class="badge bg-purple m-1" l10nTranslate>{{ app }}</span>
+                          }
+                        }
+                      </div>
+                    </div>
+
+                    <div class="row g-2 align-items-center py-2 border-bottom border-secondary-subtle">
+                      <div class="col-5 col-sm-4" l10nTranslate>Storage Space</div>
+                      <div class="col-7 col-sm-8 d-flex justify-content-end">
+                        <app-storage-usage class="w-100" style="max-width: 18rem;" [item]="user"></app-storage-usage>
+                      </div>
+                    </div>
+                  }
+
+                  <div class="row g-2 align-items-center pt-2">
+                    <div class="col-5 col-sm-4">WebDAV</div>
+                    <div class="col-7 col-sm-8 d-flex justify-content-end">
+                      <span
+                        (click)="clipBoardLink()"
+                        [title]="webdavUrl"
+                        class="badge bg-primary d-inline-flex align-items-center gap-1 cursor-pointer mw-100">
+                        <svg class="flex-shrink-0" [lucideIcon]="icons.LucideCopy"></svg>
+                        <span class="text-truncate">{{ webdavUrl }}</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        @if (user.isUser) {
+          <div class="col-12 col-lg-6 d-flex flex-column gap-3">
+            <div class="card dialog-tab-card">
+              <div class="card-body">
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+                  <div class="text-muted text-uppercase text-nowrap fs-sm text-bold" l10nTranslate>Password</div>
+                  @if (newPassword) {
+                    <div class="ms-auto d-flex justify-content-end">
+                      <app-password-strength-bar [passwordToCheck]="newPassword"></app-password-strength-bar>
+                    </div>
+                  }
+                </div>
+                <div class="d-flex flex-column gap-2">
+                  @if (requiresCurrentPassword) {
+                    <div class="row g-2 align-items-center">
+                      <label class="form-label col-12 col-md-6 mb-0" for="currentPassword">{{ 'current password' | translate:locale.language | capitalize }}</label>
+                      <div class="col-12 col-md-6">
+                        <app-input-password inputId="currentPassword" [(password)]="oldPassword"></app-input-password>
+                      </div>
+                    </div>
+                  }
+
+                  <div class="row g-2 align-items-center">
+                    <label class="form-label col-12 col-md-6 mb-0" for="newPassword">
+                      {{ (requiresCurrentPassword ? 'new password' : 'local password') | translate:locale.language | capitalize }}
+                    </label>
+                    <div class="col-12 col-md-6">
+                      <app-input-password inputId="newPassword"
+                                          [(password)]="newPassword"
+                                          [disabled]="requiresCurrentPassword && !oldPassword?.length"
+                                          [isRequired]="requiresCurrentPassword && !!oldPassword?.length"
+                                          [passwordMinLength]="passwordMinLength"
+                                          [showGenerator]="true">
+                      </app-input-password>
+                    </div>
+                  </div>
+
+                  <div class="row g-2">
+                    <div class="col-12 col-md-6 offset-md-6">
+                      <button [disabled]="!newPassword || (requiresCurrentPassword && !oldPassword) || newPassword.length < passwordMinLength"
+                              (click)="submitPassword()"
+                              class="btn btn-primary text-nowrap"
+                              type="button"
+                              l10nTranslate>
+                        Update
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card dialog-tab-card">
+              <div class="card-body">
+                <div class="text-muted text-uppercase fs-sm text-bold mb-2" l10nTranslate>Security</div>
+                <div class="d-flex flex-column gap-3">
+                  <div class="row g-2 align-items-center">
+                    <div class="form-label col-12 col-md-6 mb-0" l10nTranslate>Two-Factor Authentication</div>
+                    <div class="col-12 col-md-6 d-flex flex-wrap align-items-center gap-2">
+                      <button (click)="enable2Fa()"
+                              [disabled]="!store.server().twoFaEnabled"
+                              class="btn btn-primary"
+                              type="button"
+                              l10nTranslate>
+                        {{ user.twoFaEnabled ? 'Reset' : 'Enable' }}
+                      </button>
+                      @if (user.twoFaEnabled) {
+                        <button (click)="disable2Fa()"
+                                [disabled]="!store.server().twoFaEnabled"
+                                class="btn btn-danger"
+                                type="button"
+                                l10nTranslate>
+                          Disable
+                        </button>
+                      }
+                    </div>
+                  </div>
+
+                  <div class="row g-2 align-items-center">
+                    <div class="form-label col-12 col-md-6 mb-0" l10nTranslate>Application Passwords</div>
+                    <div class="col-12 col-md-6 d-flex align-items-center">
+                      <button (click)="manageAppPasswords()"
+                              class="btn btn-primary"
+                              type="button">
+                        @if (user.appPasswords > 0) {
+                          <div class="d-flex align-items-center gap-2">
+                            <span l10nTranslate>Manage</span>
+                            <span class="badge badge-small bg-primary">{{ user.appPasswords }}</span>
+                          </div>
+                        } @else {
+                          <span l10nTranslate>Generate</span>
+                        }
+                      </button>
+                    </div>
+                  </div>
+
+                  @if (!store.isElectronApp() || store.userImpersonate()) {
+                    <div class="row g-2 align-items-center">
+                      <div class="form-label col-12 col-md-6 mb-0" l10nTranslate>Session</div>
+                      <div class="col-12 col-md-6 d-flex align-items-center">
+                        <button (click)="logOut()"
+                                class="btn btn-danger"
+                                type="button">
+                          <span l10nTranslate>Logout</span>
+                        </button>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+    }
+  </div>
+</div>

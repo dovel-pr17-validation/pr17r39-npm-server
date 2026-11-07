@@ -1,0 +1,52 @@
+#!/bin/sh
+set -eu
+
+: "${PUID:?PUID is not defined}"
+: "${PGID:?PGID is not defined}"
+: "${FORCE_PERMISSIONS:=false}"
+
+case "${PUID}" in
+    ''|*[!0-9]*)
+        echo "PUID must be a non-negative decimal integer" >&2
+        exit 1
+        ;;
+esac
+
+case "${PGID}" in
+    ''|*[!0-9]*)
+        echo "PGID must be a non-negative decimal integer" >&2
+        exit 1
+        ;;
+esac
+
+# The Docker image and its startup scripts use /app/data as the persistent data directory.
+export SYNCIN_APPLICATIONS_FILES_DATAPATH=/app/data
+
+# Create syncin group if needed
+group_name=$(getent group "${PGID}" | cut -d: -f1)
+if [ -z "${group_name}" ]; then
+    addgroup -g "${PGID}" syncin
+    group_name="syncin"
+fi
+
+# Create syncin user if needed
+# NOTE: if the user already exists, we won't change its primary group since su-exec already forces the correct group id
+if ! getent passwd "${PUID}" >/dev/null 2>&1; then
+    adduser -D -u "${PUID}" -G "${group_name}" -s /bin/sh syncin
+fi
+
+# Change /app ownership to syncin (for writing .init file)
+chown "${PUID}:${PGID}" /app
+
+# Change application data ownership to syncin if needed
+CURRENT_UID=$(stat -c '%u' "${SYNCIN_APPLICATIONS_FILES_DATAPATH}")
+CURRENT_GID=$(stat -c '%g' "${SYNCIN_APPLICATIONS_FILES_DATAPATH}")
+
+if [ "${FORCE_PERMISSIONS}" = "true" ] || [ "${CURRENT_UID}" -ne "${PUID}" ] || [ "${CURRENT_GID}" -ne "${PGID}" ]; then
+    chown -R "${PUID}:${PGID}" "${SYNCIN_APPLICATIONS_FILES_DATAPATH}"
+fi
+
+umask 027
+
+# Launch server as syncin user
+exec su-exec "${PUID}:${PGID}" "$@"

@@ -1,0 +1,79 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { configuration } from '../../../configuration/config.environment.js'
+import { TEMPORARY_PATH } from '../../files/constants/files.js'
+import { isPathInside } from '../../files/utils/files.js'
+import { SPACE_REPOSITORY } from '../constants/spaces.js'
+import type { SpaceRoot } from '../schemas/space-root.interface.js'
+import type { Space } from '../schemas/space.interface.js'
+
+export class SpaceModel implements Space {
+  id!: number
+  alias!: string
+  enabled!: boolean
+  name!: string
+  description!: string
+  storageQuota!: number
+  storageUsage!: number
+  storageIndexing!: boolean
+  modifiedAt!: Date
+  disabledAt!: Date
+  createdAt!: Date
+
+  // outside db schema
+  root: SpaceRoot[] = []
+
+  constructor(props: any) {
+    Object.assign(this, props)
+  }
+
+  static async makePaths(spaceAlias: string) {
+    for (const p of [SpaceModel.getFilesPath(spaceAlias), SpaceModel.getTrashPath(spaceAlias)]) {
+      await fs.mkdir(p, { recursive: true })
+    }
+  }
+
+  static getHomePath(spaceAlias: string) {
+    const spacesPath = path.resolve(configuration.applications.files.spacesPath)
+    const homePath = path.resolve(spacesPath, spaceAlias)
+
+    if (!isPathInside(spacesPath, homePath)) {
+      throw new Error(`Invalid space home path for alias: ${spaceAlias}`)
+    }
+
+    return homePath
+  }
+
+  static getFilesPath(spaceAlias: string) {
+    return path.join(SpaceModel.getHomePath(spaceAlias), SPACE_REPOSITORY.FILES)
+  }
+
+  static getTrashPath(spaceAlias: string) {
+    return path.join(SpaceModel.getHomePath(spaceAlias), SPACE_REPOSITORY.TRASH)
+  }
+
+  static getTmpPath(spaceAlias: string) {
+    return path.join(SpaceModel.getHomePath(spaceAlias), 'tmp')
+  }
+
+  static getUsersTmpPath(spaceAlias: string) {
+    return path.join(SpaceModel.getTmpPath(spaceAlias), TEMPORARY_PATH.ACTORS)
+  }
+
+  static getUserTmpPath(spaceAlias: string, userId: number) {
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      throw new Error('User id must be a positive safe integer')
+    }
+    const usersTmpPath = SpaceModel.getUsersTmpPath(spaceAlias)
+    const userTmpPath = path.resolve(usersTmpPath, String(userId))
+    if (!isPathInside(usersTmpPath, userTmpPath)) {
+      throw new Error('User id resolves outside space temporary directory')
+    }
+    return userTmpPath
+  }
+
+  static getRepositoryPath(spaceAlias: string, inTrash = false) {
+    if (inTrash) return SpaceModel.getTrashPath(spaceAlias)
+    return SpaceModel.getFilesPath(spaceAlias)
+  }
+}

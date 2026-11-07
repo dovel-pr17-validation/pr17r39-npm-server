@@ -1,0 +1,9 @@
+<div class="header position-relative">
+  <a [href]="websiteUrl" target="_blank" rel="noopener">
+    <span aria-hidden="true" class="sync-in-logo sync-in-logo--themed"></span>
+  </a>
+  <app-theme-switch
+    buttonClass="public-link-theme-toggle position-absolute top-50 end-0 translate-middle-y me-3"
+    (themeChange)="toggleTheme($event)">
+  </app-theme-switch>
+</div>

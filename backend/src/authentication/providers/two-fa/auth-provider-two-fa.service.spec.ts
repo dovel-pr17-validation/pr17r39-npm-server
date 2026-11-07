@@ -1,0 +1,408 @@
+import { HttpException, HttpStatus } from '@nestjs/common'
+import { Test, TestingModule } from '@nestjs/testing'
+import { Totp } from 'time2fa'
+import { NotificationsManager } from '../../../applications/notifications/services/notifications-manager.service.js'
+import { UserModel } from '../../../applications/users/models/user.model.js'
+import { UsersManager } from '../../../applications/users/services/users-manager.service.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { FastifyAuthenticatedRequest } from '../../interfaces/auth-request.interface.js'
+import { decryptSecret, encryptSecret } from '../../utils/crypt-secret.js'
+import { AuthProvider2FA } from './auth-provider-two-fa.service.js'
+import type { TwoFaVerifyDto, TwoFaVerifyWithPasswordDto } from './auth-two-fa.dtos.js'
+import { Mocked } from 'vitest'
+
+vi.mock('../../utils/crypt-secret.js')
+vi.mock('../../../common/qrcode.js')
+
+describe(AuthProvider2FA.name, () => {
+  let service: AuthProvider2FA
+  let cache: Mocked<Cache>
+  let usersManager: Mocked<UsersManager>
+  let notificationsManager: Mocked<NotificationsManager>
+
+  const mockUser: Partial<UserModel> = {
+    id: 1,
+    login: 'testuser',
+    email: 'test@example.com',
+    secrets: {
+      twoFaSecret: 'encrypted-secret',
+      recoveryCodes: ['encrypted-code-1', 'encrypted-code-2']
+    }
+  }
+
+  const mockRequest: Partial<FastifyAuthenticatedRequest> = {
+    user: { id: 1, login: 'testuser' } as any,
+    ip: '127.0.0.1',
+    headers: { 'user-agent': 'test-agent' }
+  }
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AuthProvider2FA,
+        {
+          provide: Cache,
+          useValue: {
+            get: vi.fn(),
+            set: vi.fn(),
+            del: vi.fn().mockResolvedValue(true)
+          }
+        },
+        {
+          provide: UsersManager,
+          useValue: {
+            fromUserId: vi.fn(),
+            validateUserAccess: vi.fn(),
+            compareUserPassword: vi.fn(),
+            updateAccesses: vi.fn().mockResolvedValue(undefined),
+            updateSecrets: vi.fn(),
+            consumeRecoveryCode: vi.fn()
+          }
+        },
+        {
+          provide: NotificationsManager,
+          useValue: {
+            sendEmailNotification: vi.fn().mockResolvedValue(undefined)
+          }
+        }
+      ]
+    }).compile()
+
+    module.useLogger(['fatal'])
+    service = module.get<AuthProvider2FA>(AuthProvider2FA)
+    cache = module.get(Cache)
+    usersManager = module.get(UsersManager)
+    notificationsManager = module.get(NotificationsManager)
+    vi.mocked(encryptSecret).mockImplementation((secret: string) => `encrypted-${secret}`)
+    vi.mocked(decryptSecret).mockImplementation((secret: string) => secret.replace('encrypted-', ''))
+
+    const { qrcodeToDataURL } = await import('../../../common/qrcode.js')
+    vi.mocked(qrcodeToDataURL).mockReturnValue('data:image/png;base64,mock')
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('should be defined', () => {
+    expect(service).toBeDefined()
+  })
+
+  describe('initTwoFactor', () => {
+    it('should generate secret and QR code and store in cache', async () => {
+      const result = await service.initTwoFactor(mockUser as UserModel)
+
+      expect(result).toHaveProperty('secret')
+      expect(result).toHaveProperty('qrDataUrl')
+      expect(result.qrDataUrl).toBe('data:image/png;base64,mock')
+      expect(cache.set).toHaveBeenCalledWith(`auth-2fa-pending-user-${mockUser.id}`, expect.any(String), 300)
+    })
+  })
+
+  describe('enableTwoFactor', () => {
+    const enableDto: TwoFaVerifyWithPasswordDto = {
+      code: '123456',
+      password: 'password123',
+      isRecoveryCode: false
+    }
+
+    it('should throw error if secret has expired', async () => {
+      cache.get.mockResolvedValue(null)
+
+      await expect(service.enableTwoFactor(enableDto, mockRequest as FastifyAuthenticatedRequest)).rejects.toThrow(
+        new HttpException('The secret has expired', HttpStatus.BAD_REQUEST)
+      )
+    })
+
+    it('should throw error if verification fails', async () => {
+      cache.get.mockResolvedValue('encrypted-secret')
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      usersManager.compareUserPassword.mockResolvedValue(true)
+      vi.spyOn(service, 'validateTwoFactorCode').mockReturnValue({ success: false, message: 'Invalid code' })
+
+      await expect(service.enableTwoFactor(enableDto, mockRequest as FastifyAuthenticatedRequest)).rejects.toThrow(
+        new HttpException('Invalid code', HttpStatus.FORBIDDEN)
+      )
+    })
+
+    it('should throw error if password is incorrect', async () => {
+      cache.get.mockResolvedValue('encrypted-secret')
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      const validateTwoFactorCodeSpy = vi.spyOn(service, 'validateTwoFactorCode')
+      usersManager.compareUserPassword.mockResolvedValue(false)
+
+      await expect(service.enableTwoFactor(enableDto, mockRequest as FastifyAuthenticatedRequest)).rejects.toThrow(
+        new HttpException('Incorrect code or password', HttpStatus.BAD_REQUEST)
+      )
+      expect(validateTwoFactorCodeSpy).not.toHaveBeenCalled()
+      expect(usersManager.updateAccesses).toHaveBeenCalledWith(mockUser, mockRequest.ip, false, true)
+      expect(usersManager.updateAccesses).not.toHaveBeenCalledWith(mockUser, mockRequest.ip, true, true)
+    })
+
+    it('should enable 2FA and return recovery codes on success', async () => {
+      cache.get.mockResolvedValue('encrypted-secret')
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      vi.spyOn(service, 'validateTwoFactorCode').mockReturnValue({ success: true, message: '' })
+      usersManager.compareUserPassword.mockResolvedValue(true)
+
+      const result = await service.enableTwoFactor(enableDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(result.success).toBe(true)
+      expect(result.recoveryCodes).toHaveLength(5)
+      expect(usersManager.updateSecrets).toHaveBeenCalledWith(mockUser.id, {
+        twoFaSecret: 'encrypted-secret',
+        recoveryCodes: expect.any(Array)
+      })
+      expect(cache.del).toHaveBeenCalledWith(`auth-2fa-pending-user-${mockUser.id}`)
+      expect(notificationsManager.sendEmailNotification).toHaveBeenCalledWith([mockRequest.user], {
+        app: 'auth_2fa',
+        event: 'Two-factor authentication (2FA) on your account has been enabled',
+        element: 'test-agent',
+        url: '127.0.0.1'
+      })
+    })
+  })
+
+  describe('disableTwoFactor', () => {
+    const disableDto: TwoFaVerifyWithPasswordDto = {
+      code: '123456',
+      password: 'password123',
+      isRecoveryCode: false
+    }
+
+    it('should throw error if verification fails', async () => {
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      usersManager.compareUserPassword.mockResolvedValue(true)
+      vi.spyOn(service, 'validateTwoFactorCode').mockReturnValue({ success: false, message: 'Invalid code' })
+
+      await expect(service.disableTwoFactor(disableDto, mockRequest as FastifyAuthenticatedRequest)).rejects.toThrow(
+        new HttpException('Invalid code', HttpStatus.FORBIDDEN)
+      )
+    })
+
+    it('should throw error if password is incorrect', async () => {
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      const validateTwoFactorCodeSpy = vi.spyOn(service, 'validateTwoFactorCode')
+      usersManager.compareUserPassword.mockResolvedValue(false)
+
+      await expect(service.disableTwoFactor(disableDto, mockRequest as FastifyAuthenticatedRequest)).rejects.toThrow(
+        new HttpException('Incorrect code or password', HttpStatus.BAD_REQUEST)
+      )
+      expect(validateTwoFactorCodeSpy).not.toHaveBeenCalled()
+      expect(usersManager.updateAccesses).toHaveBeenCalledWith(mockUser, mockRequest.ip, false, true)
+      expect(usersManager.updateAccesses).not.toHaveBeenCalledWith(mockUser, mockRequest.ip, true, true)
+    })
+
+    it('should disable 2FA on success', async () => {
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      vi.spyOn(service, 'validateTwoFactorCode').mockReturnValue({ success: true, message: '' })
+      usersManager.compareUserPassword.mockResolvedValue(true)
+
+      const result = await service.disableTwoFactor(disableDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(result.success).toBe(true)
+      expect(usersManager.updateSecrets).toHaveBeenCalledWith(mockUser.id, {
+        twoFaSecret: undefined,
+        recoveryCodes: undefined
+      })
+      expect(notificationsManager.sendEmailNotification).toHaveBeenCalledWith([mockRequest.user], {
+        app: 'auth_2fa',
+        event: 'Two-factor authentication (2FA) on your account has been disabled',
+        element: 'test-agent',
+        url: '127.0.0.1'
+      })
+    })
+  })
+
+  describe('verify', () => {
+    const verifyDto: TwoFaVerifyDto = {
+      code: '123456',
+      isRecoveryCode: false
+    }
+
+    it('should verify 2FA code successfully', async () => {
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      vi.spyOn(service, 'validateTwoFactorCode').mockReturnValue({ success: true, message: '' })
+
+      const result = await service.verify(verifyDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(result.success).toBe(true)
+      expect(usersManager.updateAccesses).toHaveBeenCalledWith(mockUser, mockRequest.ip, true, true)
+    })
+
+    it('should wait for access tracking before returning the verification result', async () => {
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      vi.spyOn(service, 'validateTwoFactorCode').mockReturnValue({ success: true, message: '' })
+      usersManager.updateAccesses.mockRejectedValueOnce(new Error('access tracking failed'))
+
+      await expect(service.verify(verifyDto, mockRequest as FastifyAuthenticatedRequest)).rejects.toThrow('access tracking failed')
+    })
+
+    it('should verify recovery code successfully', async () => {
+      const recoveryDto: TwoFaVerifyDto = { code: 'code-1', isRecoveryCode: true }
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      usersManager.consumeRecoveryCode.mockResolvedValue(true)
+
+      await service.verify(recoveryDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(usersManager.consumeRecoveryCode).toHaveBeenCalledWith(mockUser.id, 'encrypted-code-1')
+      expect(usersManager.updateSecrets).not.toHaveBeenCalled()
+    })
+
+    it('should reject a recovery code already consumed by another request', async () => {
+      const recoveryDto: TwoFaVerifyDto = { code: 'code-1', isRecoveryCode: true }
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      usersManager.consumeRecoveryCode.mockResolvedValue(false)
+
+      const result = await service.verify(recoveryDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Invalid code')
+    })
+
+    it('should fail when recovery codes are empty', async () => {
+      const recoveryDto: TwoFaVerifyDto = { code: 'code-1', isRecoveryCode: true }
+      const userWithoutCodes = { ...mockUser, secrets: { ...mockUser.secrets, recoveryCodes: [] } }
+      usersManager.fromUserId.mockResolvedValue(userWithoutCodes as unknown as UserModel)
+
+      const result = await service.verify(recoveryDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Invalid code')
+    })
+
+    it('should fail when recovery code does not match', async () => {
+      const recoveryDto: TwoFaVerifyDto = { code: 'wrong-code', isRecoveryCode: true }
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+
+      const result = await service.verify(recoveryDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Invalid code')
+    })
+
+    it('should handle errors during recovery code validation', async () => {
+      const recoveryDto: TwoFaVerifyDto = { code: 'code-1', isRecoveryCode: true }
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      usersManager.consumeRecoveryCode.mockRejectedValue(new Error())
+
+      const result = await service.verify(recoveryDto, mockRequest as FastifyAuthenticatedRequest)
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Invalid code')
+    })
+
+    it('should return user when fromLogin is true', async () => {
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+      vi.spyOn(service, 'validateTwoFactorCode').mockReturnValue({ success: true, message: '' })
+
+      const result = await service.verify(verifyDto, mockRequest as FastifyAuthenticatedRequest, true)
+
+      expect(Array.isArray(result)).toBe(true)
+      expect(result[0].success).toBe(true)
+      expect(result[1]).toBe(mockUser)
+    })
+  })
+
+  describe('adminResetUserTwoFa', () => {
+    it('should reset user 2FA successfully', async () => {
+      usersManager.updateSecrets.mockResolvedValue(undefined)
+
+      const result = await service.adminResetUserTwoFa(1)
+
+      expect(result.success).toBe(true)
+      expect(usersManager.updateSecrets).toHaveBeenCalledWith(1, {
+        twoFaSecret: undefined,
+        recoveryCodes: undefined
+      })
+    })
+
+    it('should handle errors during reset', async () => {
+      usersManager.updateSecrets.mockRejectedValue(new Error('Database error'))
+
+      const result = await service.adminResetUserTwoFa(1)
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Database error')
+    })
+  })
+
+  describe('loadUser', () => {
+    it('should load and validate user successfully', async () => {
+      usersManager.fromUserId.mockResolvedValue(mockUser as UserModel)
+
+      const result = await service.loadUser(1, '127.0.0.1')
+
+      expect(result).toBe(mockUser)
+      expect(usersManager.validateUserAccess).toHaveBeenCalledWith(mockUser)
+    })
+
+    it('should throw error if user not found', async () => {
+      usersManager.fromUserId.mockResolvedValue(null)
+
+      await expect(service.loadUser(1, '127.0.0.1')).rejects.toThrow(new HttpException('User not found', HttpStatus.NOT_FOUND))
+    })
+  })
+
+  describe('verifyUserPassword', () => {
+    it('should verify password successfully', async () => {
+      usersManager.compareUserPassword.mockResolvedValue(true)
+
+      await expect(service.verifyUserPassword(mockUser as UserModel, 'password123', '127.0.0.1')).resolves.not.toThrow()
+    })
+
+    it('should throw error if password is incorrect', async () => {
+      usersManager.compareUserPassword.mockResolvedValue(false)
+
+      await expect(service.verifyUserPassword(mockUser as UserModel, 'wrong-password', '127.0.0.1')).rejects.toThrow(
+        new HttpException('Incorrect code or password', HttpStatus.BAD_REQUEST)
+      )
+      expect(usersManager.updateAccesses).toHaveBeenCalledWith(mockUser, '127.0.0.1', false, true)
+    })
+
+    it('should wait for access tracking after an incorrect password', async () => {
+      usersManager.compareUserPassword.mockResolvedValue(false)
+      usersManager.updateAccesses.mockRejectedValueOnce(new Error('access tracking failed'))
+
+      await expect(service.verifyUserPassword(mockUser as UserModel, 'wrong-password', '127.0.0.1')).rejects.toThrow('access tracking failed')
+    })
+  })
+
+  describe('validateTwoFactorCode', () => {
+    it('should validate code successfully', () => {
+      vi.spyOn(Totp, 'validate').mockReturnValue(true)
+
+      const result = service.validateTwoFactorCode('123456', 'encrypted-secret')
+
+      expect(result.success).toBe(true)
+      expect(result.message).toBe('')
+    })
+
+    it('should fail validation for incorrect code', () => {
+      vi.spyOn(Totp, 'validate').mockReturnValue(false)
+
+      const result = service.validateTwoFactorCode('wrong-code', 'encrypted-secret')
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Incorrect code or password')
+    })
+
+    it('should return error if secret is not provided', () => {
+      const result = service.validateTwoFactorCode('123456', '')
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Incorrect code or password')
+    })
+
+    it('should handle validation errors', () => {
+      vi.spyOn(Totp, 'validate').mockImplementation(() => {
+        throw new Error('Validation error')
+      })
+
+      const result = service.validateTwoFactorCode('123456', 'encrypted-secret')
+
+      expect(result.success).toBe(false)
+      expect(result.message).toBe('Validation error')
+    })
+  })
+})

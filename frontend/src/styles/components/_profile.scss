@@ -1,0 +1,70 @@
+.profile-page {
+  height: 100%;
+  padding: 0.5rem;
+}
+
+app-user-profile .sidebar-component-title.app-top-menu-tool-bar .btn > .lucide {
+  font-size: 1.0625rem;
+}
+
+.user-groups-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: $font-size-sm;
+  padding: 0.4rem;
+}
+
+.user-header {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 .8rem .8rem .8rem;
+  text-align: end;
+
+  .user-details {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+
+    > div:first-of-type {
+      // fullname
+      font-weight: 500;
+      font-size: $font-size-lg;
+    }
+  }
+}
+
+.profile-sync-in-footer {
+  display: flex;
+  flex-direction: column;
+  margin: 0.4rem 0.6rem 0.2rem;
+  flex: 1 1 auto !important;
+  font-size: $font-size-sm;
+
+  .lucide {
+    font-size: $font-size-sm;
+  }
+}
+
+.profile-sync-in-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: .25rem;
+
+  .sync-in-logo {
+    height: 30px;
+  }
+}
+
+.profile-sync-in-version {
+  font-size: $font-size-2xs;
+  opacity: .72;
+}
+
+.profile-user-img {
+  margin: 0 auto;
+  width: 100px;
+  padding: 3px;
+  border: 3px solid $gray;
+}

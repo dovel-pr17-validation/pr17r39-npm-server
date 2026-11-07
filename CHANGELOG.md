@@ -1,0 +1,997 @@
+
+## [2.6.2](https://github.com/Sync-in/server/compare/v2.6.1...v2.6.2) (2026-10-31)
+
+### Features
+
+* **frontend:breadcrumb:** add responsive compact navigation dropdown ([d4f77e6](https://github.com/Sync-in/server/commit/d4f77e62ff9707329cc503312f496420d20abeba))
+* **frontend:** breadcrumb overflow dropdown ([#319](https://github.com/Sync-in/server/issues/319)) ([b6304a1](https://github.com/Sync-in/server/commit/b6304a1cc6288b9614cc617569d7a07c757a237f))
+* **frontend:** navigate relative markdown note links ([#311](https://github.com/Sync-in/server/issues/311)) ([bd8aa12](https://github.com/Sync-in/server/commit/bd8aa12d7c1bbf55f6f38c0f10eb1d83fb51e98e))
+* navigation single click preference ([#321](https://github.com/Sync-in/server/issues/321)) ([43683d1](https://github.com/Sync-in/server/commit/43683d1c2b2ee7fe140f53ad9602209dcedb85b8))
+* **onlyoffice:** enable plugins ([#322](https://github.com/Sync-in/server/issues/322)) ([505219f](https://github.com/Sync-in/server/commit/505219f9f8184b727ed57855cacac3e2b033c32a))
+* **users:** move user preferences to a dedicated page ([01e798e](https://github.com/Sync-in/server/commit/01e798e246017da1b17e1bbaed426dc3c225ee7a))
+
+### Bug Fixes
+
+* **backend:auth:** enforce link expiration on token refresh ([#315](https://github.com/Sync-in/server/issues/315)) ([c0148f0](https://github.com/Sync-in/server/commit/c0148f0fda8d78814d6abb8cba1dee439137d749))
+* **backend:auth:** prevent link accounts from receiving API tokens ([24e14b6](https://github.com/Sync-in/server/commit/24e14b65c194dd34fa8a7fb133f8a119153cfa84))
+* **backend:database:** recycle idle pool connections before MariaDB timeout ([2584b30](https://github.com/Sync-in/server/commit/2584b30d112c3b79c61b08cc717832d34fba1c13))
+* **backend:files:** respect hidden-file preference in recents ([e4144db](https://github.com/Sync-in/server/commit/e4144db11aab225d96f0731bd1de1da1d83584b3))
+* **build:** include MIME symlink targets in npm package ([#318](https://github.com/Sync-in/server/issues/318)) ([b922b25](https://github.com/Sync-in/server/commit/b922b25a98768f8fd52e82c0cabb3576197600b6))
+* **frontend:breadcrumb:** align compact dropdown across breakpoints ([00b22a4](https://github.com/Sync-in/server/commit/00b22a44ca492ffbcdb480948398184414163cf9))
+* **frontend:files:** prompt before downloading unpreviewable files ([0cbffc7](https://github.com/Sync-in/server/commit/0cbffc755fa6d1bbd0bc56ceecc4efe5122d9ced))
+* **frontend:i18n:** add missing document not found translations ([e6c0038](https://github.com/Sync-in/server/commit/e6c0038b97eca145c2790e3623043ed8a1f0c47d))
+* **frontend:** improve responsive permissions layout ([d610696](https://github.com/Sync-in/server/commit/d6106968b8ba9146c82d61d6275fcad87df782b6))
+* **frontend:** refine mobile toolbar layout and dropdown layering ([bbbc4ea](https://github.com/Sync-in/server/commit/bbbc4ea7a77a6e597955459ed934550b18986274))
+
+## [2.6.1](https://github.com/Sync-in/server/compare/v2.6.0...v2.6.1) (2026-10-25)
+
+### Features
+
+* **frontend:files:** support relative images in markdown viewer ([#310](https://github.com/Sync-in/server/issues/310)) ([656401c](https://github.com/Sync-in/server/commit/656401c76d41b4d056cd6da4a93f763a707bf164))
+* **frontend:sync:** validate path filters in settings ([bf89ea1](https://github.com/Sync-in/server/commit/bf89ea1b107d7314bf7d1fe172028689ff17237b))
+* **frontend:** Open on touch on smartphones ([#306](https://github.com/Sync-in/server/issues/306)) ([2f35b3f](https://github.com/Sync-in/server/commit/2f35b3f4d9a9bd0699dad493a48a1e95605daffd))
+
+### Bug Fixes
+
+* **backend:files:** escape regexp metacharacters in file paths ([#305](https://github.com/Sync-in/server/issues/305)) ([36a843c](https://github.com/Sync-in/server/commit/36a843cba34d757330b8d9b526953e06803b7445))
+* **backend:sync:** prevent path filter ReDoS ([d6914d0](https://github.com/Sync-in/server/commit/d6914d0acd3785ed4947c6744dff3e15fe8ed265))
+* **backend:** align Unicode aliases, collations and cache keys ([#309](https://github.com/Sync-in/server/issues/309)) ([fca2766](https://github.com/Sync-in/server/commit/fca2766c7c10c16d2fb9580abecffcff0d4fa979))
+* **frontend:admin:** prevent date badges from overflowing on mobile ([735839a](https://github.com/Sync-in/server/commit/735839afe3005a141b75d85084887d94d87d2661))
+* **frontend:files:** prevent Collabora from opening a new tab in Chromium browsers ([#304](https://github.com/Sync-in/server/issues/304)) ([0de3552](https://github.com/Sync-in/server/commit/0de355201a2935065121f24ee18cc08509e7af60))
+* **frontend:files:** prevent duplicate rename confirmation dialogs ([1459a31](https://github.com/Sync-in/server/commit/1459a311317c4bf8744d3acf63198febe2c0ae5b))
+* **frontend:files:** prevent stale touch activation ([fb0dac1](https://github.com/Sync-in/server/commit/fb0dac15f8618d4ac2d4cb34446727c96c281edc))
+* **frontend:files:** prevent unintended browsing during mobile selection ([717d080](https://github.com/Sync-in/server/commit/717d080d9fa15e81104a369a4d9ae66e07029aff))
+* **frontend:** close context menu on navigation ([d37fb72](https://github.com/Sync-in/server/commit/d37fb72ca9ec903d745b57a2a453f8df7f0a86a4))
+* **frontend:** harden touch gesture handling ([4d7a905](https://github.com/Sync-in/server/commit/4d7a905f51511cbc6bd00cce646c79655fc52f9c))
+
+## [2.6.0](https://github.com/Sync-in/server/compare/v2.5.2...v2.6.0) (2026-10-14)
+
+### Features
+
+* **backend:editors:** enhance config validation for external server URLs with trimming and URL checks ([eabca87](https://github.com/Sync-in/server/commit/eabca87c19ae1c39f09d24dec30b27693fe485aa))
+* **backend:sync:** expose ignore-delete path setting ([8fb800b](https://github.com/Sync-in/server/commit/8fb800be71ee3c888db7e638f14fd82894180d5c))
+* **editors:** introduce unified unsaved changes prompt component and improve toolbar responsiveness ([c725cf5](https://github.com/Sync-in/server/commit/c725cf5901549273120d13bef1dda39f99ab645c))
+* **editors:** support dynamic UI theme for OnlyOffice and Collabora ([18e49f9](https://github.com/Sync-in/server/commit/18e49f98662f0988bac7d8ca4a551e9cee78e95b))
+* **files:** add Draw.io diagram editing support ([837132b](https://github.com/Sync-in/server/commit/837132b07199d2927ead5ea9460d49b845402501))
+* **files:** add user preference for showing hidden files ([#295](https://github.com/Sync-in/server/issues/295)) ([31ed436](https://github.com/Sync-in/server/commit/31ed436fc5405b289ebfdd15578a60903094742f))
+* **files:** support saving VSDX and Gliffy imports as draw.io ([0b44510](https://github.com/Sync-in/server/commit/0b44510166a5ae322d7999e499ef17c904c0fe4b))
+* **frontend:admin:** clarify user and group switch labels ([900288d](https://github.com/Sync-in/server/commit/900288d84e5a20599efbeb77725e6f7e667b9e29))
+* **frontend:files:** add "Open after creation" option in file dialog ([5acfad9](https://github.com/Sync-in/server/commit/5acfad9b2b66f6782fc691bb1b2fd2a532f42cfa))
+* **frontend:files:** add a compact file type selector on mobile ([c6c8c22](https://github.com/Sync-in/server/commit/c6c8c225ba8f433133724fa68aeeb06b2d4b8eba))
+* **frontend:files:** add download shortcut to mobile toolbar ([e64876d](https://github.com/Sync-in/server/commit/e64876d01f5dd26a347f58fef06bc57d7ff96ef5))
+* **frontend:files:** add keyboard shortcuts to open, rename and delete files ([a3ba5c1](https://github.com/Sync-in/server/commit/a3ba5c14af94f042c8b9f5670cc7f22c9996dea0))
+* **frontend:files:** allow opening folders after creation ([e340796](https://github.com/Sync-in/server/commit/e340796591d99e7b8bafd9949fb74c1f12c68453))
+* **frontend:files:** enable open after creation by default ([7ffc5b8](https://github.com/Sync-in/server/commit/7ffc5b819778d6ebfa603d3066d5137b6b44646a))
+* **frontend:files:** group upload completion notifications with localized summaries ([8662e7b](https://github.com/Sync-in/server/commit/8662e7b309d94a13aafe7017e9a1007456de4a3e))
+* **frontend:files:** prompt before downloading files without a preview ([161aa51](https://github.com/Sync-in/server/commit/161aa516a080fb9f934f73117aef7c9e7b215e64))
+* **frontend:files:** refresh editor locks during active sessions ([d7f0be2](https://github.com/Sync-in/server/commit/d7f0be2e199fb74456479f68fa6937e5be08c7ad))
+* **frontend:links:** refresh shared link dialog design ([999efa5](https://github.com/Sync-in/server/commit/999efa5a781bbc242d9dbaa2cdc8f8f5af102e2c))
+* **frontend:search:** redesign result list and scope component styles ([39079d5](https://github.com/Sync-in/server/commit/39079d548c67b1d57c346d6918cdbddb12299254))
+* **frontend:style:** unify selection panel spacing and row heights ([8de91c4](https://github.com/Sync-in/server/commit/8de91c47ac9398bdb02b95f7ced404290eecbb82))
+* **frontend:** add logout actions to sidebar and user account ([68c2d2e](https://github.com/Sync-in/server/commit/68c2d2ed30c12180323bb7baac345d5033deccd3))
+* **frontend:** image viewer redesign ([#290](https://github.com/Sync-in/server/issues/290)) ([aa2e988](https://github.com/Sync-in/server/commit/aa2e988db7d5d84f4dfdef6d7b9217947298c9ec))
+* **frontend:** show root levels in space breadcrumbs ([547fac1](https://github.com/Sync-in/server/commit/547fac108ff6ba1436d029d5cf8b02fee78d5e28))
+* **frontend:** update public link header ([697ccb2](https://github.com/Sync-in/server/commit/697ccb27285a25e1f21a94d93f6c30b783150838))
+* **i18n:** add localization strings for enhanced trash and file operation errors ([d98e1d3](https://github.com/Sync-in/server/commit/d98e1d3baacd2d30baf96594b4d61b440b0ddad4))
+* **links:** add theme switch to public link pages ([6dcb748](https://github.com/Sync-in/server/commit/6dcb74818e2a88041ada4fb1930e7c417da0fa56))
+* **users:** add configurable quick access preferences ([65f377a](https://github.com/Sync-in/server/commit/65f377a90b9f95a6141d754100513bdf14877d92))
+* **users:** persist desktop notification display preference ([e07d339](https://github.com/Sync-in/server/commit/e07d339919f0f1272b034e4f8e0e1162dfc0e3e6))
+* **users:** persist theme and editor preferences ([ac0045d](https://github.com/Sync-in/server/commit/ac0045d39e7b84ab9a5cb2c3a24d92e26f01512d))
+
+### Bug Fixes
+
+* **backend:auth:** align WebDAV cache TTL and invalidate stale auth ([e952350](https://github.com/Sync-in/server/commit/e952350a6bd70bfcac2e97eecd4698f9edb8b303))
+* **backend:auth:** harden WebDAV cache keys with HMAC ([55ade5c](https://github.com/Sync-in/server/commit/55ade5c2d0d3eeda56e1f3897a55a4a745af29ad))
+* **backend:auth:** prevent account enumeration and limit password work ([56ea729](https://github.com/Sync-in/server/commit/56ea729a84ffd5def5dc4743593ab46fb22f81d2))
+* **backend:auth:** update logging level to verbose for TLS CA check ([2c16f59](https://github.com/Sync-in/server/commit/2c16f5976a0a9611b7e55acb027e2d42638f71a0))
+* **backend:config:** deprecate numeric `trustProxy` values and map them to booleans ([1b922e1](https://github.com/Sync-in/server/commit/1b922e1e5b1c884a5cfb4c0072274a814ca0c24e))
+* **backend:files:** handle image formats unsupported by Sharp. ([2b4c12b](https://github.com/Sync-in/server/commit/2b4c12b20bf9a2d244d9bc9bb1235e8b29a6d90f))
+* **backend:ldap:** harden direct-bind identity resolution ([7101296](https://github.com/Sync-in/server/commit/710129641a956342bdff0313a801c4ed10568392))
+* **backend:logger:** adapt response logging to nestjs-pino v5 ([0d56a0b](https://github.com/Sync-in/server/commit/0d56a0b365d4ccc628b841ed3860183303d2a66c))
+* **backend:logger:** restore cyan prefixes with pino-pretty 13.2 ([19cd35b](https://github.com/Sync-in/server/commit/19cd35bf9d5c4a035644c60e51f8284af8447141))
+* **backend:mailer:** migrate to Nodemailer 10, harden TLS and align SMTP logging ([29062f7](https://github.com/Sync-in/server/commit/29062f7f7b123e33cb47ac0b9386f051a743103a))
+* **backend:sync:** apply mtime to temporary file before publication ([43dbbd7](https://github.com/Sync-in/server/commit/43dbbd7d906d120bd2c523afe799d4ed13993bb0))
+* **backend:websocket:** align logger visibility with IoAdapter ([bf5108c](https://github.com/Sync-in/server/commit/bf5108c40737cbdb3ccc56c78f95155991fbd844))
+* **backend:** prevent serving dotfiles as static assets ([8ab8d30](https://github.com/Sync-in/server/commit/8ab8d30828af6d5373b1a3559d330f07a491624e))
+* **docker:** avoid redundant chown for zero-padded IDs ([9b09dd7](https://github.com/Sync-in/server/commit/9b09dd783c7c40cc7e6b45ef44af4acd9e10e608))
+* **frontend:admin:** disable group link translation in path generation ([c9363c2](https://github.com/Sync-in/server/commit/c9363c252a81b70eecb91e13877f6060b0d0874a))
+* **frontend:files:** bind Enter key to trash confirmation ([49f80a7](https://github.com/Sync-in/server/commit/49f80a729ca65174eb37ab52555eb7e1ea534d72))
+* **frontend:files:** detect unsaved draw.io changes before closing ([1fbc470](https://github.com/Sync-in/server/commit/1fbc47046f4d79e7f0383097d42279ab311e2329))
+* **frontend:files:** harmonize editor toolbars and search controls ([8eff702](https://github.com/Sync-in/server/commit/8eff7024ff9939e4904338c975643310a6ed395b))
+* **frontend:i18n:** correct Catalan translations and pluralization ([56da3a7](https://github.com/Sync-in/server/commit/56da3a7e19d48ac0cacf8974b8aa7908365712f5))
+* **frontend:links:** move MIME icon next to link name and clarify creation button label ([2975f14](https://github.com/Sync-in/server/commit/2975f14ad181b36660c512dbb7bb83d54395492f))
+* **frontend:links:** prevent copy link button flicker ([0e61b4f](https://github.com/Sync-in/server/commit/0e61b4f2043e6c007e8792db5527e3b3b43968d8))
+* **frontend:search:** adjust class binding for loading icon in navbar search ([293e04b](https://github.com/Sync-in/server/commit/293e04b38c8e0a31bc88524de50d8d72495e5a5f))
+* **frontend:sync:** clear stale desktop task counters on completion ([bdb9a41](https://github.com/Sync-in/server/commit/bdb9a41bd99776a7983a143eec74da2632c0cda2))
+* **frontend:sync:** harden search and synchronized path matching ([874de6f](https://github.com/Sync-in/server/commit/874de6f2a0a9bd32f2f01cf231276428a8e895a1))
+* **frontend:sync:** rename transfers column from Sync to Name ([46b2cd1](https://github.com/Sync-in/server/commit/46b2cd14e43e41986611eea24e189899bc27818f))
+* **frontend:users:** simplify quick access labels and translations for consistency ([737bb47](https://github.com/Sync-in/server/commit/737bb47c6cbeff8d7dd6f533c43ebb926750de92))
+* **frontend:** add MIME icon alias for audio/x-mpegurl ([dfa625d](https://github.com/Sync-in/server/commit/dfa625d781dfb789f13a56772801eeff9c681ecd))
+* **frontend:** align badge components and preserve tooltip hover areas ([cacdd75](https://github.com/Sync-in/server/commit/cacdd75168dc729b1f20639f1271dc8ffe2282d0))
+* **frontend:** hide refresh buttons on small screens ([974387f](https://github.com/Sync-in/server/commit/974387f30233c9bdc481158808f7b12cb852a9a1))
+* **frontend:** hide tab labels on mobile and align tab heights ([56de3ca](https://github.com/Sync-in/server/commit/56de3ca98ab143357909c3b0e6ce68abbbfe757e))
+* **frontend:** prevent sidebar title actions overflow and mobile breadcrumb shift ([536364e](https://github.com/Sync-in/server/commit/536364e11d15d2aedd6b773cc02f5aecd636c181))
+* **frontend:** support long-press context menus on iOS ([fe54723](https://github.com/Sync-in/server/commit/fe547231a341aaf353102f9af2786c43180ade69))
+* **spaces:** enforce role capabilities and reserve personal aliases ([3877fa0](https://github.com/Sync-in/server/commit/3877fa06644d991b84d9a7001fa3551883464c19))
+
+## [2.5.2](https://github.com/Sync-in/server/compare/v2.5.1...v2.5.2) (2026-09-21)
+
+### Features
+
+* **frontend:search:** centralize local and global search in the navbar ([68805c2](https://github.com/Sync-in/server/commit/68805c27e0efe6799c4b7c624b9e521f5ee7bebc))
+* **trash:** support trash emptying without deleting their physical roots ([588c8bb](https://github.com/Sync-in/server/commit/588c8bbdc09c272c922f3e1303048a6f99efd32b))
+
+### Bug Fixes
+
+* **auth:** preserve desktop app session during service interruptions ([0bbb3b6](https://github.com/Sync-in/server/commit/0bbb3b6853469e4ccdb28bb058fee992fe6943e6))
+* **backend:cache:** retry MariaDB event scheduler after database recovery ([d4b965e](https://github.com/Sync-in/server/commit/d4b965e2011be33f217388b4a926036db4a5f1df))
+* **backend:files:** accept unsafe negative inode IDs ([8509428](https://github.com/Sync-in/server/commit/8509428d5310ee593badc6a2e00ab120d1983fd1))
+* **backend:files:** throw consistent error for unsafe filenames in unzip tests ([a0652de](https://github.com/Sync-in/server/commit/a0652de9b30d7b805062919e3195b36f207fccbd))
+* **build:** fail when PDF.js assets cannot be downloaded ([19caf0f](https://github.com/Sync-in/server/commit/19caf0fbce8fa1b140326229d64a851e7adb2eca))
+* **docker:** fail fast when MySQL URL is missing ([cadd351](https://github.com/Sync-in/server/commit/cadd3517d2be4578773cdf78850d788617d94bdb))
+* **frontend:auth:** safely replay requests after session refresh ([1d96f81](https://github.com/Sync-in/server/commit/1d96f81e6b1df8b196d236378b19af1890846f84))
+* **frontend:** disable tooltips on touch devices ([884e421](https://github.com/Sync-in/server/commit/884e42195d360f99ca05e5adf54259eed82c8ae8))
+* **frontend:** replace deprecated trash icon and expand recents layout ([84ac4ed](https://github.com/Sync-in/server/commit/84ac4ed5e12645dbc44eef5d1c72783637f5587f))
+* **search:** prevent browser shortcuts when input is focused ([a1ef31c](https://github.com/Sync-in/server/commit/a1ef31ca71f0a6e67377026caf582d74746b91be))
+
+## [2.5.1](https://github.com/Sync-in/server/compare/v2.5.0...v2.5.1) (2026-09-14)
+
+### Features
+
+* **auth:** add cache-backed rate limiting ([#272](https://github.com/Sync-in/server/issues/272)) ([829df9e](https://github.com/Sync-in/server/commit/829df9e044537f37c33c9a45509259ff199d1bb5))
+* **backend:admin:** include instance URL in update check requests ([2c9b4c2](https://github.com/Sync-in/server/commit/2c9b4c29b8fbb03de686171dec30201ea3198db9))
+* **backend:availability:** expose health endpoints and add Docker health checks ([9526812](https://github.com/Sync-in/server/commit/952681254ec84e5a1a9a4c761f056f1ccd7714e7))
+* **backend:availability:** monitor dependencies and handle service outages ([f54f182](https://github.com/Sync-in/server/commit/f54f182f884f45a3ddee15804112fdf60ab896b0))
+* **backend:scheduler:** handle database and cache outages ([68fbb44](https://github.com/Sync-in/server/commit/68fbb449c9499842d7ade9000746e1b6209c8825))
+
+### Bug Fixes
+
+* **backend:auth:** make password-attempt locks temporary ([413dd45](https://github.com/Sync-in/server/commit/413dd45157d13a19a302b2308d263e3b1df0e029))
+* **backend:auth:** prevent lock emails for already disabled accounts ([cee35be](https://github.com/Sync-in/server/commit/cee35be799d55ab9c12fc11418af45fe2efed569))
+* **backend:auth:** reject empty passwords before LDAP bind ([7e7845e](https://github.com/Sync-in/server/commit/7e7845e5eebfb751bb9f09cca09e94c7ea03cc8f))
+* **backend:auth:** reject local credentials in query parameters ([462f32c](https://github.com/Sync-in/server/commit/462f32c39f03bd84d8cc06040ace96bd288015cd))
+* **backend:auth:** update token expiration and enforce no-store Cache-Control headers ([b94ac0e](https://github.com/Sync-in/server/commit/b94ac0ed135f673b15853563b35f0b5f071d9a79))
+* **backend:cache:** align Redis and MySQL adapter behavior ([5c5f01c](https://github.com/Sync-in/server/commit/5c5f01cdeadc56403c111421577db1d74b467b7e))
+* **backend:database:** align migration session settings and fix user creation exit code ([33e3047](https://github.com/Sync-in/server/commit/33e3047b09c5a530502e429968ab0a4076a1bb23))
+* **backend:database:** enforce InnoDB storage engine and improve connection handling ([7981ab9](https://github.com/Sync-in/server/commit/7981ab9e95fcd89f652bf05a9d4c20f1159811bb))
+* **backend:editors:** use configured public URL for editor endpoints ([fe3345d](https://github.com/Sync-in/server/commit/fe3345df0b918c49a2155f71f2dda3929d56eae2))
+* **backend:files:** handle EXDEV fallbacks for task moves ([0b0d10a](https://github.com/Sync-in/server/commit/0b0d10a943a62795565c327f5baf0a363aa5bd1d))
+* **backend:files:** preserve external-root paths in trash ([48b5118](https://github.com/Sync-in/server/commit/48b5118b52ef6db1dec6de6924308ff268d895ba))
+* **backend:links:** atomically enforce public link access limits ([f1895c8](https://github.com/Sync-in/server/commit/f1895c8dd97bc3a083bfabad63b30736e30cbb5a))
+* **backend:redis:** improve password redaction in connection logs ([#268](https://github.com/Sync-in/server/issues/268)) ([12eb6b5](https://github.com/Sync-in/server/commit/12eb6b59a87657edef89c909b9ffb0bb3396aebe))
+* **backend:server:** prevent IPC errors during cluster shutdown ([8619471](https://github.com/Sync-in/server/commit/8619471d152d1012c291b106912cb786d729ff67))
+* **backend:shares:** reset password attempts when reactivating a link ([d40de85](https://github.com/Sync-in/server/commit/d40de85ca79178a74999bff2e7a331fe3f8c53cc))
+* **backend:websocket:** allow cluster workers to exit gracefully ([90de776](https://github.com/Sync-in/server/commit/90de7766f6dac075aef06717b94b277987954490))
+* **docker:nginx:** preserve public port in forwarded host headers ([c2bb1d7](https://github.com/Sync-in/server/commit/c2bb1d71aa621b1940c51db6023be794d3c57fca))
+* **docker:** force application data path to /app/data ([8e9233e](https://github.com/Sync-in/server/commit/8e9233ef7e0370e20e1d0535ac8a2c60eeda189e))
+* **docker:** update EuroOffice and proxy its SDK assets ([3e2d938](https://github.com/Sync-in/server/commit/3e2d938c8a469990250eeb78a2b989f2979b3e9d))
+* **frontend:files:** align shared lock actions with backend ownership rules ([447f98c](https://github.com/Sync-in/server/commit/447f98c16ed8dcb46842b425afafbe14fdf8f94b))
+* **frontend:files:** keep task card height consistent during progress ([edc369c](https://github.com/Sync-in/server/commit/edc369c84b7d473f77d379aacadecce3ce0a8424))
+* **frontend:files:** preserve destination labels and stabilize tree interactions ([e509d70](https://github.com/Sync-in/server/commit/e509d70ff0a57f8a57db964941f267ead2ff39c9))
+* **frontend:spaces:** update icon for "Shared with Others" for consistency ([016d832](https://github.com/Sync-in/server/commit/016d8329a705c2a3b5d9b4fcbc44d518bbb7dc09))
+* **frontend:** preserve dynamic classes on Lucide icons ([a263bc9](https://github.com/Sync-in/server/commit/a263bc9d1b1ff3c0ac922b91d86cc8f397c49ed9))
+
+## [2.5.0](https://github.com/Sync-in/server/compare/v2.4.4...v2.5.0) (2026-09-02)
+
+### ⚠ MINOR BREAKING CHANGES
+
+* **backend:auth:** OIDC logins now require email_verified=true unless
+  auth.oidc.security.requireVerifiedEmail is explicitly set to false.
+
+### Features
+
+* **backend:files:** improve full-text search ([7ff6a8b](https://github.com/Sync-in/server/commit/7ff6a8b7005cfe5dff392e32dffd64ed755fd840))
+* **favorites:** show persisted file detail badges ([a785d56](https://github.com/Sync-in/server/commit/a785d56126b7eaf2c975d1349b84cc8c210f359e))
+* **files:** add file favorites across repositories ([d3724ec](https://github.com/Sync-in/server/commit/d3724ec5f48d41f1c0c08bb91ea13a5a30c2f93e))
+* **frontend:auth:** route users to their default files location ([b6b3b7d](https://github.com/Sync-in/server/commit/b6b3b7d42caa12acddeb0bc167a3787d0bc7a638))
+* **frontend:files:** enhance multi-selection ([#252](https://github.com/Sync-in/server/issues/252)) ([3f5b0c1](https://github.com/Sync-in/server/commit/3f5b0c10dff11a7264304d1bf75cc8e8168bfbca))
+* **frontend:files:** redesign copy and move sidebar ([294060d](https://github.com/Sync-in/server/commit/294060d7b39587a144ea8937213f3b90d828de40))
+* **frontend:files:** redesign the display mode selector ([d0643c6](https://github.com/Sync-in/server/commit/d0643c6a4e48ef2bded59d78bad27c68dda5b057))
+* **frontend:files:** refine copy-move navigation and tree roots ([7f20da3](https://github.com/Sync-in/server/commit/7f20da3898e34f547ce796737b457b8517e75a08))
+* **frontend:files:** share file summary between selection and clipboard ([165bc13](https://github.com/Sync-in/server/commit/165bc13ec06cc0dcf6cbccb293e0155e358058ac))
+* **frontend:files:** skip conflicting files during copy, move and upload ([7c1d3ef](https://github.com/Sync-in/server/commit/7c1d3ef5260ddb1c9b0bcb1a9261bc0418382fd9))
+* **frontend:layout:** improve right sidebar navigation and selection flow ([59c0163](https://github.com/Sync-in/server/commit/59c016381e1964eafb4fa8dcd327d5ae091b310c))
+* **frontend:navigation:** improve list and gallery view selector ([ffe1164](https://github.com/Sync-in/server/commit/ffe1164cf6a28012774c3603df6a7855cbad82f4))
+* **frontend:** display space and share names ([#256](https://github.com/Sync-in/server/issues/256)) ([612eae4](https://github.com/Sync-in/server/commit/612eae4f632f5e0b3200b3ab371eaa26e4b98f3c))
+* **frontend:** harmonize dropdown and context menus ([ab7cffe](https://github.com/Sync-in/server/commit/ab7cffe22d5f868ab083ebadb1f5a054e22777c1))
+* **frontend:** use symlinks for mime icons ([6cc13be](https://github.com/Sync-in/server/commit/6cc13be20c094deb838d002184a00f36f0cbc23b))
+* **recents:** simplify timeline and increase default limit ([c51e31f](https://github.com/Sync-in/server/commit/c51e31fd29a46e5c6e97bdc347aaaf425da88678))
+* **sidebar:** improve files navigation layout ([47125dd](https://github.com/Sync-in/server/commit/47125dd78cea9ee11d6dbd5d006f5e5feffef600))
+
+### Bug Fixes
+
+* **auth:** restore OIDC step-up checks and local password setup ([cb5789c](https://github.com/Sync-in/server/commit/cb5789c8c8900f9c85f6b7416c1bf6ab22d1cdf0))
+* **auth:** skip app-password step-up for OIDC user sessions ([ac118be](https://github.com/Sync-in/server/commit/ac118be4e3c9af834c23c97447875505bd8bd325))
+* **backend:auth:** delete pending 2FA cache key after activation ([264f83c](https://github.com/Sync-in/server/commit/264f83c31d1ef2d657114814cedeb441d314942b))
+* **backend:auth:** exclude link users from normal auth lookups ([8c74d30](https://github.com/Sync-in/server/commit/8c74d304e46ac43e405002a726ec4a814c734fe5))
+* **backend:auth:** harden OIDC account binding ([710ce71](https://github.com/Sync-in/server/commit/710ce71c2d85c9a7c642027ef32b6ea3a66c4a90))
+* **backend:auth:** make user secret mutations atomic ([3d75600](https://github.com/Sync-in/server/commit/3d756002c28b5d87917eb1ad4237ba1ba91d536e))
+* **backend:auth:** prevent CSRF cookie from expiring before access token ([40f816d](https://github.com/Sync-in/server/commit/40f816deff747feb8a315788057c0e3aaba171f6))
+* **backend:auth:** require WebDAV app passwords when TOTP is enabled ([ae5b57e](https://github.com/Sync-in/server/commit/ae5b57e009e54c3038cc463c8dcc9f3013d030d6))
+* **backend:auth:** resolve OIDC login collisions ([7a54b8e](https://github.com/Sync-in/server/commit/7a54b8eef46babcd1307dd646bbdbbd596c36cf5))
+* **backend:config:** include property paths in validation errors ([aa5fbe9](https://github.com/Sync-in/server/commit/aa5fbe9184c23db6cb229c227e3a0952dd4c70ea))
+* **backend:config:** stop shipping default deployment secrets ([a654376](https://github.com/Sync-in/server/commit/a654376cbc8a0cde4d79ed2e0d9bfa77359d9ad9))
+* **backend:database:** expose migration SQL errors in Docker and npm CLI ([83563a8](https://github.com/Sync-in/server/commit/83563a811bf966cef5180b99b5f087cae8ef2671))
+* **backend:database:** prevent SQL injection in dynamic queries ([f1921e6](https://github.com/Sync-in/server/commit/f1921e61d9ef449ee3cdefc71b738bf82b693fe0))
+* **backend:files:** centralize file id validation and resolution ([0148bfe](https://github.com/Sync-in/server/commit/0148bfeacb0554b78656414628f4bed071fce660))
+* **backend:files:** enforce quotas while streaming uploads ([8107d40](https://github.com/Sync-in/server/commit/8107d40750da1a0df5e1ece11c5c034741adf9f3))
+* **backend:files:** ensure HTTP/1 uploads close on quota or size errors ([7951465](https://github.com/Sync-in/server/commit/795146538eb613372ae0d0517f036e165c9badf9))
+* **backend:files:** harden SVG thumbnail rendering ([a9e6f17](https://github.com/Sync-in/server/commit/a9e6f17a563a0da522603912524c1d9735db68bc))
+* **backend:files:** honor SSL certificate verification settings for OnlyOffice and EuroOffice ([26aa6e7](https://github.com/Sync-in/server/commit/26aa6e72a963912ac639c3725878759c3caa8b21))
+* **backend:files:** make dated trash collisions unique ([ba2e8f8](https://github.com/Sync-in/server/commit/ba2e8f891f6ed63151a5d00ee864612abd162b6d))
+* **backend:files:** move trashed files to their canonical database scope ([aa21547](https://github.com/Sync-in/server/commit/aa2154771943ba987e864a57cb130bc67b54425c))
+* **backend:files:** parameterize child path SQL operations ([bf9c5ef](https://github.com/Sync-in/server/commit/bf9c5ef1ea6be48b711c78a1ee10fa167ffe37ee))
+* **backend:files:** preserve trash source during overwrite restore ([13fcae9](https://github.com/Sync-in/server/commit/13fcae9ebbe43386745d843959f0a80017e80a6d))
+* **backend:files:** reject unresolved trash targets ([e0ef36c](https://github.com/Sync-in/server/commit/e0ef36c71b2d80d0849790714881de5075226347))
+* **backend:files:** use storage-aware trash handling ([a4af3e3](https://github.com/Sync-in/server/commit/a4af3e309ef26f92f152d11a1deb9849d2b3b3c8))
+* **backend:notifications:** use configured public URL for email links ([5526218](https://github.com/Sync-in/server/commit/5526218bbf408502be7d47aa745ed302b47d85b6))
+* **backend:shares:** centralize nested external storage scope resolution ([5c6c011](https://github.com/Sync-in/server/commit/5c6c01199d3f117bf5d5fec52b5cc0a4c13fc34e))
+* **backend:shares:** enforce share-outside permission on space shares ([308482b](https://github.com/Sync-in/server/commit/308482b6d48eb6d8a4fdfe8037635999cdc25e76))
+* **backend:shares:** use canonical external scope for nested shares ([7f2b8f6](https://github.com/Sync-in/server/commit/7f2b8f6c00356f68e3b8536091c40d917ac12685))
+* **backend:spaces:** make newly created spaces immediately visible ([8468449](https://github.com/Sync-in/server/commit/8468449d8472f7727b607a0dbe2d16ae5b724c3a))
+* **backend:users:** include current user in whitelist ([38aac5d](https://github.com/Sync-in/server/commit/38aac5d61f986ac99aa1c3e748d1dbcf0864e35a))
+* **backend/files:** prevent OnlyOffice callback path traversal using generated temp files ([10d1dc0](https://github.com/Sync-in/server/commit/10d1dc0fe5a5739275036973ee7f2f4b288457cb))
+* **environment:database:** update MySQL user to root in config files ([8ad87f6](https://github.com/Sync-in/server/commit/8ad87f6258def6d0a7db83a8d22d1a2f7566bc40))
+* **frontend:files:** adjust tree node height for consistency ([a4a155f](https://github.com/Sync-in/server/commit/a4a155feef95cde5e38a66b6248332430c2b8687))
+* **frontend:files:** align copy/move location icons ([a507d1a](https://github.com/Sync-in/server/commit/a507d1ae76feeb34405012af5f8c06179caa363e))
+* **frontend:files:** ignore keyboard events from inactive viewers ([40fa262](https://github.com/Sync-in/server/commit/40fa2622e417cea92c11b774b1389394a1c9962c))
+* **frontend:files:** reconcile file metadata after editor close ([1c6d494](https://github.com/Sync-in/server/commit/1c6d494870b752f875de8102c66eb1ae1e20cce1))
+* **frontend:files:** remove unsafe HTML sanitizer bypass ([9c7a03c](https://github.com/Sync-in/server/commit/9c7a03ceb3197024fd8ae3de100c09dc33abdb68))
+* **frontend:layout:** close left sidebar after mobile navigation ([323e992](https://github.com/Sync-in/server/commit/323e9922d76469889d83b842c06bcf647bd7ec2b))
+* **frontend:layout:** harmonize sidebar item sizing ([1a60b94](https://github.com/Sync-in/server/commit/1a60b947c214e4f1e95e34db3e4c03325a1d70d4))
+* **frontend:layout:** improve mobile breadcrumb display ([fcb55fd](https://github.com/Sync-in/server/commit/fcb55fd98490f1ea3e0833da23a670e0afdc4013))
+* **frontend:recents:** remove background around comment avatars ([01b1192](https://github.com/Sync-in/server/commit/01b1192866dca9d87e643d748d79bcee0b296c1d))
+* **frontend:search:** keep spaces navigation visible during search ([ad61c70](https://github.com/Sync-in/server/commit/ad61c70900c70560494967bf3ec8d8f65d4f5bcc))
+* **frontend:select:** prevent XSS in highlighted options ([bd1e89a](https://github.com/Sync-in/server/commit/bd1e89a45b14db3b7fc19c306b719c9605f83201))
+* **frontend:shares:** omit personal space label from nested paths ([0be1723](https://github.com/Sync-in/server/commit/0be1723e87d952110ae16064c5f0df5c5e32eb19))
+* **frontend:spaces:** clarify and reorder file actions ([2811221](https://github.com/Sync-in/server/commit/2811221e565da7c90138378394f31f9fe50896ab))
+* **frontend:users:** prevent recursive Angular tick on socket disconnect ([5ef44cb](https://github.com/Sync-in/server/commit/5ef44cb2aa6429fbd3270e310f0b2c73d8b5577f))
+* **frontend:** align dropdown icon size with context menus ([82b11d6](https://github.com/Sync-in/server/commit/82b11d686b60fab3532868aa843c1ae762a5eae7))
+* **frontend:** ensure app-table rows remain 36px high ([d7149fd](https://github.com/Sync-in/server/commit/d7149fdd60e112477667197fcfff9bcf27f7ba54))
+* **frontend:** replace deprecated Lucide icon aliases ([0006acc](https://github.com/Sync-in/server/commit/0006acc2aa7d063408d7aea829f823cec2402229))
+* **frontend:** restore gallery size slider thumb ([d4c9b68](https://github.com/Sync-in/server/commit/d4c9b6863c73ca65e968813d160b4ce96a6117ed))
+* **recents:** limit comments to two lines and improve path spacing ([75b4071](https://github.com/Sync-in/server/commit/75b407185339a38e4a3cea09c5ecd4d04d833f98))
+* **spaces,shares,files:** harden names, aliases and paths ([6d6969a](https://github.com/Sync-in/server/commit/6d6969aafe735ceab799bb22515de1a1df12b9a5))
+* **spaces:** harmonize share indicators and personal space labels ([b755649](https://github.com/Sync-in/server/commit/b755649c28b09401392d2d47889f615815264b2c))
+
+## [2.4.4](https://github.com/Sync-in/server/compare/v2.4.3...v2.4.4) (2026-07-25)
+
+### Bug Fixes
+
+* **backend:database:** prevent double decoding of JSON columns ([37f9d80](https://github.com/Sync-in/server/commit/37f9d8010789dda5f5cf4ca2e34ff37d958562f6))
+
+## [2.4.3](https://github.com/Sync-in/server/compare/v2.4.2...v2.4.3) (2026-07-24)
+
+### Features
+
+* **backend:sync:** improve unicode path matching in NormalizedMap ([c860ead](https://github.com/Sync-in/server/commit/c860ead7489a5b2a145d2fb24dd7b410155742d2))
+* **frontend:common:** add reusable user avatar stack tooltip ([160ec66](https://github.com/Sync-in/server/commit/160ec6644f7d15442ed70e4b8651ce74cb83acf7))
+* **frontend:files:** disable sidebar media autoplay and simplify controls ([98a6346](https://github.com/Sync-in/server/commit/98a6346b60f4c0b47fd79599dcf52ec9a0f87493))
+* **frontend:space:** group permissions in a single tooltip ([dd8647e](https://github.com/Sync-in/server/commit/dd8647efc24d27f2fe03ef31cb2861d25d81471c))
+* **frontend:space:** show member counts in a translated tooltip ([4b1f97c](https://github.com/Sync-in/server/commit/4b1f97c98002b0309e3822d4ec535d54522dfb99))
+
+### Bug Fixes
+
+* **backend:auth:** improve OIDC response error logging ([4c04c98](https://github.com/Sync-in/server/commit/4c04c98c0bc6e7d48bc2bad94b3d81a8b05d8ad6))
+* **backend:cache:** propagate method errors without retrying ([6c07c42](https://github.com/Sync-in/server/commit/6c07c421c06a42c68e965baf6841d90706eeab86))
+* **backend:comments:** filter recent comments by user permissions ([48c6d7e](https://github.com/Sync-in/server/commit/48c6d7eb9bce18cd6d9de0804fbf338c7600ebb9))
+* **backend:database:** support pre-parsed JSON results from mysql2 ([98072f0](https://github.com/Sync-in/server/commit/98072f0757dccc781f3d7f8a9a75a674102e41f4))
+* **backend:files:** filter recents by user permissions ([406881f](https://github.com/Sync-in/server/commit/406881fa149cbe9bbf462cabd136b0792ac5476e))
+* **backend:files:** improve log clarity for full indexing requests ([31f9beb](https://github.com/Sync-in/server/commit/31f9beb26ed9b1855004b18ad1872593e60bd701))
+* **backend:files:** synchronize recent files after editor updates and deletions ([2b87607](https://github.com/Sync-in/server/commit/2b87607e871a10033f01dd220470942e2d9fbb34))
+* **backend:notifications:** harden HTML email template escaping ([b9909b3](https://github.com/Sync-in/server/commit/b9909b33b8db9a36317078e2d3893dc13a6a17b9))
+* **backend:onlyoffice:** validate document download origin ([d0de778](https://github.com/Sync-in/server/commit/d0de7787ed6e6d8ccf177ca604aeab9971e42891))
+* **backend:websocket:** use Fastify cookie parser for authentication ([38dbcea](https://github.com/Sync-in/server/commit/38dbceaeef060ff75918e054a9edd12acd1422a7))
+* **files:** downgrade PDF.js to v5.6.205 and allow viewer WASM in CSP ([5a868df](https://github.com/Sync-in/server/commit/5a868dfd5bb5a3de697b6e8852c3154da82a20e1))
+* **frontend:auth:** allow retrying OIDC login ([003b307](https://github.com/Sync-in/server/commit/003b307135565adb6976a5adf98271c104b78eb1))
+* **frontend:auth:** support desktop-handled auth flow ([d683438](https://github.com/Sync-in/server/commit/d6834388cf41c4deacdf4b83892e3168699d53f6))
+* **frontend:files:** remove unused spacer in sidebar header ([4ed55b3](https://github.com/Sync-in/server/commit/4ed55b3837ede01d4ddc93e3a90835d55328ef96))
+* **frontend:spaces:** handle optional error message in notification ([fa1cd08](https://github.com/Sync-in/server/commit/fa1cd0858324bac1c7730117ef50d044c7fd3862))
+* **frontend:sync:** adjust table column widths for better layout ([06245b9](https://github.com/Sync-in/server/commit/06245b98cad760f5a2104c67979d908a7cb86efb))
+* **frontend:** improve live relative time updates ([ef40ab0](https://github.com/Sync-in/server/commit/ef40ab004e259bdcf1846f6a4d53a63a4dba0cb8))
+* **frontend:** prevent Chromium caret loss during file rename ([f99b313](https://github.com/Sync-in/server/commit/f99b31300334a0762b947f0bb816798c69634dff))
+
+## [2.4.2](https://github.com/Sync-in/server/compare/v2.4.1...v2.4.2) (2026-06-26)
+
+
+### Bug Fixes
+
+* **backend:files:** bound search result limit ([4df1b8d](https://github.com/Sync-in/server/commit/4df1b8dac26f10231bf53066c1a8a6c6b62b904c))
+* **backend:files:** escape search terms for Unicode regex ([6b5a0c5](https://github.com/Sync-in/server/commit/6b5a0c526c50f6f7f9c5801cd8d1ffca024192ab))
+* **backend:files:** make highlight context Unicode-aware ([6e574c3](https://github.com/Sync-in/server/commit/6e574c3da1ca00ca00766b0bf807e61e35d4f5ab))
+* **frontend:** pin pdf.js viewer assets to v5.7.284 ([e342d01](https://github.com/Sync-in/server/commit/e342d01d67cfc5f14e1ba0f2a86874a455091bee))
+
+## [2.4.1](https://github.com/Sync-in/server/compare/v2.4.0...v2.4.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **auth:** require step-up for app password mutations ([db19b3e](https://github.com/Sync-in/server/commit/db19b3ee4904675bd7703f183a3f473fc247b33a))
+* **backend:auth:** centralize local password timing mitigation ([b80efe0](https://github.com/Sync-in/server/commit/b80efe04574039a7a302c0e1007f03a7dbe6a633))
+* **backend:auth:** invalidate WebDAV cache on app password deletion ([6dae284](https://github.com/Sync-in/server/commit/6dae2848960c12397789a5d0a8f58893499e787c))
+* **backend:sync:** await usersManager.updateAccesses in 2FA recovery code validation ([8f55344](https://github.com/Sync-in/server/commit/8f553445df332272a1593d5afab133ff43cf5f0a))
+* **docker:** add editors section in `environment.yaml` ([1de3e09](https://github.com/Sync-in/server/commit/1de3e0934fbd8f323d28ef79adfa36578b035fed))
+* **docker:** add Euro-Office config to nginx volumes ([a864684](https://github.com/Sync-in/server/commit/a864684f09242ab862f69e25870e468188c0d6a5))
+* **frontend:files:** add support for dynamic editor naming in OnlyOffice components and error handling ([98031da](https://github.com/Sync-in/server/commit/98031da3e6d60a184f941763430a54e1c0d3aad9))
+
+## [2.4.0](https://github.com/Sync-in/server/compare/v2.3.0...v2.4.0) (2026-06-22)
+
+
+### Features
+
+* **auth:** refresh browser user state with token renewal ([cad5f12](https://github.com/Sync-in/server/commit/cad5f12fe0a595034574bde61f7c59140fd92324))
+* **backend:auth:** add OIDC verified email enforcement option ([cd71b04](https://github.com/Sync-in/server/commit/cd71b04b65db320a3ff5c520394c60a15c3e1e82))
+* **backend:cache:** add atomic bounded counter increments ([c172825](https://github.com/Sync-in/server/commit/c172825205351064ae3dd175acd6f31916def2ea))
+* **backend:files:** add cancellable copy, move and delete tasks ([e23151e](https://github.com/Sync-in/server/commit/e23151ea16db3ee1f7a8b614418d02991cd05d77))
+* **backend:files:** add Euro-Office editor support ([9fe93bd](https://github.com/Sync-in/server/commit/9fe93bdd3898623d9505cac26662758e07ba2aca))
+* **backend:files:** improve task progress tracking for copy and move operations ([7939491](https://github.com/Sync-in/server/commit/79394910fd9455cddfa61f1c8ad2c7f23e297bee))
+* **backend:files:** queue and limit concurrent tasks per user ([395f841](https://github.com/Sync-in/server/commit/395f841a475568e2a4318db6bf2221d4a9e05b07))
+* **backend:files:** track download, compression and extraction progress ([caa6a92](https://github.com/Sync-in/server/commit/caa6a928580018cae49f18cf00fed4ef5d64a397))
+* **config:** group editor config under files.editors ([bd50a29](https://github.com/Sync-in/server/commit/bd50a298d64e7bebc420f36f511374e17bdf8a9c))
+* **files:** add ZIP archive creation with optional compression ([7c94d6a](https://github.com/Sync-in/server/commit/7c94d6a235d65c29169eb48e5102e0a02fcd346f))
+* **files:** batch active task polling ([e36af62](https://github.com/Sync-in/server/commit/e36af62b49464d4c27ad27c432849b6c881b3c09))
+* **files:** expose task cancellation capability ([14e5b9e](https://github.com/Sync-in/server/commit/14e5b9e81d7767cd9d495de1ac929af0dd3b5817))
+* **files:** make downloads and (de)compression abortable ([a43025e](https://github.com/Sync-in/server/commit/a43025eaa997df3c73c3e648c9c3df5ca15b3e0c))
+* **frontend:files:** add global task cancellation action ([8a044bd](https://github.com/Sync-in/server/commit/8a044bde0279d71ddc837e3b822359342ef74ceb))
+* **frontend:files:** cancel uploads from tasks sidebar ([b01dc90](https://github.com/Sync-in/server/commit/b01dc9047b482d00a30e10301fa462b02449c55e))
+* **frontend:files:** limit concurrent uploads ([81a95bc](https://github.com/Sync-in/server/commit/81a95bc7ea1b47580ed419018483afc1691805de))
+* **frontend:files:** track queued uploads and throttle progress updates ([a0ff216](https://github.com/Sync-in/server/commit/a0ff2166f1b29afdbc1493ab5cf762994cffe82b))
+
+
+### Bug Fixes
+
+* **backend:auth:** disable insecure OIDC requests by default ([9e59a09](https://github.com/Sync-in/server/commit/9e59a09e7aecb8758e55c71c76e7cd9c328fb606))
+* **backend:auth:** disable LDAP local password fallback by default ([d57c42d](https://github.com/Sync-in/server/commit/d57c42d01943f68982fe58458688ef5d821a0c31))
+* **backend:auth:** disable OIDC local password fallback by default ([315fc75](https://github.com/Sync-in/server/commit/315fc759954cb6a9a1ec98cff919a3bf14fc0335))
+* **backend:auth:** enforce 2FA and isolate JWT token types ([3ec74e2](https://github.com/Sync-in/server/commit/3ec74e2ea1f538fe1a3ac9487bdf24a19e548361))
+* **backend:auth:** harden OIDC avatar synchronization ([5024afa](https://github.com/Sync-in/server/commit/5024afa7c0ca88d445053db7cc10bba7f36b82ff))
+* **backend:auth:** increment failed attempts for 2FA-enabled users ([b13a4aa](https://github.com/Sync-in/server/commit/b13a4aad5c2b38fe8231a0d007cd08a086ec5bdb))
+* **backend:auth:** prevent 2FA password attempt counter bypass ([5f53f7f](https://github.com/Sync-in/server/commit/5f53f7f2685b3510aca80783d31bd7b72166005f))
+* **backend:auth:** tolerate OIDC avatar downloads using maxSize guard ([597afbf](https://github.com/Sync-in/server/commit/597afbf5533747f5f4c1137b767e2d8ac283aba3))
+* **backend:auth:** update failed login attempts atomically ([285b870](https://github.com/Sync-in/server/commit/285b8707b0e91d7a63c869ada3a6f3b8ac460988))
+* **backend:auth:** validate current user state for active sessions ([1022355](https://github.com/Sync-in/server/commit/10223551aef7f4bbe074227865b0ce9ea1045819))
+* **backend:config:** make logger optional and quote sensitive YAML values ([5390ba9](https://github.com/Sync-in/server/commit/5390ba9074f5f25302600392d77a50eeee0c6044))
+* **backend:config:** normalize quoted admin credentials ([5fea5b4](https://github.com/Sync-in/server/commit/5fea5b476164e97b6fbb65ae3f65997f4e1d2b9f))
+* **backend:config:** support single-quoted environment values ([715e761](https://github.com/Sync-in/server/commit/715e76114b2330532d11de01f254707018e46af4))
+* **backend:files:** align HEAD and GET encoding for downloads ([67667f6](https://github.com/Sync-in/server/commit/67667f6e538deaf6000eb460f34e8d037229b0f7))
+* **backend:files:** centralize path containment checks ([e96c3f1](https://github.com/Sync-in/server/commit/e96c3f1273e03899ae39432c5ff745efe9ce4556))
+* **backend:files:** clean orphan task files ([0d4b306](https://github.com/Sync-in/server/commit/0d4b306b87e1e03c653f2e265b823a47fe1ccbc2))
+* **backend:files:** clean up task watchers on module shutdown ([0ccf212](https://github.com/Sync-in/server/commit/0ccf2122b80bd03d0a876a748696d5e03beb84ea))
+* **backend:files:** enforce storage quota during archive extraction ([8fffc17](https://github.com/Sync-in/server/commit/8fffc17adf2142350b0c70fac22654f78f470d1c))
+* **backend:files:** extend scheduler cleanup to stale user tmp files ([c115ec2](https://github.com/Sync-in/server/commit/c115ec2bb3dd6e7f00f42021adb5edfd0e499b8b))
+* **backend:files:** harden archive extraction and clean up partial output ([9615ed0](https://github.com/Sync-in/server/commit/9615ed0ad238896710f7c1972f90b19b706826e8))
+* **backend:files:** improve filtered file selection behavior ([3ab86bc](https://github.com/Sync-in/server/commit/3ab86bcc36c0ad908a26cae7dd4892f6a7497720))
+* **backend:files:** stage archive extraction in user temp directory ([06f1425](https://github.com/Sync-in/server/commit/06f142564a567b6e7c7110cebe3af8df1b319602))
+* **backend:files:** stage downloads and archives in user tmp paths before publishing ([1363899](https://github.com/Sync-in/server/commit/1363899d1a905ebe21aa1990c84c8e5b7440cc0d))
+* **backend:files:** support multilingual full-text search ([9a462c5](https://github.com/Sync-in/server/commit/9a462c501f320d4715189b6420b9fc0b8bd40907))
+* **backend:sync:** add validation for path filter size, length, and repetitions ([0fdcda9](https://github.com/Sync-in/server/commit/0fdcda95cac6565acf7f3337c0e4ae7092c1a4ee))
+* **backend:sync:** limit gzip diff body size ([65acac1](https://github.com/Sync-in/server/commit/65acac184daf441a42acbd80d9d9a8e5613947dc))
+* **backend:sync:** update path filter length validation and add pattern length constant ([4355471](https://github.com/Sync-in/server/commit/43554716a862546029a191dd4eacd6fdfc67ba1f))
+* **backend:sync:** validate path filter regex before diff ([b1dcaa1](https://github.com/Sync-in/server/commit/b1dcaa1d1c1bb17ab6c31a404cc9cead7efdd979))
+* **backend:sync:** validate uploads before promoting temp files ([346f8cb](https://github.com/Sync-in/server/commit/346f8cbd245f7400089eff7df3d979e31bc50436))
+* **backend:users:** prevent path traversal through federated user logins ([c2dd22e](https://github.com/Sync-in/server/commit/c2dd22e6d8961db2b3951dc3d53cf955f9e4687b))
+* **backend:** improve connection checks and bootstrap resilience ([8c140d9](https://github.com/Sync-in/server/commit/8c140d94fe1402a89c24ce9cfebd5e37425dbcc3))
+* **frontend:files:** add missing constructor inheritance in files-viewer-text.component.ts ([965d0ce](https://github.com/Sync-in/server/commit/965d0cec0f04a69bc6de15e39c4bc0078faac7d6))
+* **frontend:files:** clean ended tasks for deleted trash folders ([6bd4604](https://github.com/Sync-in/server/commit/6bd46045175446716a1fa55691582774578b1cd5))
+* **frontend:files:** preserve editor focus and track text changes ([86fac72](https://github.com/Sync-in/server/commit/86fac72a20fb8fbf31fb7461b6adc522e6b774a5))
+* **frontend:files:** refresh file size after saving ([f11af14](https://github.com/Sync-in/server/commit/f11af14960bbcc409878c7ef1b190808ad2cbd29))
+
+## [2.3.0](https://github.com/Sync-in/server/compare/v2.2.1...v2.3.0) (2026-05-22)
+
+
+### Features
+
+* **backend:auth:** allow trusted private IPs for OIDC avatar downloads ([9c9b682](https://github.com/Sync-in/server/commit/9c9b682b13578dab3fcbc111602e748f977ef052))
+* **backend:auth:** harden OIDC avatar sync and add avatar metadata tracking ([22ac4f0](https://github.com/Sync-in/server/commit/22ac4f04ef7a1395745dc664cd66eefe439ab65a))
+* **backend:auth:** map configurable OIDC/LDAP storage quota to user profile ([76b4b8c](https://github.com/Sync-in/server/commit/76b4b8cdab1432628d9a7299386bcf1217fea7f9))
+* **backend:files:** enable HTML-to-text conversion for all base elements ([6352393](https://github.com/Sync-in/server/commit/6352393b0a9d2e327159134410e5f165dcf13e74))
+* **backend:files:** optimize content indexing memory usage with batched metadata, run_id cleanup, and pending scheduler state ([3d819cd](https://github.com/Sync-in/server/commit/3d819cdaa0aadaa9ed6122e4f71dbbc8487883bf))
+* **backend:files:** prevent file mutations in trash repository ([738402c](https://github.com/Sync-in/server/commit/738402c13acbd894a7e95cb42a7cbb4541445f56))
+* **backend:files:** split trash retention by repository type ([1c490ee](https://github.com/Sync-in/server/commit/1c490eee902b3c0aed52ef02b0bab919809e0346))
+* **backend:files:** support trusted private IP downloads ([44261ea](https://github.com/Sync-in/server/commit/44261ea20e83e34741a521ffed66ef0d1fb35f63))
+* **backend:files:** trash retention support with indexing and cleanup ([c990335](https://github.com/Sync-in/server/commit/c99033573bac8e60f08cb43cfeb2972c389fd541))
+* **backend:users:** add avatar synchronization for OIDC users ([8790c19](https://github.com/Sync-in/server/commit/8790c1905bf74e509cb90923b422d0472e266b9c))
+* **backend:users:** add showUngroupedUsers toggle for ungrouped account visibility ([2fad377](https://github.com/Sync-in/server/commit/2fad377cb9298bdfd8ee8730e52c3400576eb9aa))
+* **backend:users:** convert uploaded avatars to PNG during update ([47af28b](https://github.com/Sync-in/server/commit/47af28b4b7df29903d1d144b2f23157871237a0d))
+* **backend:users:** hide all users and groups for guest-link accounts ([c5e1988](https://github.com/Sync-in/server/commit/c5e19885868b6d1f932a10edbc80c24d206e0fce))
+* **files:** add a disabled indexing state and update scheduler/admin indexing workflows ([f7fc4f1](https://github.com/Sync-in/server/commit/f7fc4f1cbb907d7e7f5efbdb40c15c890b9ac35f))
+* **files:** add optional document types for frontend ([7e8f64f](https://github.com/Sync-in/server/commit/7e8f64f0a11169d8effee4a5bd62292b233b29fd))
+* **frontend:files:** add binary probe for unknown text files ([fea9e17](https://github.com/Sync-in/server/commit/fea9e17e93871c465274d7181228b2445bf21287))
+* **frontend:files:** implement common file viewer search ([ae3866e](https://github.com/Sync-in/server/commit/ae3866ebcc75f69419d72c1f558abc2a76e2fac5))
+* **frontend:files:** improve markdown detection and viewer handling ([3d2d871](https://github.com/Sync-in/server/commit/3d2d871d9bef63f5dcce5bd917cf922f3df607df))
+* **frontend:files:** refine file actions for trash and selection menus ([666d661](https://github.com/Sync-in/server/commit/666d66107650475d27efbaaa9f61e2755b8a43a7))
+* **frontend:files:** refresh MIME metadata after move ([bb85795](https://github.com/Sync-in/server/commit/bb85795bd3c5d642d76160476b7ee7ed767d967b))
+* **frontend:files:** select filename without extension when renaming files ([163b5c9](https://github.com/Sync-in/server/commit/163b5c9592c744771834fd8655af7752592944b4))
+* **frontend:files:** start implementing markdown viewer editor ([f36a2bc](https://github.com/Sync-in/server/commit/f36a2bc297b1da23ca21dc07c02862ddb0495b5f))
+* **frontend:files:** WIP markdown viewer editor ([c2bf44f](https://github.com/Sync-in/server/commit/c2bf44f1083c5aded9ac9fd3cfd2f59b8a767661))
+
+
+### Bug Fixes
+
+* **backend:files:** harden multipart upload replacement ([c63f83c](https://github.com/Sync-in/server/commit/c63f83c21723489ee5b8765af5a430571c4fccad))
+* **backend:files:** harden remote downloads against SSRF, redirects, proxy bypasses and oversized streams ([22e773e](https://github.com/Sync-in/server/commit/22e773e5b8265f865799e90376921f601e31f3c4))
+* **backend:files:** make space file lookup resilient to stale kind ([5f64673](https://github.com/Sync-in/server/commit/5f6467385c2b51948afa8f89a514ac807a2202c6))
+* **backend:links:** ensure tmp path is created after authentication for guest links ([d782aaa](https://github.com/Sync-in/server/commit/d782aaa78caf3aa1db6df290c7a8e447908dfb4c))
+* **backend:spaces:** invalidate spaces cache when space state changes ([0c95836](https://github.com/Sync-in/server/commit/0c95836d12b1e52ab88ebfc046f207705602e82b))
+* **backend:users:** restrict usersWhitelist so guests only see shared-group or managed users ([17fd9ba](https://github.com/Sync-in/server/commit/17fd9ba323cad70225baca8ac8e1445b639b4358))
+* **backend:users:** unify avatar rendering to 512px and tune dynamic font scaling ([6ecd91d](https://github.com/Sync-in/server/commit/6ecd91d4cf540b8b80fe345f9f22a2352f606e58))
+* **files,comments:** prevent duplicate file rows and handle undefined fileId ([c04adef](https://github.com/Sync-in/server/commit/c04adef2cc747717b337d5b024332fd44fcf1b10))
+* **frontend:admin:** adjust group dialog spacing ([c30b72d](https://github.com/Sync-in/server/commit/c30b72dea2337e3808238cb7dfeba39a556f9ba6))
+* **frontend:admin:** allow admins to see all users when selecting members in spaces and child shares ([cba4eeb](https://github.com/Sync-in/server/commit/cba4eeb775232e028a42802d0162175edee3d704))
+* **frontend:auth:** handle impersonation logout without token refresh retry and force fallback logout on error ([ead2508](https://github.com/Sync-in/server/commit/ead2508a4932f4713fcfa3439a5eede1b24f9eee))
+* **frontend:files:**  unlock extensionless text files on viewer close ([9595153](https://github.com/Sync-in/server/commit/9595153737bc9ab306bf0abda083e3a148cd85c0))
+* **frontend:files:** fix range file selection when filtering is enabled ([43125d5](https://github.com/Sync-in/server/commit/43125d5ef79e56ce84077eb4e548c06cab241004))
+* **frontend:files:** hide PDF viewer toggle label on mobile ([9d1154e](https://github.com/Sync-in/server/commit/9d1154e95e41b8722077e25c327422f3b041b62c))
+* **frontend:files:** initialize file selection after dialog view init ([9d0fe08](https://github.com/Sync-in/server/commit/9d0fe086bdbe9ecd1fa8cab9353380576ed548fa))
+* **frontend:files:** prevent stale save tooltip in viewers ([70b3b98](https://github.com/Sync-in/server/commit/70b3b98a773384a3cbe68fcf537bfa31a9b1195d))
+* **frontend:files:** release editable viewer lock on destroy ([5fdc7b2](https://github.com/Sync-in/server/commit/5fdc7b23f0ff9a8b73213b8df20e599e990a412e))
+* **frontend:files:** unlock text editors on page unload ([4f9025e](https://github.com/Sync-in/server/commit/4f9025e3bcc29fdf9c4ad170c2e78e1fd05f1fb2))
+* **frontend:layout:** update `hasSubmenus` based on visible sidebar submenus ([22a9bca](https://github.com/Sync-in/server/commit/22a9bcaba4e653ba3a7b8be7913c3428ac4d7ec8))
+
+## [2.2.1](https://github.com/Sync-in/server/compare/v2.2.0...v2.2.1) (2026-04-19)
+
+
+### Features
+
+* **admin:** add indexing box to admin tools ([8686147](https://github.com/Sync-in/server/commit/8686147e01c19c9fad2a5c417ce3dec9742066b2))
+* **backend:files:** treat "_" as a term boundary in regex search ([bcd3577](https://github.com/Sync-in/server/commit/bcd357722d3124903a424d3b51347f4ae05ebcbd))
+
+
+### Bug Fixes
+
+* **backend:files:** add support for page rotation during OCR extraction ([6837cc4](https://github.com/Sync-in/server/commit/6837cc4ea8f11bbb587481e392c92fe720be01c8))
+* **backend:files:** handle axios content-length header as number-safe value ([3599ccb](https://github.com/Sync-in/server/commit/3599ccb5a041694dcbc4c6a95beaea1510669cbe))
+
+## [2.2.0](https://github.com/Sync-in/server/compare/v2.1.0...v2.2.0) (2026-04-14)
+
+
+### Features
+
+* **admin:** allow managing spaces from the admin section ([9822209](https://github.com/Sync-in/server/commit/9822209934c6beb25694f2194d908d59fec0555b))
+* **backend:auth:** add tlsOptions support for ldap provider ([2042ade](https://github.com/Sync-in/server/commit/2042adecf336da0b6cd40792901a5150dfb90cf1))
+* **backend:files:** add indexing support for markdown files ([abf59e7](https://github.com/Sync-in/server/commit/abf59e7bea196550d46c3fbcbd8825e94ed244e4))
+* **backend:files:** add pdf ocr indexing ([d37c531](https://github.com/Sync-in/server/commit/d37c531313d45c5d3eb86e2e71cafc7d522f635f))
+* **backend:files:** add support for configurable OCR language paths ([48443aa](https://github.com/Sync-in/server/commit/48443aa8578cf6e5178f7181c17654731b595477))
+* **backend:files:** align emitted FileEvent actions with real file mutations ([e0c7175](https://github.com/Sync-in/server/commit/e0c71751669591fb789f0d62cdc9a4b425b36c00))
+* **backend:files:** emit file event on document modification ([e7ed38c](https://github.com/Sync-in/server/commit/e7ed38cd3cc5ca5a861e9b275ab49f1ef2c99c8b))
+* **backend:files:** extend indexing key generation for anchored roots ([824bff8](https://github.com/Sync-in/server/commit/824bff84c965868f2672fe339f32211919e102c6))
+* **backend:files:** implement file event manager ([c9951d7](https://github.com/Sync-in/server/commit/c9951d72464538aed911ca1e19b5104faf987e66))
+* **backend:files:** implement incremental indexing triggers for full-text search ([468c1c3](https://github.com/Sync-in/server/commit/468c1c3d9480315bfc8cdf73e77826630563292b))
+* **backend:infrastructure:** allow null or undefined args in cache key slug generation ([9d661ea](https://github.com/Sync-in/server/commit/9d661ea4ba4d2030bd907ac101842297a11cd3e5))
+* **backend:users:** allow searching groups by description ([434bd30](https://github.com/Sync-in/server/commit/434bd307e019193311655347bb0d3eb577ce9101))
+* **frontend:admin:** show cumulative storage usage for users and spaces ([5af4996](https://github.com/Sync-in/server/commit/5af4996db40acd45acb2f81321b90b9af0545974))
+* **frontend:** extend group parent model with description and adjust anchor file dialog layout ([01bc72b](https://github.com/Sync-in/server/commit/01bc72bfd9e35913702f194aaea2276ae7ce62f7))
+* **users:** allow to manage personal groups from the guest profile dialog ([c5d3c70](https://github.com/Sync-in/server/commit/c5d3c70c485eb9f6ae29223a3e95b68e3ca2ff3a))
+
+
+### Bug Fixes
+
+* **backend:auth:** derive basic auth cache key from hashed credentials instead of Authorization header ([be98def](https://github.com/Sync-in/server/commit/be98defb7aaf5c39d0651552543d7309af78392b))
+* **backend:auth:** prevent user enumeration via timing attacks ([80eebf3](https://github.com/Sync-in/server/commit/80eebf3f9ceefe8b416714cfaf0f319637839afb))
+* **backend:files:** ensure content indexing scheduling has no parallel executions ([0bef5a6](https://github.com/Sync-in/server/commit/0bef5a6799e77186b6cad9ae020ddd9d62e2148e))
+* **backend:files:** ensure storage quota is updated in cache ([030b87e](https://github.com/Sync-in/server/commit/030b87ebeec6e26afa19bf0ca55cf816156a91ea))
+* **backend:files:** handle locks without scope in checkConflicts ([f9bcbde](https://github.com/Sync-in/server/commit/f9bcbde21ffd92217c1f190bced4599b746af025))
+* **backend:files:** handle optional chaining in indexing key generation ([2b2c238](https://github.com/Sync-in/server/commit/2b2c2385f64e5d9080257d026ead7f4f84f5cc2d))
+* **backend:users:** ensure whitelist cache entries with parameters are properly cleared ([5e21b8d](https://github.com/Sync-in/server/commit/5e21b8db5c83e97aee38fc92e09186d4db7ccef2))
+* **backend:users:** handle guest login rename without space location rename ([2627d2d](https://github.com/Sync-in/server/commit/2627d2d715cc8de92bf097d33a024cea599d5fd8))
+* **backend:users:** sanitize group and app password names for safe route params ([d1b21a8](https://github.com/Sync-in/server/commit/d1b21a80032e59c6285c36213238ec9a91a83b7d))
+* **backend:webdav:** restore access to shares repository via WebDAV ([bec04e1](https://github.com/Sync-in/server/commit/bec04e14b8f3bccd77155726d22f44dbac6fef92))
+* **files:** encode special characters not handled by AuthInterceptor ([d9e81f0](https://github.com/Sync-in/server/commit/d9e81f02dc5fe40151471e5eed4624f4de030703))
+* **files:** handle document-open error messages for HEAD requests ([328d823](https://github.com/Sync-in/server/commit/328d8235497c89baac6d5b755aca28eac92def5b))
+* **frontend:users:** add button behavior inside groups ([d13132a](https://github.com/Sync-in/server/commit/d13132ad6e3c40ef47a7c6c6ee602c54ff45425b))
+* **users:** ensure guests cannot be elected as group managers ([24e0d57](https://github.com/Sync-in/server/commit/24e0d5760213934c7c09f199e15c8ec4a384ac8e))
+
+## [2.1.0](https://github.com/Sync-in/server/compare/v2.0.0...v2.1.0) (2026-03-13)
+
+
+### Features
+
+* **frontend** refresh UI ([#127](https://github.com/Sync-in/server/pull/127))
+* **backend:auth:** add toggle for security.supportPKCE in OIDC provider ([d90cbf7](https://github.com/Sync-in/server/commit/d90cbf73e63336865c7aee91f3d8c7e727522cc1))
+* **docker:** add FORCE_PERMISSIONS variable to set permissions on data files ([1eb57d6](https://github.com/Sync-in/server/commit/1eb57d60d1937be3261b0f4a3aad3082092d40a2))
+* **frontend:i18n:** add nl ([4c3a0cb](https://github.com/Sync-in/server/commit/4c3a0cb8695d6387259ee48273b66faba938f8ce))
+
+
+### Bug Fixes
+
+* **backend:database:** ensure MySQL connection uses UTC timezone ([e7d2ed9](https://github.com/Sync-in/server/commit/e7d2ed9d2a09ad8374f61f6d33b7fec60592e428))
+* **backend:files:** avoid buffer copy and ensure PDF document cleanup ([f28c71b](https://github.com/Sync-in/server/commit/f28c71bdf53ba524d6745746b805cd741776324f))
+* **backend:files:** skip unreadable directories when walking for size and entry counts ([6b0a6a7](https://github.com/Sync-in/server/commit/6b0a6a70e70425ae2d0df2fdbb3b19c41ac8bd95))
+* **frontend:recents:** move user avatar tooltip container to body to fix overlap with card ([5029911](https://github.com/Sync-in/server/commit/50299116b627817233021069a641a4514258f37b))
+
+## [2.0.0](https://github.com/Sync-in/server/compare/v1.11.0...v2.0.0) (2026-02-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** rename method to provider in AuthConfig and replace authMethod with authProvider for naming consistency ([9d187e0](https://github.com/Sync-in/server/commit/9d187e06f848b6c56f0dfa6d904f22e71f485012))
+* **backend:auth:ldap:** move adminGroup to options ([96d52c9](https://github.com/Sync-in/server/commit/96d52c95585eef6a6c8498f14a1ba07dce44f6cb))
+
+### Features
+
+* **auth:oidc:** enhance OIDC configuration ([8bcf35d](https://github.com/Sync-in/server/commit/8bcf35d2639c6067d53c13cafb14897155c952c5))
+* **auth:oidc:** revise authentication flow logic ([abb9979](https://github.com/Sync-in/server/commit/abb9979ed8f1d00aa241876b4b0519f013f88bfc))
+* **auth:sync:** introduce `registerWithAuth` to enable desktop client registration from external process (OIDC) ([b6525ec](https://github.com/Sync-in/server/commit/b6525ecd8b5e524ca390decde7c969395a5ad1ba))
+* **auth:** implement OIDC authentication support and refactor auth providers ([28bbf1d](https://github.com/Sync-in/server/commit/28bbf1df2f2ab7e9060cc48b5893708fb83a123e))
+* **auth:** refactor authentication services and add desktop client registration support ([08c6e0f](https://github.com/Sync-in/server/commit/08c6e0faf84d3131ab9462052a60c73ab59b031e))
+* **auth:** support desktop app OIDC authentication flow ([0d6963f](https://github.com/Sync-in/server/commit/0d6963f95a86cae7e9283557a2e5961108ead65e))
+* **backend:auth:ldap:** add service bind support, adminGroup DN/CN handling, optimized search flow, tests, and updated docs ([f7b9d0f](https://github.com/Sync-in/server/commit/f7b9d0f22fa8ddf815fbde1bc25279bee225b792))
+* **backend:auth:ldap:** add autoCreateUser and autoCreatePermissions ([96d52c9](https://github.com/Sync-in/server/commit/96d52c95585eef6a6c8498f14a1ba07dce44f6cb))
+* **backend:auth:** add LDAP/OIDC local password fallback and admin break-glass access ([23a93b5](https://github.com/Sync-in/server/commit/23a93b5ae104e669a58947590959f2f9a06f2d33))
+* **backend:config:** improve error messages for environment config validation ([a5df529](https://github.com/Sync-in/server/commit/a5df5295f0f9047e77fd749bba9a4cb2e523bebe))
+* **backend:sync:** add support for TOTP recovery codes during client registration ([3cb3ea4](https://github.com/Sync-in/server/commit/3cb3ea41eefe7625497a699dd12c55da85007188))
+* **backend:sync:** improve sync path error handling and enforce subdirectory selection ([549ada3](https://github.com/Sync-in/server/commit/549ada3a68dc853ec7e4beb987bcdfba9ebbe033))
+* **backend:** add `jsonOutput` option to logger ([02cbe04](https://github.com/Sync-in/server/commit/02cbe0497d0b973f4b321f1b7d113813eb86e021))
+* **frontend:spaces:** improve server connection error handling and UI feedback ([097b230](https://github.com/Sync-in/server/commit/097b2307a586b4366da026508b592a964adbc30d))
+* **frontend/backend:** add `client` auth scope for password-based apps to register servers across desktop apps and CLI ([5f131bf](https://github.com/Sync-in/server/commit/5f131bff00519264f8513af4f67210c30b7e9234))
+* **frontend:** allow filename rename validation on blur ([da930b8](https://github.com/Sync-in/server/commit/da930b8be9d5a2920ccea8c468a761dce68436f7))
+* **frontend:** restyle recents widget ([9845502](https://github.com/Sync-in/server/commit/9845502df5d71d69b59a3df5fed9a6b3916acd3e))
+* **frontend:** update widget badge styles and color scheme ([10feb97](https://github.com/Sync-in/server/commit/10feb97a2b45cf982ad2c3de12857df5fac3b358))
+
+
+### Bug Fixes
+
+* **backend:webdav:** ensure lock paths in headers are decoded correctly ([ceb2f38](https://github.com/Sync-in/server/commit/ceb2f38803270072c49b887de6be8988b9041f72))
+* **backend:webdav:** set correct http status line ([a651fc3](https://github.com/Sync-in/server/commit/a651fc33d5081a2fdc808dc00468a41699280da6))
+* **frontend:routes:** remove redundant `canActivateChild` guard from app routes ([3b5a80a](https://github.com/Sync-in/server/commit/3b5a80a762373047217234456f347c80e21d77e2))
+* **frontend:spaces:** remove tap directive keyboard handler blocking spaces in edit input and preserve whitespace in displayed file name ([e0b328b](https://github.com/Sync-in/server/commit/e0b328b4222b3aec9b99476f3de170a2a9a5c7ac))
+
+## [1.11.0](https://github.com/Sync-in/server/compare/v1.10.1...v1.11.0) (2026-01-20)
+
+### Security
+
+* **backend:** upgrade tar to 7.5.4 (GHSA-8qq5-rm4j-mr97) ([a42c1079](https://github.com/Sync-in/server/commit/a42c107904852f32db3ede01b7ee5a0a039bd6bf))
+
+### Features
+
+* **frontend:** add delayed auto-collapse functionality for right sidebar ([315bad2](https://github.com/Sync-in/server/commit/315bad25980d1b7596f86d4cd4f9045137bf7d4d))
+
+## [1.10.1](https://github.com/Sync-in/server/compare/v1.10.0...v1.10.1) (2026-01-12)
+
+
+### Bug Fixes
+
+* **auth:** WebDAV basic auth fails with ":" in password ([#104](https://github.com/Sync-in/server/issues/104)) ([9671b71](https://github.com/Sync-in/server/commit/9671b71e5a4fcbfb659b5eb1e2818f55f3df7976))
+* **backend:comments:** refine file path query for better handling of space roots ([5b0c8ff](https://github.com/Sync-in/server/commit/5b0c8fff0aa3eba9d3e0308e2ae012992f1fa91b))
+* **backend:webdav:** treat PUT requests as binary streams to avoid body parsing ([edc291c](https://github.com/Sync-in/server/commit/edc291ccc634e03843c4db9f7000969e6fc9946f))
+
+## [1.10.0](https://github.com/Sync-in/server/compare/v1.9.6...v1.10.0) (2026-01-07)
+
+🔥🚀 Collabora Online integration
+
+### Features
+
+* **backend/frontend:files:** improve file locking logic, enhance compatibility across apps such as WebDAV and Collabora and OnlyOffice ([9eb5a17](https://github.com/Sync-in/server/commit/9eb5a17b26cc6c0928be6a16c71002e9bd4082de))
+* **files:** add Collabora Online integration to Docker setup ([abe4fa4](https://github.com/Sync-in/server/commit/abe4fa4f89edbb79265d3cdb94aa01725a35ddce))
+* **files:** collabora online integration ([dabeff6](https://github.com/Sync-in/server/commit/dabeff62d522cd2af4acb93c20d287221e0f2c30))
+* **files:** Collabora Online integration, multi-editor support, and improved file locking ([e6bedc1](https://github.com/Sync-in/server/commit/e6bedc1bff837ce477ff4e791f78e66e038209b2))
+* **files:** improve editor selection and add editor preference support ([8fea357](https://github.com/Sync-in/server/commit/8fea357925a6671393d4f02b1ff790134ca87912))
+* **frontend/backend:files:** simplify file opening flow and improve readonly handling ([6563f44](https://github.com/Sync-in/server/commit/6563f445441c755f392508d98caa9ba261e5c2d7))
+* **links:** allow direct access to spaces via public links; add file preview/edit/download; improve password validation ([5102e9a](https://github.com/Sync-in/server/commit/5102e9ae6b17b9924969839c69b7cbdc2421c518))
+
+
+### Bug Fixes
+
+* **backend:files-scheduler:** correct ordering of recent files ([aea6bcd](https://github.com/Sync-in/server/commit/aea6bcdf79763bf392b105e1c806bb70da0f00be))
+* **backend:shares:** clear cached permissions when share link permissions are changed ([95a455b](https://github.com/Sync-in/server/commit/95a455b07d44ac4761e1f9583f8be7d90939e614))
+* **backend:spaces:** apply MODIFY permission for PUT requests on existing files instead of ADD when the resource exists ([e73ae93](https://github.com/Sync-in/server/commit/e73ae93251e090f4f9f4aaf455f5098a3ee47a4b))
+* **backend:webdav:** properly handle HEAD requests on directories, match lock source file when the file is a space root and extend lock owner information ([f1f4836](https://github.com/Sync-in/server/commit/f1f4836d4038eb3960a1f08cc8579176d05d1b55))
+* **docker:collabora:** add capabilities for debian based hosts ([9275df6](https://github.com/Sync-in/server/commit/9275df653acde8a8abfa6dad5c92859a064021be))
+* **frontend:auth:** ensure server config is initialized during authentication to prevent OTP prompt from not appearing on desktop ([e0053ae](https://github.com/Sync-in/server/commit/e0053ae608954be7a1a85b7736e150c03ecb43cb))
+* **frontend:files:** adjust badge styles to use `white-space-normal` for consistent text wrapping ([615ea00](https://github.com/Sync-in/server/commit/615ea00bc79efe0cb3afa4e905dc3e0226336b84))
+* **frontend:files:** correct writeable condition ([288193e](https://github.com/Sync-in/server/commit/288193e3d8f0afb95db9212a33579fb33867bb30))
+* **frontend:files:** load tasks only when a user is logged in to prevent interceptor redirects when refreshing a public link URL ([bda58d6](https://github.com/Sync-in/server/commit/bda58d6094659231ead9c7c51878e57ed13b3d87))
+* **frontend:i18n:** remove explicit 'en' locale definition to prevent bs-datepicker translation conflicts ([13529f1](https://github.com/Sync-in/server/commit/13529f1b7c68e468c3aa195c81c4ce20bcd31c66))
+* **frontend:spaces:** display deactivation date when space is disabled ([7df2535](https://github.com/Sync-in/server/commit/7df2535f3f54e3ec6bced3525b16fb90edf1560b))
+
+## [1.9.6](https://github.com/Sync-in/server/compare/v1.9.5...v1.9.6) (2025-12-16)
+
+### Bug Fixes
+
+* **backend:files:** skip adding recents for trashed files ([c445196](https://github.com/Sync-in/server/commit/c445196914b2d351fba9218698a24496b1d6036c))
+* **backend:schedulers:** resolve scheduled methods being skipped because of @Timeout decorator overlap ([50f4140](https://github.com/Sync-in/server/commit/50f4140a7b0b478e6b499ea8884b43f13595bb71))
+* **frontend:files:** enable autoplay for video in media viewer component ([20fe25f](https://github.com/Sync-in/server/commit/20fe25fba00987994076d09489febd5593e08cef))
+* **frontend:files:** remove hidden class from buttons for consistent visibility across breakpoints ([a60538a](https://github.com/Sync-in/server/commit/a60538ad01c675dacdac7ed4d80ca2bdf5f369ba))
+* **frontend:files:** update file metadata timestamps on save and align OnlyOffice state change handlers ([db768e1](https://github.com/Sync-in/server/commit/db768e14452f4712df9f443350c214e0700b7270))
+* **frontend:search:** improve search input layout and update filter button visibility for responsiveness ([09ebce6](https://github.com/Sync-in/server/commit/09ebce612fa2d72699a4d60bf9896f8e3c0fc4e4))
+* **frontend:spaces:** show disabled space message to space managers ([f8bcdf7](https://github.com/Sync-in/server/commit/f8bcdf7fdd4b25abc2ba4b74715adbb0ae04a3e3))
+
+## [1.9.3](https://github.com/Sync-in/server/compare/v1.9.1...v1.9.3) (2025-12-07)
+
+### Security Fixes
+* **backend:security:** prevent stored XSS by serving files with `Content-Disposition: attachment` to avoid arbitrary JavaScript execution in the browser ([a6276d0](https://github.com/Sync-in/server/commit/a6276d067725637310e4e83a3eee337aae81f439))
+
+### Bug Fixes
+* **ci:** update Dockerfile to use alpine3.22 to avoid errors with busybox-1.37.0-r29 ([ede1bec](https://github.com/Sync-in/server/commit/ede1bec4b3c33f17c3b94c32d68c4b642ee710c0))
+* **backend:users:** clear whitelist caches when group visibility changes ([071c3ae](https://github.com/Sync-in/server/commit/071c3aed68d3bdacead571d39a1f4006b2380915))
+* **frontend:files:** fix DataTransfer usage after async operations and delay overwrite until analysis completes to restore overwrite on dropped files ([d9935e5](https://github.com/Sync-in/server/commit/d9935e5a3887448635c30fd49f22657461177610))
+* **frontend:styles:** add min-width on app-auth background class ([dffd5e5](https://github.com/Sync-in/server/commit/dffd5e5c7a1a65994970bedf33a95dd00827aa94))
+
+## [1.9.1](https://github.com/Sync-in/server/compare/v1.8.1...v1.9.1) (2025-11-25)
+
+### Features
+
+* **admin:** add server update notification support ([fc72430](https://github.com/Sync-in/server/commit/fc72430d69b9d2fb31d24ef680efd602a2c94d87))
+* **backend:auth:** allow cn LDAP attribute and add AD-specific logic ([6998b1a](https://github.com/Sync-in/server/commit/6998b1af24bc6a360a146f71d8d264c582e89edc))
+* **backend:auth:** Allow the LDAP `mail` attribute to be used as the login attribute, and allow users to authenticate using either the login attribute or their email address ([a683b57](https://github.com/Sync-in/server/commit/a683b5760ce9386b51c7e21e8699bb8a8d9335c5))
+* **backend:files:** improve file upload handling with comprehensive overwrite support and directory conflict resolution ([e69a687](https://github.com/Sync-in/server/commit/e69a687071c0d5e7fc8bd76cef820c87a35e852c))
+* **docker:onlyoffice:** update DocumentServer image to v9.1 ([c64a3ae](https://github.com/Sync-in/server/commit/c64a3aeafc70b275acc9d2fa50a5b30517325673))
+* **files:** add directory size retrieval with UI and API integration ([4528b43](https://github.com/Sync-in/server/commit/4528b438e0819d3e6d9f72c11fab931257cadad0))
+* **files:** add overwrite confirmation dialog for file rename and update API to support overwrite behavior ([c7c0d96](https://github.com/Sync-in/server/commit/c7c0d96d46144062cda739e8f32726f27deb8911))
+* **files:** add overwrite confirmation dialog for file uploads and adapt API to support overwrite functionality ([d39822f](https://github.com/Sync-in/server/commit/d39822fd2d787b2b3477214c5ab885e7f712264e))
+* **files:** add unlock request feature and enable force unlock for file owners ([7441337](https://github.com/Sync-in/server/commit/7441337dd0035ef681ece616d3e21870134ea511))
+* **files:** enable locking and unlocking of edited files with improved handling and UI integration ([24ad66b](https://github.com/Sync-in/server/commit/24ad66b034e3287a5bc81c504b383539e025fc10))
+* **files:** improve file handling with edit mode toggle, unsaved changes warning, enhanced modal logic, and updated constants ([bcc3ad2](https://github.com/Sync-in/server/commit/bcc3ad28bd26b042de50506c6a5bb71aa1e720ca))
+* **frontend:config:** enhance notifications with `maxOpened` and `autoDismiss` properties ([cf850bf](https://github.com/Sync-in/server/commit/cf850bf43f61306e7bb2ee5306741f2628f2d89a))
+* **frontend:files:** add ability to edit basic text files ([85b56e2](https://github.com/Sync-in/server/commit/85b56e23d5c8c11ed62ef281bc2370965090305f))
+* **frontend:files:** add fulscreen button in image viewer ([b834618](https://github.com/Sync-in/server/commit/b8346182fd3d01061573111bf80ba9aecca86e23))
+* **frontend:files:** add new translations and improve text viewer with updated read-only state handling and line wrapping ([e90c91e](https://github.com/Sync-in/server/commit/e90c91ec48e0d46cbbb4245a0e2fc53549cc8e3a))
+* **frontend:files:** add overwrite confirmation dialog for copy/move actions ([fa2d601](https://github.com/Sync-in/server/commit/fa2d601aba4aa0ad1e4f7142212ee64db3e73a96))
+* **frontend:files:** add undo and redo functionality with i18n updates and improved editor error handling ([daccfbc](https://github.com/Sync-in/server/commit/daccfbcf7c01fe71421c696a4857a966f9bfef9b))
+* **frontend:files:** enhance overwrite handling by updating MIME type on rename and improving file model consistency and UI visuals ([f68a073](https://github.com/Sync-in/server/commit/f68a07395487dd27779fa9ec52943ccbd7e1f722))
+* **frontend:files:** enhance text viewer with search panel toggle and keyboard shortcuts handling ([5b411f0](https://github.com/Sync-in/server/commit/5b411f084913ab2ece2d499d85e3fab3b1c26f29))
+* **frontend:files:** image viewer slideshow ([49bbd4e](https://github.com/Sync-in/server/commit/49bbd4e2ea325832e30a97b969b3043c8d294ebc))
+* **frontend:files:** improve text viewer with line wrapping, saving state, and enhanced search panel handling ([e5f0863](https://github.com/Sync-in/server/commit/e5f0863bbd921ef97879ff076475aaa46a21d051))
+* **frontend:files:** improve text viewer with save error handling and updated file upload logic ([034c7a4](https://github.com/Sync-in/server/commit/034c7a4db4961433c2d9223229edbee345f2ee67))
+* **frontend:files:** start implementing image viewer and folder slideshow ([7a65927](https://github.com/Sync-in/server/commit/7a65927bc3bcfee88372f0a913db68c0daa1f768))
+* **frontend:links:** update navigation to enter spaces and shares directly instead of selecting them ([fd64265](https://github.com/Sync-in/server/commit/fd6426566c0275daaf82dc4ae21809e6682b90b8))
+* **frontend:modals:** improve modal animations, lifecycle handling, and state management ([bad0696](https://github.com/Sync-in/server/commit/bad06964b65586b751ce0c9cd4e163d921828a63))
+
+
+### Bug Fixes
+
+* **ci:** replace static version import with dynamic version loader, update Dockerfile and add utility function ([15f4752](https://github.com/Sync-in/server/commit/15f4752906ac04ceaf7004162f70f5ba8b9a59cc))
+* **backend:common:** prevent errors on invalid image metadata with `failOn: 'none'` option in sharp ([901fdf8](https://github.com/Sync-in/server/commit/901fdf8cf9ede111cd821363a2a28470c5d9d314))
+* **backend:files:** avoid copy failures when sample documents are read-only and files are written to a CIFS share by falling back to stream copy ([3b734b8](https://github.com/Sync-in/server/commit/3b734b82b8d02072aa09d941ffd7b911cfcf3950))
+* **backend:files:** correct `isDir` SQL logic to handle external paths without associated file IDs ([b3ce7d4](https://github.com/Sync-in/server/commit/b3ce7d4ae66556d455bc5d5495ed2fe070c15efc))
+* **backend:files:** correct directory flag and ensure consistent file move operation in trash handling ([e85ead7](https://github.com/Sync-in/server/commit/e85ead7e7f8a327466279af2d103d3a4d5644b80))
+* **backend:files:** enable `cacheControl` to ensure consistent client-side caching behavior ([25ab568](https://github.com/Sync-in/server/commit/25ab56808b7f4507a09c570bc7e7623077d5c594))
+* **backend:files:** ensure locks are visible on anchored and shared files ([6445333](https://github.com/Sync-in/server/commit/64453339e1ae7f4e8a8e8f061effbccaf5070aa6))
+* **backend:files:** set `maxAge` to 0 to enforce immediate cache invalidation ([293f34c](https://github.com/Sync-in/server/commit/293f34cb0e4bf7ac46bde6b4dc2a2432c57c04ec))
+* **backend:links:** restore access to anchored files from an external location when shared via a link ([f61f09f](https://github.com/Sync-in/server/commit/f61f09fdeefaff2492ae39423ef0958962562db3))
+* **backend:shares:** ensure correct file path for root space shares owned by user ([f5adb55](https://github.com/Sync-in/server/commit/f5adb55612622875ccfcb29ebcc754c974f186fd))
+* **backend:websocket:** prevent server connection from closing on shutdown hooks ([8714644](https://github.com/Sync-in/server/commit/8714644f4d6d35d8d9297bc2f47e2e3eed485938))
+* **frontend:drag:** prevent drag-and-drop actions in the shares list and ensure proper drag event handling ([f19ab4f](https://github.com/Sync-in/server/commit/f19ab4f7ed976d909cda323f1839d458a895ec3d))
+* **frontend:files:** sync read-only value with opening mode in the text editor ([dfff2dc](https://github.com/Sync-in/server/commit/dfff2dcf152e049e25a3f07f92a41ea4a8af4805))
+
+## [1.8.1](https://github.com/Sync-in/server/compare/v1.8.0...v1.8.1) (2025-10-30)
+
+### Bug Fixes
+
+* **backend:files:** lower PDF.js verbosity to reduce logging noise ([336fce8](https://github.com/Sync-in/server/commit/336fce8d6b9f2873c10bfaf3a7ca226eb3cb6069))
+* **backend:users:** handle graceful shutdown in WebSocket gateway to prevent new connections during app termination ([0f02820](https://github.com/Sync-in/server/commit/0f02820a291fd5764e928a00cd540514ddfc5ad3))
+* **backend:** update router options access to use `options.routerOptions` instead of deprecated `constraints` property (Fastify v6 compatibility) ([2d74512](https://github.com/Sync-in/server/commit/2d74512a800ba7d80e043679249ec98d3ab6f180))
+
+## [1.8.0](https://github.com/Sync-in/server/compare/v1.7.0...v1.8.0) (2025-10-26)
+
+### Features
+
+* **backend:cache:** update Redis packages to latest versions supporting Redis 7.x and 8.x, adjust code and improve cache
+  handling ([daaedf3](https://github.com/Sync-in/server/commit/daaedf3676c5148cc82092f754558340f4b9f773))
+* **backend:database:** implement graceful MySQL client shutdown during application
+  termination ([e42b843](https://github.com/Sync-in/server/commit/e42b84389fc9caee99f0125fce4e9859bee46743))
+* **backend:files:** add daily cron job to clean up orphaned files and optimize
+  table ([19b9e6e](https://github.com/Sync-in/server/commit/19b9e6ebee9f6b05d98494f57ecbe8a82c6cfefd))
+* **backend:files:** add support for editing `doc`, `xls`, and `ppt` file formats in OnlyOffice constants map (allow implicit
+  conversion) ([e6523f4](https://github.com/Sync-in/server/commit/e6523f410fa2f903fbbc0f5823527f6f896dfaac))
+* **backend:spaces:** improve trash path resolution for spaces and shares with external
+  paths ([a37077a](https://github.com/Sync-in/server/commit/a37077a5cf4e1a422d949269d76a773a954cb387))
+* **backend/frontend:** introduce full-text search preference for users and
+  spaces ([70ee799](https://github.com/Sync-in/server/commit/70ee79968e2eb88c061ee1f882d19be9354d2b2a))
+* **backend/frontend:** support quota definition and usage for shares with external paths, and include storage usage from external-path space roots in
+  the total space usage ([0b08004](https://github.com/Sync-in/server/commit/0b08004a3a609c7b1a08aa9b664b59fcd39bee6a))
+* **files:** add config toggles to enable/disable file indexing and full-text
+  search ([fde7c58](https://github.com/Sync-in/server/commit/fde7c58cbb94375f038353a450a786e95c382e43))
+* **frontend:files:** add lock indicator to selection panel and align badge styles for
+  consistency ([18bf5e6](https://github.com/Sync-in/server/commit/18bf5e653253af29fb08ea2525513957c607ea00))
+* **frontend:files:** display current lock indicator in file
+  browser ([383e6e1](https://github.com/Sync-in/server/commit/383e6e1129ae6e2ed6df30ae086cdf6f7baf7d3e))
+* **frontend:i18n:** add Deutsch, Spanish, Portuguese, Italian, Chinese, and Hindi translations and update language
+  configuration ([3b35484](https://github.com/Sync-in/server/commit/3b354841c000689243a584a2c392c572a04e8c5b))
+* **frontend:i18n:** add dynamic translation loading and missing translation
+  handler ([9f9baab](https://github.com/Sync-in/server/commit/9f9baab9ae2cdad6f007210c5781e3a7c2df4ecd))
+* **frontend:i18n:** add Russian translations and update
+  language ([b791683](https://github.com/Sync-in/server/commit/b791683f8100ef9a907508b043727c11b06074a4))
+* **frontend:i18n:** add support for language display names and enhance select options with localized
+  text ([f9a68bf](https://github.com/Sync-in/server/commit/f9a68bff83c4ce8f8964b135fbb56d5c7b33215b))
+* **i18n:** add Brazilian Portuguese (pt-BR), Turkish (tr), Japanese (ja), Korean (ko), and Polish (pl) translations for frontend and
+  backend ([6d017c1](https://github.com/Sync-in/server/commit/6d017c11c4581b21bb16308b9360cc6f59e3f484))
+* **i18n:** centralize i18n utilities, refine type safety, and enhance language normalization and storage
+  handling ([11650a4](https://github.com/Sync-in/server/commit/11650a4b9cf16417d0905cf28e92fe3f3f52f46c))
+* **i18n:** enhance locale support by adding new languages, centralizing i18n configuration, improving storage handling, and refining locale-specific
+  settings ([ccd538c](https://github.com/Sync-in/server/commit/ccd538ce21fef392236ab037d4cc3ce4c313ee8a))
+* **i18n:** modularize locale configurations, improve type safety, and optimize language
+  loading ([3b05b1b](https://github.com/Sync-in/server/commit/3b05b1b8850230f0d89013c3ea86d6a7fe94c54b))
+
+### Bug Fixes
+
+* **backend:files:** adjust `analyzeFile` logic to handle space root and shared
+  files ([48bd843](https://github.com/Sync-in/server/commit/48bd8432a4dfdf72493f616219a61c080c701d20))
+* **backend:files:** update PDF adapter to use standard_fonts directory and disable font face for improved
+  compatibility ([0fce762](https://github.com/Sync-in/server/commit/0fce7625cdf4373ef16b9f32150b3da2de4a7733))
+* **backend:spaces,sync:** enable whitelist option in ParseArrayPipe for DTO
+  validation ([13fcce2](https://github.com/Sync-in/server/commit/13fcce2908261c1a010a6c6b50517c2573f4a054))
+* **backend:spaces:** update query parameters to prevent runtime errors and add missing comments for
+  clarity ([d20604a](https://github.com/Sync-in/server/commit/d20604a9c718245393b606139cdc2d79d521301e))
+* **backend:users:** extend clearWhitelistCaches to support clearing all entries, and call it after user creation to prevent stale user
+  cache ([92d78c9](https://github.com/Sync-in/server/commit/92d78c987e7054c5f6a06c876ceeb7af8a3098b1))
+* **backend:** standardize error message handling by truncating to the first segment to hide system
+  paths ([f8e6f24](https://github.com/Sync-in/server/commit/f8e6f249c158e425ee0ac4858cb1a69063b198be))
+* **backend:** use EXIF metadata for thumbnail
+  orientation ([bf03bb8](https://github.com/Sync-in/server/commit/bf03bb8dfe6b4b1a939e5e394e39b81d346602ee))
+* **frontend:files:** add text wrapping for trash dialog
+  content ([2b38dd1](https://github.com/Sync-in/server/commit/2b38dd1e42a35dd91afd5d5a99bef537bacfa4ac))
+* **frontend:files:** keep aspect ratio for thumbnails with large
+  width ([facff7f](https://github.com/Sync-in/server/commit/facff7fc5779ec03abc0362f0867b3ffe088822c))
+* **frontend:files:** normalize file names in FormData to prevent unicode normalization
+  mismatches ([a0db60c](https://github.com/Sync-in/server/commit/a0db60c691b74edc0474400c95453853b73ec176))
+* **frontend:files:** remove forced black background for transparent images in
+  viewer ([8ebcace](https://github.com/Sync-in/server/commit/8ebcace49fb5e56478ca99be01216880c1092f49))
+* **frontend:search:** resolve selection issue by tracking index instead of file
+  ID ([8d2ebd8](https://github.com/Sync-in/server/commit/8d2ebd8fca9fbcc5ce3e296c8e0924737ade5539))
+* **frontend:spaces:** ensure correct file ID assignment for new shares and anchored
+  files ([023adfb](https://github.com/Sync-in/server/commit/023adfb879c0839b5e7bd1c10fb68837ff508b94))
+* **frontend:styles:** ensure responsive width for ngx-toastr
+  component ([2595563](https://github.com/Sync-in/server/commit/259556368a022762dc419d488055e3ff04131b2a))
+* **frontend:** remove unnecessary `l10nTranslate` directive from badge components in multiple
+  views ([d38ee5a](https://github.com/Sync-in/server/commit/d38ee5a1011805e276846c1e384f8727575768ac))
+* **frontend:** switch dayjs imports to esm for better tree-shaking and module
+  optimization ([9c31cde](https://github.com/Sync-in/server/commit/9c31cde4b04fd8b05673f22925211c2187a8ac3f))
+
+## [1.7.0](https://github.com/Sync-in/server/compare/v1.6.1...v1.7.0) (2025-10-09)
+
+### Features
+
+* **backend:auth:** add `adminGroup` support and improve LDAP user role
+  assignment ([9074145](https://github.com/Sync-in/server/commit/9074145c9c86e023c73e0a5522f87441356bb240))
+* **backend:auth:** enhance LDAP authentication configuration with upnSuffix and netbiosName
+  parameters ([5a5d623](https://github.com/Sync-in/server/commit/5a5d62317198d3c1164bc6f9efe6bdb50bfe25f7))
+
+## [1.6.1](https://github.com/Sync-in/server/compare/v1.6.0...v1.6.1) (2025-10-09)
+
+### Bug Fixes
+
+* **backend:auth:** improve AD/LDAP authentication handling and
+  normalization ([db1a9e3](https://github.com/Sync-in/server/commit/db1a9e3d4a02c6be5ef594b4a383e05d0bc50fc4))
+* **frontend:links:** fallback to default MIME URL when origin MIME URL is not
+  found ([5724f3a](https://github.com/Sync-in/server/commit/5724f3a730fc8d8b51268071b0d3370bc62f6901))
+
+## [1.6.0](https://github.com/Sync-in/server/compare/v1.5.2...v1.6.0) (2025-09-26)
+
+🔥🚀 Support for Multi-Factor Authentication (MFA) & App Passwords
+
+### Features
+
+* **feat: mfa and app passwords
+  ** ([5ed579f](https://github.com/Sync-in/server/commit/5ed579fd31dcf51770abe52f385b4ed306a22bd8) [431a988](https://github.com/Sync-in/server/commit/431a988c6d0b88711b50b642bd440c42f80283ce) [43a8b10](https://github.com/Sync-in/server/commit/43a8b10eb8869eafd3014cdad034c2b093237edf) [91eda5c](https://github.com/Sync-in/server/commit/91eda5cbc396da3bd6cfddf5e1e4001466327575))
+* **backend:sync:** handle 2FA during client
+  registration ([b0aadde](https://github.com/Sync-in/server/commit/b0aadde6323ffc9a61f43ea424b7cff8922f718d))
+* **backend:auth:** add support for AD-specific LDAP
+  attributes ([1b6a8fc](https://github.com/Sync-in/server/commit/1b6a8fc139db54a71a4aaa5cba7715d349ffef0f))
+* **backend:infrastructure:** allow configuration of ignoreTLS and rejectUnauthorized for SMTP
+  transport ([c1b3f5a](https://github.com/Sync-in/server/commit/c1b3f5a810e2cdc6977b48022f491e602b70ee9f))
+* **backend:notifications:** add email notifications for two-factor authentication security
+  events ([b207f33](https://github.com/Sync-in/server/commit/b207f336c2dc75deec7992975b7aa1376289ee42))
+* **backend:notifications:** include link password in sent
+  emails ([1a3ed0a](https://github.com/Sync-in/server/commit/1a3ed0a7624c16986ced259d8e272eaa2872c8a8))
+* **backend:users:** add email notifications when account is
+  locked ([954bb10](https://github.com/Sync-in/server/commit/954bb1061e6399768aad13d9822491975a843b9b))
+
+### Bug Fixes
+
+* **backend:auth:** improve handling of sql errors ([f4b78fa](https://github.com/Sync-in/server/commit/f4b78fa2779d2fea01d7dd554d861cb6272b594e))
+* **backend:users:** ensure default value for user secrets when
+  null ([090eb6e](https://github.com/Sync-in/server/commit/090eb6e61f4973522f201879e611b744aa0677e8))
+
+## [1.5.2](https://github.com/Sync-in/server/compare/v1.5.1...v1.5.2) (2025-09-09)
+
+### Bug Fixes
+
+* crash on non-AVX CPUs with musl: @napi-rs/canvas >=0.1.7.8 triggers "Illegal Instruction" when AVX is not
+  supported ([de2f983](https://github.com/Sync-in/server/commit/de2f98348395fa7e711c52c30d1e1d59579282d3))
+
+## [1.5.1](https://github.com/Sync-in/server/compare/v1.5.0...v1.5.1) (2025-09-07)
+
+### Bug Fixes
+
+* **docker:** fix /app ownership for .init file ([e43f478](https://github.com/Sync-in/server/commit/e43f47873768fa24ba2e66bc1bbd90214bde5ca1))
+
+## [1.5.0](https://github.com/Sync-in/server/compare/v1.4.0...v1.5.0) (2025-09-07)
+
+### Features
+
+* **files:** optimize document opening to avoid extra API
+  calls ([bf57d93](https://github.com/Sync-in/server/commit/bf57d93dcaea312328db9f1f5290e46471d2f638))
+* **frontend:files:** display count for multiple selected files and open sidebar pasteboard when adding
+  files ([39feccd](https://github.com/Sync-in/server/commit/39feccd3d89f29cdc4effb2bb4c016c7c1258729))
+* **frontend:spaces:** enable keyboard navigation when files are selected in list
+  mode ([7e38ce2](https://github.com/Sync-in/server/commit/7e38ce29fbfe11b84ccd7824aea1e43ae46e0d0f))
+
+### Bug Fixes
+
+* **backend:links:** increment nbAccess even when no limit is
+  set ([d6d2e74](https://github.com/Sync-in/server/commit/d6d2e7425c16510ee9e15107a02f21d2038be89f))
+* **frontend:spaces:** prevent false positives when checking external
+  location ([f1fdd0d](https://github.com/Sync-in/server/commit/f1fdd0d4088e98f4e24f4a4c18cf6f67e3e5d0d4))
+
+### Performance
+
+* **docker:** only change application data ownership ([6e88991](https://github.com/Sync-in/server/commit/6e889915fedf613030e43919e637d7888aea94a1))
+
+## [1.4.0](https://github.com/Sync-in/server/compare/v1.3.9...v1.4.0) (2025-08-26)
+
+### Features
+
+* **backend:webdav:** add temporary hook for Joplin sync compatibility (
+  laurent22/joplin[#12249](https://github.com/Sync-in/server/issues/12249)) ([fc22a7d](https://github.com/Sync-in/server/commit/fc22a7d828f99abe65423d03418fe397ab45d7b0))
+* **backend:files:** add showHiddenFiles option to toggle visibility of
+  dotfiles ([ed47fbf](https://github.com/Sync-in/server/commit/ed47fbf3fe7fe5b66868489c319d3c438fde0dbf))
+* **backend:files:** allow markdown files to be edited with
+  onlyOffice ([c3d9d85](https://github.com/Sync-in/server/commit/c3d9d85d3f1dc90f4afae8db8ce9d128c8ecadf2))
+* **frontend:spaces:** open documents in edit mode on
+  double-click ([d6ef175](https://github.com/Sync-in/server/commit/d6ef175d951b4e11ce78d280e4982e3ed8a4bb3f))
+
+### Bug Fixes
+
+* **backend:users:** ensure permission guards correctly evaluate array
+  permissions ([c27dc7b](https://github.com/Sync-in/server/commit/c27dc7b7ac20293febca17d18ae8608d61eb1b44))
+
+## [1.3.9](https://github.com/Sync-in/server/compare/v1.3.8...v1.3.9) (2025-08-22)
+
+### Features
+
+* **backend:** allow IPv6 in database fields for IP
+  addresses ([757f2d1](https://github.com/Sync-in/server/commit/757f2d117865fa41c2cdf759b9f54477434dee79))
+
+### Bug Fixes
+
+* **backend:config:** do not lowercase env var values ([cb73ab0](https://github.com/Sync-in/server/commit/cb73ab0287346b58ae8f34ed985d891a9a5a6732))
+* **docker:nginx:** optionalize OnlyOffice proxying and avoid startup failure when container is
+  absent ([2be107f](https://github.com/Sync-in/server/commit/2be107feda42ca8bb1edd1a9b99e3e62ff9dc234))
+
+## [1.3.8](https://github.com/Sync-in/server/compare/v1.3.7...v1.3.8) (2025-08-19)
+
+### Bug Fixes
+
+* **frontend:assets:** replace symlinked SVGs with real files to fix Angular 20 build
+  issues ([3749e44](https://github.com/Sync-in/server/commit/3749e4419ad4bce037297bd9872c0b585af6c73f))
+
+### Chores
+
+* **CHANGELOG.md:** cleanup ([a44c6ce](https://github.com/Sync-in/server/commit/a44c6ce11b6d65758452788b5733c017af48a516))
+* **husky:** limit pre-commit hook to lint only ([20fa56d](https://github.com/Sync-in/server/commit/20fa56d36f024d5a1a5559569e3dd67749c02277))
+* **README.md:** add keywords ([81c1a6e](https://github.com/Sync-in/server/commit/81c1a6e1dc23d9e4416ef6face0830b5278154d9))
+
+## [1.3.7](https://github.com/Sync-in/server/compare/v1.3.2...v1.3.7) (2025-08-19)
+
+### Bug Fixes
+
+* **backend:files:** correct archive name when downloading a
+  folder ([1474949](https://github.com/Sync-in/server/commit/147494906e7a04f520195dfb747eb791daabfbc3))
+* **backend:sync:** avoid "parent must exist" error when files are moved before destination folder creation during
+  sync ([8c92535](https://github.com/Sync-in/server/commit/8c9253551aa1d90c7fe340b81e5f9b48c82b6fdf))
+
+### Chores
+
+* **docker:** allow http2 in nginx directives ([4ad2ffb](https://github.com/Sync-in/server/commit/4ad2ffbfe12720af75aeac1d7ee7e383d73ad981))
+* **frontend:** add missing video-mp4 mime type ([d210268](https://github.com/Sync-in/server/commit/d210268bc8cb5a5e61e0bbc24f431915b509b32d))
+* **frontend:** bump to angular 20 ([363671a](https://github.com/Sync-in/server/commit/363671ac5e6ad6299477bf07f0bcffe1cff3e3f4))
+* **npm-sync-in-server.js:** more verbose createUser
+  function ([1ea155a](https://github.com/Sync-in/server/commit/1ea155a23f092312cb234758c59002bbe01458b2))
+* **frontend:** update-angular-19-to-20 ([14f0397](https://github.com/Sync-in/server/commit/14f03973a77370f531bd1ed4c6c2052b76c15ea2))
+* **ci:** add Husky pre-commit hook for lint and test ([281e32d](https://github.com/Sync-in/server/commit/281e32df28e092b6ea0a57d94b6f8279ca67c4c1))
+* **ci:** remove husky prepare ([8e911ab](https://github.com/Sync-in/server/commit/8e911abf11e5a3265ea6afe30e26879452766a20))
+
+## [1.3.2](https://github.com/Sync-in/server/compare/v1.3.1...v1.3.2) (2025-08-08)
+
+### Features
+
+* **cli** add create-user command to manage user creation
+
+## [1.3.1](https://github.com/Sync-in/server/compare/v1.3.0...v1.3.1) (2025-08-08)
+
+### Bug Fixes
+
+* **backend:conf:** handle undefined logger.stdout in some
+  environments ([08087ba](https://github.com/Sync-in/server/commit/08087bab675860d4c35041f9cd1752840df3cc7f))
+* **backend:test:** log path ([eabf3d7](https://github.com/Sync-in/server/commit/eabf3d734721fbfd821489ac2bc83913c9afaf2e))
+* **backend:validation:** log file path ([0e8c695](https://github.com/Sync-in/server/commit/0e8c695437dae0e6000e213382e1f4c7d91aef93))
+
+## [1.3.0](https://github.com/Sync-in/server/compare/v1.2.2...v1.3.0) (2025-08-08)
+
+### Features
+
+* add support for npm distribution and server management
+  CLI ([4a5f821](https://github.com/Sync-in/server/commit/4a5f8215d1caf6d7a3296f223a8ec90a20fe46e0))
+* **backend:** make log file path configurable via
+  logger.filePath ([5ffac5a](https://github.com/Sync-in/server/commit/5ffac5a9f42e707da0c9f5d6fba73d6d6022b8fb))
+
+## [1.2.2](https://github.com/Sync-in/server/compare/v1.2.1...v1.2.2) (2025-08-04)
+
+### Features
+
+* **onlyoffice** updated compatibility with version 9.x (added md, vsdx, odg... to viewable extensions)
+* **docker** include Docker Compose files to track them across releases
+
+### Bug Fixes
+
+* **test:** assign proper token names for csrf and ws ([bfe43e5](https://github.com/Sync-in/server/commit/bfe43e5f099cf4a4b07943a55e9242843d8b74c2))
+
+## [1.2.1](https://github.com/Sync-in/server/compare/v1.2.0...v1.2.1) (2025-08-02)
+
+### Bug Fixes
+
+* **backend:files:** await lock creation to prevent premature
+  destruction ([05f1a98](https://github.com/Sync-in/server/commit/05f1a98077eceb33fdc3b8312fc0884870c40a38))
+* **backend:files:** remove duplicate extension on compressed archives introduced by path-traversal security
+  patch ([9deeafc](https://github.com/Sync-in/server/commit/9deeafcd2cacd6371e0e423416425511ae3e9ff7))
+* **backend:files:** restore folder upload regression after path-traversal
+  patch ([3204fd0](https://github.com/Sync-in/server/commit/3204fd0524b87edd0a7450bb3d27315e5a390452))
+* **backend:users:** support client WebSocket IP from x-forwarded-for when trustProxy is
+  enabled ([3e66c40](https://github.com/Sync-in/server/commit/3e66c40b6d0884b66b8f45c183ea0253903e4c16))
+* **docker:** use INIT_ADMIN env var to control admin account
+  creation ([c6bb358](https://github.com/Sync-in/server/commit/c6bb3589e832bf46a492814bc05e2d8de2699435))
+* **frontend:files:** correct folder drag-and-drop for browsers without
+  webkitRelativePath ([e0115ec](https://github.com/Sync-in/server/commit/e0115ec38805c1dfcd39ab7522c81549ec05bdd4))
+
+## [1.2.0](https://github.com/Sync-in/server/compare/v1.1.1...v1.2.0) (2025-07-28)
+
+### Features
+
+* allow SYNCIN_ env vars to override default config ([5907f81](https://github.com/Sync-in/server/commit/5907f81e4001d3c86d49465bad7642ac9516ea76))
+* **config:** allow SYNCIN_ env vars to override default
+  config ([c1fcd61](https://github.com/Sync-in/server/commit/c1fcd6141e4a551dd108cf81e9a0c64b8f20391d))
+* **docker:** add PUID/PGID env variables ([c674b73](https://github.com/Sync-in/server/commit/c674b73b282c1eee4bc5e7fb03ecdb3a8e2ec1ff))
+
+### Bug Fixes
+
+* **backend:sendfile:** properly encode file paths with special characters and await call to catch
+  errors ([2bf2284](https://github.com/Sync-in/server/commit/2bf2284bb273ac8b06136803717020c4a8ede5a7))
+* **frontend:files:** detect .mp4 video files properly ([4df92a5](https://github.com/Sync-in/server/commit/4df92a531d6bae049a2ebd6beb036b36d21258ca))
+* **frontend:files:** keep aspect ratio for images with large
+  width ([#4](https://github.com/Sync-in/server/issues/4)) ([8ac398a](https://github.com/Sync-in/server/commit/8ac398a795b05fb4565efd12feedc5b0f9e384c7))
+* **frontend:layout:** increase context menu trigger timeout to ensure full
+  rendering ([3c19bce](https://github.com/Sync-in/server/commit/3c19bceeb5cc3f86e3db68b0ae554a686820ca8b))
+* **frontend:shares:** duplicate children in
+  recurseChildrenShares ([09d7b6d](https://github.com/Sync-in/server/commit/09d7b6d37d006390144b558eaf1a0857e648ec6e))
+* **frontend:styles:** fix right sidebar menu height ([4c871d8](https://github.com/Sync-in/server/commit/4c871d88586932c27ab1da40aa4ee513b9f36252))
+
+### Security Fixes
+
+* **backend:security:** prevent path traversal & SSRF ([d79d28c](https://github.com/Sync-in/server/commit/d79d28c2d6ccf21b2b81bfd0779978e1a5f3c475))
+
+### Community Highlights ❤️
+
+A big thank you to **Alex Zalo** ( @zalo-alex ) for his security audit.  
+Thanks to his expertise, several vulnerabilities were identified and patched in this release.  
+His contribution is truly valuable to us, and we’re grateful to have him as part of the Sync-in community 🎉
+
+Good news never comes alone!  
+We’re thrilled to welcome **Tibs** (@7185) to the Sync-in organization 🌟 !  
+A big thank-you to him for stepping in and supporting the community.
+
+## [1.1.1](https://github.com/Sync-in/server/compare/v1.1.0...v1.1.1) (2025-07-20)
+
+### Bug Fixes
+
+* **backend:users:** prevent members of isolated groups from seeing their group and its
+  members ([bbf4082](https://github.com/Sync-in/server/commit/bbf4082ef44aed0ed27d0438da97b0fa26895719))
+* **Dockerfile:** use port 8080 ([8167ad8](https://github.com/Sync-in/server/commit/8167ad8cce1f0052f8ef02b0b099fb6e6d36524e))
+* **frontend:app:** display the correct version of the
+  package ([2d0a83e](https://github.com/Sync-in/server/commit/2d0a83eb20fe836047bc12666bffff06238788dc))
+* **frontend:users:** properly update websocket connection on admin impersonation and
+  return ([5cf1e75](https://github.com/Sync-in/server/commit/5cf1e751a2592978567a8d729828d562152aa6e2))
+
+## [1.1.0](https://github.com/Sync-in/server/compare/58a0124d40d59fc611656efb77af9ca4d5dcf52c...v1.1.0) (2025-07-19)
+
+### Features
+
+* **backend:** add option to enable log colorization ([1d3e552](https://github.com/Sync-in/server/commit/1d3e5525387d501797db80e03aae5c4a3bb388ef))
+* **backend:** add shebang to allow CLI execution ([cfca2b1](https://github.com/Sync-in/server/commit/cfca2b1e7449ac1dbdef879cacdaa24ed30d48d2))
+* **frontend:sync:** add createDirectory flag when electron dialog is
+  open ([58a0124](https://github.com/Sync-in/server/commit/58a0124d40d59fc611656efb77af9ca4d5dcf52c))
+
+### Bug Fixes
+
+* **frontend:recents:** handle MIME image load error with fallback
+  function ([27266e5](https://github.com/Sync-in/server/commit/27266e59c24d3a1b7b4453c81f84ee818f537b72))

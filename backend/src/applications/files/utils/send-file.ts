@@ -1,0 +1,71 @@
+import { send, SendOptions, SendResult } from '@fastify/send'
+import { HttpStatus, StreamableFile } from '@nestjs/common'
+import { FastifyReply, FastifyRequest } from 'fastify'
+import { DEFAULT_HIGH_WATER_MARK } from '../constants/files.js'
+import { FileError } from '../models/file-error.js'
+import { fileName, isPathExists, isPathIsDir, isPathIsReadable } from './files.js'
+import { SEND_FILE_ERROR_MSG } from '../constants/operations.js'
+
+export function makeContentDispositionAttachment(fileName: string) {
+  const downloadName = fileName.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  return `attachment; filename="${downloadName}";filename*=UTF-8''${fileName}`
+}
+
+export class SendFile {
+  private fileName!: string
+
+  constructor(
+    private readonly filePath: string,
+    private readonly downloadName = '',
+    private readonly sendOptions: SendOptions = {
+      acceptRanges: true,
+      etag: true,
+      dotfiles: 'allow',
+      lastModified: true,
+      cacheControl: true,
+      maxAge: 0,
+      index: false,
+      highWaterMark: DEFAULT_HIGH_WATER_MARK
+    }
+  ) {}
+
+  async checks() {
+    if (!(await isPathExists(this.filePath))) {
+      throw new FileError(HttpStatus.NOT_FOUND, SEND_FILE_ERROR_MSG[HttpStatus.NOT_FOUND])
+    }
+    if (await isPathIsDir(this.filePath)) {
+      throw new FileError(HttpStatus.BAD_REQUEST, SEND_FILE_ERROR_MSG[HttpStatus.BAD_REQUEST])
+    }
+    if (!(await isPathIsReadable(this.filePath))) {
+      throw new FileError(HttpStatus.METHOD_NOT_ALLOWED, SEND_FILE_ERROR_MSG[HttpStatus.METHOD_NOT_ALLOWED])
+    }
+  }
+
+  async stream(req: FastifyRequest, res: FastifyReply): Promise<StreamableFile> {
+    // SendStream manages HEAD (no including body in response) & GET request (with body)
+    // Ranges, LastModified, Etag are also handled
+    // Send function uses decodeURIComponent, but filePath is already decoded: we need to encode it again before passing it.
+    const encodedFilePath = encodeURIComponent(this.filePath)
+    this.fileName = encodeURIComponent(this.downloadName ? this.downloadName : fileName(this.filePath))
+    const sendResult: SendResult = await send(req.raw, encodedFilePath, this.sendOptions)
+    if (sendResult.type === 'error') {
+      // The underlying error may expose the real filesystem path, so retain it only as the cause.
+      let errorMessage = 'Unable to access location'
+      if (sendResult.statusCode === HttpStatus.NOT_FOUND) {
+        errorMessage = SEND_FILE_ERROR_MSG[HttpStatus.NOT_FOUND]
+      } else if (sendResult.statusCode === HttpStatus.FORBIDDEN) {
+        errorMessage = 'Location is not allowed'
+      } else if (sendResult.statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
+        errorMessage = 'Unable to send file'
+      }
+      throw new FileError(sendResult.statusCode, errorMessage, { cause: sendResult.metadata.error })
+    }
+    // Force file to be downloaded as an attachment
+    sendResult.headers['content-disposition'] = makeContentDispositionAttachment(this.fileName)
+    res.headers(sendResult.headers)
+    res.status(sendResult.statusCode)
+    // sendStream.once('stream', () => console.log(`Sending: ${this.fileName}`))
+    // sendStream.once('end', () => console.log(`Received: ${this.fileName}`))
+    return new StreamableFile(sendResult.stream)
+  }
+}

@@ -1,0 +1,845 @@
+import { HttpStatus } from '@nestjs/common'
+import { HttpService } from '@nestjs/axios'
+import { Test, TestingModule } from '@nestjs/testing'
+import {
+  allowInsecureRequests,
+  authorizationCodeGrant,
+  AuthorizationResponseError,
+  calculatePKCECodeChallenge,
+  discovery,
+  fetchUserInfo,
+  randomNonce,
+  randomPKCECodeVerifier,
+  randomState
+} from 'openid-client'
+import { USER_ROLE } from '../../../applications/users/constants/user.js'
+import { UserModel } from '../../../applications/users/models/user.model.js'
+import { AdminUsersManager } from '../../../applications/users/services/admin-users-manager.service.js'
+import { UsersManager } from '../../../applications/users/services/users-manager.service.js'
+import * as avatarUtils from '../../../applications/users/utils/avatar.js'
+import * as filesUtils from '../../../applications/files/utils/files.js'
+import { DownloadFile } from '../../../applications/files/utils/download-file.js'
+import * as imageUtils from '../../../common/image.js'
+import { AUTH_SCOPE } from '../../constants/scope.js'
+import { DEFAULT_STORAGE_QUOTA_FIELD } from '../auth-providers.constants.js'
+import { OAuthDesktopCallBackURI, OAuthDesktopLoopbackPorts } from './auth-oidc-desktop.constants.js'
+import { OAuthCookie } from './auth-oidc.constants.js'
+import { AuthProviderOIDC } from './auth-provider-oidc.service.js'
+import { Mock } from 'vitest'
+
+vi.mock('../../../configuration/config.environment.js', () => ({
+  configuration: {
+    auth: {
+      oidc: {
+        issuerUrl: 'https://issuer.example.test',
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        redirectUri: 'https://api.example.test/auth/oidc/callback',
+        security: {
+          scope: 'openid profile email',
+          supportPKCE: true,
+          tokenSigningAlg: 'RS256',
+          userInfoSigningAlg: 'RS256',
+          tokenEndpointAuthMethod: 'client_secret_basic',
+          allowInsecureRequests: false,
+          skipSubjectCheck: false,
+          requireVerifiedEmail: true,
+          allowPrivateIpAvatarDownload: false
+        },
+        options: {
+          enablePasswordAuth: false,
+          autoCreateUser: true,
+          autoSyncAvatar: false,
+          adminRoleOrGroup: 'admins',
+          autoCreatePermissions: ['read']
+        }
+      }
+    }
+  }
+}))
+
+vi.mock('openid-client', () => {
+  class AuthorizationResponseError extends Error {
+    code: string
+    error_description: string
+    constructor(message: string, options: { cause: URLSearchParams }) {
+      super(message)
+      this.code = 'authorization_response_error'
+      this.error_description = options?.cause?.get('error_description') ?? message
+    }
+  }
+
+  return {
+    allowInsecureRequests: vi.fn(),
+    authorizationCodeGrant: vi.fn(),
+    AuthorizationResponseError,
+    calculatePKCECodeChallenge: vi.fn(),
+    ClientSecretBasic: vi.fn(),
+    ClientSecretPost: vi.fn(),
+    Configuration: class {},
+    discovery: vi.fn(),
+    fetchUserInfo: vi.fn(),
+    IDToken: class {},
+    None: vi.fn(),
+    randomNonce: vi.fn(),
+    randomPKCECodeVerifier: vi.fn(),
+    randomState: vi.fn(),
+    skipSubjectCheck: Symbol('skipSubjectCheck'),
+    UserInfoResponse: class {}
+  }
+})
+
+describe(AuthProviderOIDC.name, () => {
+  let service: AuthProviderOIDC
+  let usersManager: {
+    usersQueries: { bindExternalId: Mock; checkUserExists: Mock }
+    findUser: Mock
+    findUserByExternalIdOrEmail: Mock
+    logUser: Mock
+    validateLocalPasswordByLogin: Mock
+    updateAccesses: Mock
+    fromUserId: Mock
+  }
+  let adminUsersManager: {
+    createUserOrGuest: Mock
+    updateUserOrGuest: Mock
+  }
+  let httpService: {
+    axiosRef: Mock
+  }
+
+  const makeConfig = (supportsPKCE = true) => ({
+    serverMetadata: () => ({
+      supportsPKCE: () => supportsPKCE,
+      authorization_endpoint: 'https://issuer.example.test/authorize'
+    })
+  })
+
+  const makeReply = () => ({
+    header: vi.fn().mockReturnThis(),
+    setCookie: vi.fn(),
+    clearCookie: vi.fn()
+  })
+
+  const codedError = (message: string, code: string) => Object.assign(new Error(message), { code })
+
+  beforeAll(async () => {
+    usersManager = {
+      usersQueries: { bindExternalId: vi.fn().mockResolvedValue(true), checkUserExists: vi.fn().mockResolvedValue(null) },
+      findUser: vi.fn(),
+      findUserByExternalIdOrEmail: vi.fn(),
+      logUser: vi.fn(),
+      validateLocalPasswordByLogin: vi.fn(),
+      updateAccesses: vi.fn().mockResolvedValue(undefined),
+      fromUserId: vi.fn()
+    }
+    adminUsersManager = {
+      createUserOrGuest: vi.fn(),
+      updateUserOrGuest: vi.fn()
+    }
+    httpService = {
+      axiosRef: vi.fn()
+    }
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        { provide: HttpService, useValue: httpService },
+        { provide: UsersManager, useValue: usersManager },
+        { provide: AdminUsersManager, useValue: adminUsersManager },
+        AuthProviderOIDC
+      ]
+    }).compile()
+
+    module.useLogger(['fatal'])
+    service = module.get<AuthProviderOIDC>(AuthProviderOIDC)
+  })
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.clearAllMocks()
+    usersManager.usersQueries.checkUserExists.mockReset().mockResolvedValue(null)
+    ;(service as any).config = null
+    ;(service as any).oidcConfig.security.supportPKCE = true
+    ;(service as any).oidcConfig.security.allowInsecureRequests = false
+    ;(service as any).oidcConfig.security.allowPrivateIpAvatarDownload = false
+    ;(service as any).oidcConfig.security.requireVerifiedEmail = true
+    ;(service as any).oidcConfig.options.enablePasswordAuth = false
+    vi.spyOn(filesUtils, 'temporaryFilePath').mockReturnValue('/tmp/sync-in/alice/tmp/~tmp-avatar-test-id-avatar.png')
+    ;(service as any).oidcConfig.options.autoSyncAvatar = false
+  })
+
+  describe('getRedirectURI', () => {
+    it('uses the configured web callback when the desktop port is absent', () => {
+      expect(service.getRedirectURI()).toBe('https://api.example.test/auth/oidc/callback')
+    })
+
+    it('accepts only an allowlisted desktop port', () => {
+      const desktopPort = OAuthDesktopLoopbackPorts.values().next().value as number
+
+      expect(service.getRedirectURI(desktopPort)).toBe(`http://127.0.0.1:${desktopPort}${OAuthDesktopCallBackURI}`)
+      expect(() => service.getRedirectURI(0)).toThrow('Invalid desktop_port')
+      expect(() => service.getRedirectURI('0')).toThrow('Invalid desktop_port')
+      expect(() => service.getRedirectURI('')).toThrow('Invalid desktop_port')
+      expect(() => service.getRedirectURI(65535)).toThrow('Invalid desktop_port')
+    })
+  })
+
+  it('returns null when user is not found', async () => {
+    usersManager.validateLocalPasswordByLogin.mockResolvedValue(null)
+
+    const result = await service.validateUser('john', 'secret')
+
+    expect(result).toBeNull()
+    expect(usersManager.validateLocalPasswordByLogin).toHaveBeenCalledWith('john', 'secret', undefined, undefined, expect.any(Function))
+    expect(usersManager.logUser).not.toHaveBeenCalled()
+  })
+
+  it('passes the local password policy to UsersManager', async () => {
+    const regularUser = { id: 1, isGuest: false, isAdmin: false } as any
+    const guestUser = { id: 2, isGuest: true, isAdmin: false } as any
+    const adminUser = { id: 3, isGuest: false, isAdmin: true } as any
+    usersManager.validateLocalPasswordByLogin.mockResolvedValue(regularUser)
+
+    let result = await service.validateUser('regular', 'secret')
+
+    let canAuthenticate = usersManager.validateLocalPasswordByLogin.mock.calls[0][4]
+    expect(canAuthenticate(guestUser)).toBe(true)
+    expect(canAuthenticate(adminUser)).toBe(true)
+    expect(canAuthenticate(regularUser)).toBe(false)
+    expect(result).toBe(regularUser)
+
+    await service.validateUser('regular', 'secret', undefined, AUTH_SCOPE.WEBDAV)
+
+    canAuthenticate = usersManager.validateLocalPasswordByLogin.mock.calls[1][4]
+    expect(usersManager.validateLocalPasswordByLogin.mock.calls[1][3]).toBe(AUTH_SCOPE.WEBDAV)
+    expect(canAuthenticate(regularUser)).toBe(true)
+    ;(service as any).oidcConfig.options.enablePasswordAuth = true
+    result = await service.validateUser('regular', 'secret')
+
+    canAuthenticate = usersManager.validateLocalPasswordByLogin.mock.calls[2][4]
+    expect(canAuthenticate(regularUser)).toBe(true)
+    expect(result).toBe(regularUser)
+  })
+
+  it('does not allow insecure OIDC requests by default during discovery', async () => {
+    vi.mocked(discovery).mockResolvedValue(makeConfig(true) as any)
+
+    await service.getConfig()
+
+    const discoveryOptions = vi.mocked(discovery).mock.calls[0][4] as Record<string, unknown>
+    expect(discoveryOptions).toEqual(expect.objectContaining({ timeout: 6000 }))
+    expect(discoveryOptions).not.toHaveProperty('execute')
+  })
+
+  it('allows insecure OIDC requests during discovery when explicitly enabled', async () => {
+    ;(service as any).oidcConfig.security.allowInsecureRequests = true
+    vi.mocked(discovery).mockResolvedValue(makeConfig(true) as any)
+
+    await service.getConfig()
+
+    const discoveryOptions = vi.mocked(discovery).mock.calls[0][4] as Record<string, unknown>
+    expect(discoveryOptions).toEqual(expect.objectContaining({ execute: [allowInsecureRequests], timeout: 6000 }))
+  })
+
+  it('maps insecure OIDC discovery requests to BAD_REQUEST', async () => {
+    vi.mocked(discovery).mockRejectedValue(codedError('only requests to HTTPS are allowed', 'OAUTH_HTTP_REQUEST_FORBIDDEN'))
+
+    await expect(service.getConfig()).rejects.toMatchObject({
+      status: HttpStatus.BAD_REQUEST,
+      message: 'OIDC issuer URL must use HTTPS unless allowInsecureRequests is enabled'
+    })
+  })
+
+  it('maps generic OAuth discovery errors to BAD_REQUEST', async () => {
+    vi.mocked(discovery).mockRejectedValue(codedError('unexpected HTTP response status code', 'OAUTH_RESPONSE_IS_NOT_CONFORM'))
+
+    await expect(service.getConfig()).rejects.toMatchObject({
+      status: HttpStatus.BAD_REQUEST,
+      message: 'OIDC provider configuration error'
+    })
+  })
+
+  it('builds the authorization url with PKCE data and cookies', async () => {
+    vi.spyOn(service, 'getConfig').mockResolvedValue(makeConfig(true) as any)
+    vi.mocked(randomState).mockReturnValue('state-1')
+    vi.mocked(randomNonce).mockReturnValue('nonce-1')
+    vi.mocked(randomPKCECodeVerifier).mockReturnValue('verifier-1')
+    vi.mocked(calculatePKCECodeChallenge).mockResolvedValue('challenge-1')
+    const reply = makeReply()
+
+    const authUrl = await service.getAuthorizationUrl(reply as any)
+
+    expect(reply.header).toHaveBeenCalled()
+    expect(reply.setCookie).toHaveBeenCalledWith(OAuthCookie.State, 'state-1', expect.any(Object))
+    expect(reply.setCookie).toHaveBeenCalledWith(OAuthCookie.Nonce, 'nonce-1', expect.any(Object))
+    expect(reply.setCookie).toHaveBeenCalledWith(OAuthCookie.CodeVerifier, 'verifier-1', expect.any(Object))
+    const url = new URL(authUrl)
+    expect(url.searchParams.get('code_challenge')).toBe('challenge-1')
+    expect(url.searchParams.get('client_id')).toBe('client-id')
+  })
+
+  it('does not use PKCE when supportPKCE is false', async () => {
+    ;(service as any).oidcConfig.security.supportPKCE = false
+    vi.spyOn(service, 'getConfig').mockResolvedValue(makeConfig(true) as any)
+    vi.mocked(randomState).mockReturnValue('state-1')
+    vi.mocked(randomNonce).mockReturnValue('nonce-1')
+    const reply = makeReply()
+
+    const authUrl = await service.getAuthorizationUrl(reply as any)
+
+    expect(randomPKCECodeVerifier).not.toHaveBeenCalled()
+    expect(calculatePKCECodeChallenge).not.toHaveBeenCalled()
+    expect(reply.setCookie).not.toHaveBeenCalledWith(OAuthCookie.CodeVerifier, expect.anything(), expect.any(Object))
+    const url = new URL(authUrl)
+    expect(url.searchParams.get('code_challenge')).toBeNull()
+    ;(service as any).oidcConfig.security.supportPKCE = true
+  })
+
+  it('handles callback success and clears cookies', async () => {
+    const config = makeConfig(true)
+    vi.spyOn(service, 'getConfig').mockResolvedValue(config as any)
+    const processSpy = vi.spyOn(service as any, 'processUserInfo').mockResolvedValue({ id: 7 } as any)
+    vi.mocked(authorizationCodeGrant).mockResolvedValue({
+      claims: () => ({
+        iss: 'https://issuer.example.test',
+        aud: 'client-id',
+        iat: 1,
+        exp: 2,
+        sub: 'subject-1'
+      }),
+      access_token: 'access-token',
+      token_type: 'bearer'
+    } as unknown as Awaited<ReturnType<typeof authorizationCodeGrant>>)
+    vi.mocked(fetchUserInfo).mockResolvedValue({ sub: 'subject-1', email: 'a@b.c', email_verified: true, preferred_username: 'alice' })
+    const req = {
+      cookies: {
+        [OAuthCookie.State]: 'state-1',
+        [OAuthCookie.Nonce]: 'nonce-1',
+        [OAuthCookie.CodeVerifier]: 'verifier-1'
+      },
+      ip: '127.0.0.1'
+    }
+    const reply = makeReply()
+
+    const result = await service.handleCallback(req as any, reply as any, { code: 'abc' })
+
+    expect(result).toEqual({ id: 7 })
+    expect(processSpy).toHaveBeenCalledWith(
+      { sub: 'subject-1', email: 'a@b.c', email_verified: true, preferred_username: 'alice' },
+      'subject-1',
+      '127.0.0.1'
+    )
+    expect(reply.clearCookie).toHaveBeenCalledWith(OAuthCookie.State, { path: '/' })
+    expect(reply.clearCookie).toHaveBeenCalledWith(OAuthCookie.Nonce, { path: '/' })
+    expect(reply.clearCookie).toHaveBeenCalledWith(OAuthCookie.CodeVerifier, { path: '/' })
+  })
+
+  it('rejects callback when state is missing', async () => {
+    vi.spyOn(service, 'getConfig').mockResolvedValue(makeConfig(false) as any)
+    const reply = makeReply()
+    const req = { cookies: {}, ip: '127.0.0.1' }
+
+    await expect(service.handleCallback(req as any, reply as any, { code: 'abc' })).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST })
+    expect(reply.clearCookie).toHaveBeenCalledWith(OAuthCookie.State, { path: '/' })
+  })
+
+  it('maps AuthorizationResponseError to BAD_REQUEST', async () => {
+    vi.spyOn(service, 'getConfig').mockResolvedValue(makeConfig(false) as any)
+    vi.mocked(authorizationCodeGrant).mockRejectedValue(
+      new AuthorizationResponseError('access_denied', {
+        cause: new URLSearchParams('error=access_denied&error_description=No access')
+      })
+    )
+    const req = {
+      cookies: {
+        [OAuthCookie.State]: 'state-1',
+        [OAuthCookie.Nonce]: 'nonce-1'
+      },
+      ip: '127.0.0.1'
+    }
+    const reply = makeReply()
+
+    await expect(service.handleCallback(req as any, reply as any, { code: 'abc' })).rejects.toMatchObject({
+      status: HttpStatus.BAD_REQUEST,
+      message: 'No access'
+    })
+  })
+
+  it('builds the redirect callback url with token expirations', () => {
+    const url = service.getRedirectCallbackUrl(10, 20)
+    const parsed = new URL(url)
+    expect(parsed.hash).toContain('access_expiration=10')
+    expect(parsed.hash).toContain('refresh_expiration=20')
+  })
+
+  it('creates identities with admin role when claims match', async () => {
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(null)
+    adminUsersManager.createUserOrGuest.mockResolvedValue({ id: 10, login: 'bob' })
+    usersManager.fromUserId.mockResolvedValue({ id: 10, role: USER_ROLE.ADMINISTRATOR, login: 'bob', setFullName: vi.fn() } as any)
+    const userInfo = { sub: 'EXTERNAL-X', email: 'b@c.d', email_verified: true, preferred_username: 'bob', groups: ['admins'] }
+
+    const result = await (service as any).processUserInfo(userInfo, userInfo.sub, '127.0.0.1')
+
+    expect(adminUsersManager.createUserOrGuest).toHaveBeenCalledWith(
+      expect.objectContaining({ externalId: 'EXTERNAL-X', login: 'bob', role: USER_ROLE.ADMINISTRATOR }),
+      USER_ROLE.ADMINISTRATOR
+    )
+    expect(result.role).toBe(USER_ROLE.ADMINISTRATOR)
+  })
+
+  it('adds a deterministic subject suffix when the initial OIDC login is already used', async () => {
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(null)
+    usersManager.usersQueries.checkUserExists.mockResolvedValueOnce({ login: 'bob' })
+    adminUsersManager.createUserOrGuest.mockResolvedValue({ id: 11, login: 'bob-e0274d686d67' })
+    usersManager.fromUserId.mockResolvedValue({ id: 11, role: USER_ROLE.USER, login: 'bob-e0274d686d67', setFullName: vi.fn() } as any)
+    const userInfo = { sub: 'EXTERNAL-X', email: 'b@c.d', email_verified: true, preferred_username: 'bob' }
+
+    await (service as any).processUserInfo(userInfo, userInfo.sub, '127.0.0.1')
+
+    expect(usersManager.usersQueries.checkUserExists).toHaveBeenNthCalledWith(1, 'bob')
+    expect(adminUsersManager.createUserOrGuest).toHaveBeenCalledWith(
+      expect.objectContaining({ externalId: 'EXTERNAL-X', login: 'bob-e0274d686d67' }),
+      USER_ROLE.USER
+    )
+  })
+
+  it('truncates the initial login before adding the subject suffix', async () => {
+    const baseLogin = 'a'.repeat(255)
+    const expectedLogin = `${'a'.repeat(242)}-e0274d686d67`
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(null)
+    usersManager.usersQueries.checkUserExists.mockResolvedValueOnce({ login: baseLogin })
+    adminUsersManager.createUserOrGuest.mockResolvedValue({ id: 12, login: expectedLogin })
+    usersManager.fromUserId.mockResolvedValue({ id: 12, role: USER_ROLE.USER, login: expectedLogin, setFullName: vi.fn() } as any)
+    const userInfo = { sub: 'EXTERNAL-X', email: 'b@c.d', email_verified: true, preferred_username: baseLogin }
+
+    await (service as any).processUserInfo(userInfo, userInfo.sub, '127.0.0.1')
+
+    expect(expectedLogin).toHaveLength(255)
+    expect(adminUsersManager.createUserOrGuest).toHaveBeenCalledWith(expect.objectContaining({ login: expectedLogin }), USER_ROLE.USER)
+  })
+
+  it('rejects OIDC profiles with unverified emails when verification is enabled', async () => {
+    ;(service as any).oidcConfig.security.requireVerifiedEmail = true
+
+    await expect(
+      (service as any).processUserInfo({ sub: 'x', email: 'alice@example.org', email_verified: false, preferred_username: 'alice' }, 'x', '127.0.0.1')
+    ).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST, message: 'OIDC email must be verified' })
+  })
+
+  it('allows OIDC profiles with unverified emails when verification is disabled', async () => {
+    ;(service as any).oidcConfig.security.requireVerifiedEmail = false
+    const existingUser = {
+      id: 19,
+      login: 'alice',
+      email: 'alice@example.org',
+      externalId: null,
+      role: USER_ROLE.USER,
+      isActive: true,
+      setFullName: vi.fn()
+    } as any
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+
+    const result = await (service as any).processUserInfo(
+      { sub: 'x', email: 'alice@example.org', email_verified: false, preferred_username: 'alice' },
+      'x',
+      '127.0.0.1'
+    )
+
+    expect(result).toBe(existingUser)
+    expect(usersManager.usersQueries.bindExternalId).toHaveBeenCalledWith(existingUser.id, 'x')
+  })
+
+  it('rejects a disabled local user before binding its external identity', async () => {
+    const existingUser = {
+      id: 19,
+      login: 'alice',
+      email: 'alice@example.org',
+      externalId: null,
+      role: USER_ROLE.USER,
+      isActive: false
+    } as any
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+
+    await expect(
+      (service as any).processUserInfo(
+        { sub: 'subject-1', email: 'alice@example.org', email_verified: true, preferred_username: 'alice' },
+        'subject-1',
+        '127.0.0.1'
+      )
+    ).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN, message: 'Account locked' })
+
+    expect(usersManager.usersQueries.bindExternalId).not.toHaveBeenCalled()
+    expect(adminUsersManager.updateUserOrGuest).not.toHaveBeenCalled()
+    expect(usersManager.updateAccesses).not.toHaveBeenCalled()
+  })
+
+  it('rejects login when the external identity cannot be bound', async () => {
+    const existingUser = {
+      id: 19,
+      login: 'alice',
+      email: 'alice@example.org',
+      externalId: null,
+      role: USER_ROLE.USER,
+      isActive: true
+    } as any
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+    usersManager.usersQueries.bindExternalId.mockResolvedValueOnce(false)
+
+    await expect(
+      (service as any).processUserInfo(
+        { sub: 'subject-1', email: 'alice@example.org', email_verified: true, preferred_username: 'alice' },
+        'subject-1',
+        '127.0.0.1'
+      )
+    ).rejects.toMatchObject({ status: HttpStatus.UNAUTHORIZED, message: 'Unable to link OIDC identity' })
+
+    expect(adminUsersManager.updateUserOrGuest).not.toHaveBeenCalled()
+    expect(usersManager.updateAccesses).not.toHaveBeenCalled()
+  })
+
+  it('rejects an existing external identity that differs only by case', async () => {
+    const existingUser = {
+      id: 20,
+      login: 'alice',
+      email: 'alice@example.org',
+      externalId: 'subject-1',
+      role: USER_ROLE.USER,
+      isActive: true,
+      setFullName: vi.fn()
+    } as any
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+
+    await expect(
+      (service as any).processUserInfo(
+        { sub: 'SUBJECT-1', email: 'alice@example.org', email_verified: true, preferred_username: 'alice' },
+        'SUBJECT-1',
+        '127.0.0.1'
+      )
+    ).rejects.toMatchObject({ status: HttpStatus.UNAUTHORIZED, message: 'OIDC identity mismatch' })
+
+    expect(usersManager.findUserByExternalIdOrEmail).toHaveBeenCalledWith('SUBJECT-1', existingUser.email, false)
+    expect(usersManager.usersQueries.bindExternalId).not.toHaveBeenCalled()
+  })
+
+  it('keeps the local login stable after the external identity is linked', async () => {
+    const existingUser = {
+      id: 20,
+      login: 'alice',
+      email: 'alice@example.org',
+      externalId: 'subject-1',
+      role: USER_ROLE.USER,
+      isActive: true,
+      firstName: '',
+      lastName: '',
+      setFullName: vi.fn()
+    } as any
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+
+    await (service as any).processUserInfo(
+      { sub: 'subject-1', email: 'alice@example.org', email_verified: true, preferred_username: 'renamed-alice' },
+      'subject-1',
+      '127.0.0.1'
+    )
+
+    expect(existingUser.login).toBe('alice')
+    expect(usersManager.usersQueries.checkUserExists).not.toHaveBeenCalled()
+    expect(adminUsersManager.updateUserOrGuest).not.toHaveBeenCalled()
+  })
+
+  it('rejects an email already linked to another external identity', async () => {
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue({
+      id: 21,
+      login: 'alice',
+      email: 'alice@example.org',
+      externalId: 'another-subject',
+      isActive: true
+    })
+
+    await expect(
+      (service as any).processUserInfo(
+        { sub: 'subject-1', email: 'alice@example.org', email_verified: true, preferred_username: 'alice' },
+        'subject-1',
+        '127.0.0.1'
+      )
+    ).rejects.toMatchObject({ status: HttpStatus.UNAUTHORIZED, message: 'OIDC identity mismatch' })
+  })
+
+  it('does not sync the user avatar by default', async () => {
+    const existingUser = { id: 20, login: 'alice', email: 'alice@example.org', role: USER_ROLE.USER, isActive: true, setFullName: vi.fn() } as any
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+    const updatePictureUrlSpy = vi.spyOn(service as any, 'updatePictureUrl').mockResolvedValue(undefined)
+
+    await (service as any).processUserInfo(
+      { sub: 'x', email: 'alice@example.org', email_verified: true, preferred_username: 'alice', picture: 'https://cdn.example.test/avatar.jpg' },
+      'x',
+      '127.0.0.1'
+    )
+
+    expect(updatePictureUrlSpy).not.toHaveBeenCalled()
+  })
+
+  it('syncs the user avatar when enabled', async () => {
+    ;(service as any).oidcConfig.options.autoSyncAvatar = true
+    const existingUser = { id: 21, login: 'alice', email: 'alice@example.org', role: USER_ROLE.USER, isActive: true, setFullName: vi.fn() } as any
+    const userInfo = {
+      sub: 'x',
+      email: 'alice@example.org',
+      email_verified: true,
+      preferred_username: 'alice',
+      picture: 'https://cdn.example.test/avatar.jpg'
+    }
+    usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+    const updatePictureUrlSpy = vi.spyOn(service as any, 'updatePictureUrl').mockResolvedValue(undefined)
+
+    await (service as any).processUserInfo(userInfo, userInfo.sub, '127.0.0.1')
+
+    expect(updatePictureUrlSpy).toHaveBeenCalledWith(existingUser, userInfo)
+  })
+
+  it('handles storage quota claim mapping cases', async () => {
+    const scenarios = [
+      {
+        mode: 'create',
+        claimName: DEFAULT_STORAGE_QUOTA_FIELD,
+        profile: { sub: 'x', email: 'sam@c.d', email_verified: true, preferred_username: 'sam', [DEFAULT_STORAGE_QUOTA_FIELD]: '2048' },
+        expectedQuota: 2048
+      },
+      {
+        mode: 'create',
+        claimName: DEFAULT_STORAGE_QUOTA_FIELD,
+        profile: { sub: 'x', email: 'sam0@c.d', email_verified: true, preferred_username: 'sam0', [DEFAULT_STORAGE_QUOTA_FIELD]: 0 },
+        expectedQuota: null
+      },
+      {
+        mode: 'create',
+        claimName: 'quotaBytes',
+        profile: { sub: 'x', email: 'samq@c.d', email_verified: true, preferred_username: 'samq', quotaBytes: '4096' },
+        expectedQuota: 4096
+      },
+      {
+        mode: 'update',
+        claimName: DEFAULT_STORAGE_QUOTA_FIELD,
+        profile: { sub: 'x', email: 'alice@example.org', email_verified: true, preferred_username: 'alice' },
+        expectedUpdate: false
+      },
+      {
+        mode: 'update',
+        claimName: DEFAULT_STORAGE_QUOTA_FIELD,
+        profile: { sub: 'x', email: 'alice@example.org', email_verified: true, preferred_username: 'alice', [DEFAULT_STORAGE_QUOTA_FIELD]: null },
+        expectedUpdate: true,
+        expectedQuota: null
+      },
+      {
+        mode: 'update',
+        claimName: DEFAULT_STORAGE_QUOTA_FIELD,
+        profile: {
+          sub: 'x',
+          email: 'alice@example.org',
+          email_verified: true,
+          preferred_username: 'alice',
+          [DEFAULT_STORAGE_QUOTA_FIELD]: 'invalid'
+        },
+        expectedUpdate: false
+      },
+      {
+        mode: 'update',
+        claimName: DEFAULT_STORAGE_QUOTA_FIELD,
+        profile: {
+          sub: 'x',
+          email: 'alice@example.org',
+          email_verified: true,
+          preferred_username: 'alice',
+          [DEFAULT_STORAGE_QUOTA_FIELD]: '9007199254740992'
+        },
+        expectedUpdate: false
+      }
+    ] as const
+
+    const originalStorageQuotaClaim = (service as any).oidcConfig.options.storageQuotaClaim
+    try {
+      for (const [index, scenario] of scenarios.entries()) {
+        vi.clearAllMocks()
+        ;(service as any).oidcConfig.options.storageQuotaClaim = scenario.claimName
+
+        if (scenario.mode === 'create') {
+          const id = 110 + index
+          usersManager.findUserByExternalIdOrEmail.mockResolvedValue(null)
+          adminUsersManager.createUserOrGuest.mockResolvedValue({ id, login: `user-${id}` })
+          usersManager.fromUserId.mockResolvedValue({ id, role: USER_ROLE.USER, login: `user-${id}`, setFullName: vi.fn() } as any)
+
+          await (service as any).processUserInfo(scenario.profile, scenario.profile.sub, '127.0.0.1')
+
+          expect(adminUsersManager.createUserOrGuest).toHaveBeenCalledWith(
+            expect.objectContaining({ storageQuota: scenario.expectedQuota }),
+            USER_ROLE.USER
+          )
+          continue
+        }
+
+        const existingUser = {
+          id: 210 + index,
+          login: 'alice',
+          email: 'alice@example.org',
+          role: USER_ROLE.USER,
+          isActive: true,
+          firstName: '',
+          lastName: '',
+          storageQuota: 4096,
+          setFullName: vi.fn()
+        } as any
+        usersManager.findUserByExternalIdOrEmail.mockResolvedValue(existingUser)
+
+        await (service as any).processUserInfo(scenario.profile, scenario.profile.sub, '127.0.0.1')
+
+        if (scenario.expectedUpdate) {
+          expect(adminUsersManager.updateUserOrGuest).toHaveBeenCalledWith(
+            existingUser.id,
+            expect.objectContaining({ storageQuota: scenario.expectedQuota })
+          )
+        } else {
+          expect(adminUsersManager.updateUserOrGuest).not.toHaveBeenCalled()
+        }
+      }
+    } finally {
+      ;(service as any).oidcConfig.options.storageQuotaClaim = originalStorageQuotaClaim
+    }
+  })
+
+  describe('updatePictureUrl', () => {
+    const oidcUser = { login: 'alice', tmpPath: '/tmp/sync-in/alice/tmp' } as UserModel
+    const avatarTmpPath = '/tmp/sync-in/alice/tmp/~tmp-avatar-test-id-avatar.png'
+    const userInfo = (picture = 'https://cdn.example.test/avatar.jpg') => ({ picture }) as any
+
+    it('returns when picture url is invalid', async () => {
+      const downloadSpy = vi.spyOn(DownloadFile.prototype, 'download')
+
+      await (service as any).updatePictureUrl(oidcUser, userInfo('not-a-url'))
+
+      expect(downloadSpy).not.toHaveBeenCalled()
+    })
+
+    it('stops when content type is not an image', async () => {
+      const downloadSpy = vi.spyOn(DownloadFile.prototype, 'download').mockResolvedValueOnce({
+        contentType: 'text/plain',
+        contentLength: 123,
+        lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT'
+      } as any)
+      const convertSpy = vi.spyOn(imageUtils, 'convertTempImageToPng').mockResolvedValue(undefined)
+
+      await (service as any).updatePictureUrl(oidcUser, userInfo())
+
+      expect(downloadSpy).toHaveBeenCalledTimes(1)
+      expect(convertSpy).not.toHaveBeenCalled()
+    })
+
+    it('skips update when avatar metadata is unchanged', async () => {
+      const downloadSpy = vi.spyOn(DownloadFile.prototype, 'download').mockResolvedValueOnce({
+        contentType: 'image/png',
+        contentLength: 128,
+        lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT'
+      } as any)
+      vi.spyOn(avatarUtils, 'isAvatarMetadataUnchanged').mockResolvedValue(true)
+      const convertSpy = vi.spyOn(imageUtils, 'convertTempImageToPng').mockResolvedValue(undefined)
+
+      await (service as any).updatePictureUrl(oidcUser, userInfo())
+
+      expect(downloadSpy).toHaveBeenCalledTimes(1)
+      expect(convertSpy).not.toHaveBeenCalled()
+    })
+
+    it('downloads and converts avatar when checks pass', async () => {
+      const downloadSpy = vi
+        .spyOn(DownloadFile.prototype, 'download')
+        .mockResolvedValueOnce({
+          contentType: 'image/png',
+          contentLength: 128,
+          lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT'
+        } as any)
+        .mockResolvedValueOnce(undefined as any)
+      vi.spyOn(avatarUtils, 'isAvatarMetadataUnchanged').mockResolvedValue(false)
+      vi.spyOn(filesUtils, 'fileSize').mockResolvedValue(1024)
+      vi.spyOn(UserModel, 'getHomePath').mockReturnValue('/tmp/sync-in/users/alice')
+      const convertSpy = vi.spyOn(imageUtils, 'convertTempImageToPng').mockResolvedValue(undefined)
+      const metadataSpy = vi.spyOn(avatarUtils, 'saveAvatarMetadata').mockResolvedValue(undefined)
+
+      await (service as any).updatePictureUrl(oidcUser, userInfo())
+
+      expect(downloadSpy).toHaveBeenCalledTimes(2)
+      expect(downloadSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({ url: 'https://cdn.example.test/avatar.jpg' }), avatarTmpPath, {
+        allowPrivateIP: false,
+        maxSize: avatarUtils.USER_AVATAR_MAX_UPLOAD_SIZE
+      })
+      expect(convertSpy).toHaveBeenCalledWith(avatarTmpPath, '/tmp/sync-in/users/alice/avatar.png')
+      expect(metadataSpy).toHaveBeenCalledWith('alice', 'https://cdn.example.test/avatar.jpg', 128, 'Mon, 01 Jan 2024 00:00:00 GMT')
+    })
+
+    it('allows private IP avatar downloads when explicitly enabled', async () => {
+      ;(service as any).oidcConfig.security.allowPrivateIpAvatarDownload = true
+      const downloadSpy = vi
+        .spyOn(DownloadFile.prototype, 'download')
+        .mockResolvedValueOnce({
+          contentType: 'image/png',
+          contentLength: 128,
+          lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT'
+        } as any)
+        .mockResolvedValueOnce(undefined as any)
+      vi.spyOn(avatarUtils, 'isAvatarMetadataUnchanged').mockResolvedValue(false)
+      vi.spyOn(filesUtils, 'fileSize').mockResolvedValue(1024)
+      vi.spyOn(UserModel, 'getHomePath').mockReturnValue('/tmp/sync-in/users/alice')
+      vi.spyOn(imageUtils, 'convertTempImageToPng').mockResolvedValue(undefined)
+
+      await (service as any).updatePictureUrl(oidcUser, userInfo())
+
+      expect(downloadSpy).toHaveBeenNthCalledWith(1, expect.objectContaining({ url: 'https://cdn.example.test/avatar.jpg' }), avatarTmpPath, {
+        allowPrivateIP: true,
+        getContentInfo: true
+      })
+      expect(downloadSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({ url: 'https://cdn.example.test/avatar.jpg' }), avatarTmpPath, {
+        allowPrivateIP: true,
+        maxSize: avatarUtils.USER_AVATAR_MAX_UPLOAD_SIZE
+      })
+    })
+
+    it('downloads avatar when content length is missing and stores the actual downloaded size', async () => {
+      const downloadSpy = vi
+        .spyOn(DownloadFile.prototype, 'download')
+        .mockResolvedValueOnce({
+          contentType: 'image/png',
+          contentLength: null,
+          lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT'
+        } as any)
+        .mockResolvedValueOnce(undefined as any)
+      const metadataUnchangedSpy = vi.spyOn(avatarUtils, 'isAvatarMetadataUnchanged').mockResolvedValue(false)
+      vi.spyOn(filesUtils, 'fileSize').mockResolvedValue(1024)
+      vi.spyOn(UserModel, 'getHomePath').mockReturnValue('/tmp/sync-in/users/alice')
+      const convertSpy = vi.spyOn(imageUtils, 'convertTempImageToPng').mockResolvedValue(undefined)
+      const metadataSpy = vi.spyOn(avatarUtils, 'saveAvatarMetadata').mockResolvedValue(undefined)
+
+      await (service as any).updatePictureUrl(oidcUser, userInfo())
+
+      expect(downloadSpy).toHaveBeenCalledTimes(2)
+      expect(metadataUnchangedSpy).not.toHaveBeenCalled()
+      expect(convertSpy).toHaveBeenCalledWith(avatarTmpPath, '/tmp/sync-in/users/alice/avatar.png')
+      expect(metadataSpy).toHaveBeenCalledWith('alice', 'https://cdn.example.test/avatar.jpg', 1024, 'Mon, 01 Jan 2024 00:00:00 GMT')
+    })
+
+    it('stops after download when avatar size exceeds limit', async () => {
+      const downloadSpy = vi
+        .spyOn(DownloadFile.prototype, 'download')
+        .mockResolvedValueOnce({
+          contentType: 'image/png',
+          contentLength: 128,
+          lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT'
+        } as any)
+        .mockResolvedValueOnce(undefined as any)
+      vi.spyOn(avatarUtils, 'isAvatarMetadataUnchanged').mockResolvedValue(false)
+      vi.spyOn(filesUtils, 'fileSize').mockResolvedValue(avatarUtils.USER_AVATAR_MAX_UPLOAD_SIZE + 1)
+      const convertSpy = vi.spyOn(imageUtils, 'convertTempImageToPng').mockResolvedValue(undefined)
+
+      await (service as any).updatePictureUrl(oidcUser, userInfo())
+
+      expect(downloadSpy).toHaveBeenCalledTimes(2)
+      expect(convertSpy).not.toHaveBeenCalled()
+    })
+  })
+})

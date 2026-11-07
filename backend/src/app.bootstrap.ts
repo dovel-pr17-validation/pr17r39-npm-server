@@ -1,0 +1,99 @@
+import fastifyCookie from '@fastify/cookie'
+import fastifyHelmet from '@fastify/helmet'
+import multipart from '@fastify/multipart'
+import { StandardSchemaValidationPipe } from '@nestjs/common'
+import { NestFactory } from '@nestjs/core'
+import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify'
+import { FastifyInstance, FastifyRequest } from 'fastify'
+import { Logger, LoggerErrorInterceptor } from 'nestjs-pino'
+import { CONTENT_SECURITY_POLICY } from './app.constants.js'
+import { AppModule } from './app.module.js'
+import { bootstrapWebDAV } from './applications/webdav/utils/bootstrap.js'
+import { IS_TEST_ENV, STATIC_PATH } from './configuration/config.constants.js'
+import { configuration } from './configuration/config.environment.js'
+import { WebSocketAdapter } from './infrastructure/websocket/adapters/web-socket.adapter.js'
+
+export async function appBootstrap(): Promise<NestFastifyApplication> {
+  /* APP */
+  const fastifyAdapter = new FastifyAdapter({
+    logger: false,
+    trustProxy: configuration.server.trustProxy,
+    routerOptions: {
+      ignoreTrailingSlash: true,
+      maxParamLength: 256
+    },
+    bodyLimit: 26214400 // 25 MB
+  })
+  const app: NestFastifyApplication = await NestFactory.create<NestFastifyApplication>(AppModule, fastifyAdapter, {
+    bufferLogs: true
+  })
+
+  // NestJS starts listening for shutdown hooks
+  app.enableShutdownHooks()
+
+  /* Fastify instance */
+  const fastifyInstance: FastifyInstance = fastifyAdapter.getInstance()
+
+  /* LOGGER */
+  app.useLogger(IS_TEST_ENV ? ['fatal'] : app.get(Logger))
+  // Flush bootstrap logs through Pino before lifecycle hooks can block app.listen().
+  app.flushLogs()
+
+  /* WEBDAV BOOTSTRAP RULES */
+  bootstrapWebDAV(app, fastifyInstance)
+
+  /* PARSER */
+  // Keep unknown binary payloads available through req.raw.
+  // This parser does not consume or meter the payload: bodyLimit only protects buffered parsers,
+  // while raw and multipart consumers meter their own streams.
+  fastifyInstance.addContentTypeParser('*', (_req: FastifyRequest, _payload: FastifyRequest['raw'], done) => done(null))
+
+  /* INTERCEPTORS */
+  // UserModel owns its Zod-backed response serialization; its internal caches
+  // use ECMAScript private fields and therefore cannot leak into JSON responses.
+  app.useGlobalInterceptors(new LoggerErrorInterceptor())
+
+  /* VALIDATION */
+  app.useGlobalPipes(new StandardSchemaValidationPipe())
+
+  /* STATIC */
+  app.useStaticAssets({ root: STATIC_PATH, prefixAvoidTrailingSlash: true, dotfiles: 'ignore' })
+
+  /* SECURITY */
+  await app.register(fastifyHelmet, {
+    contentSecurityPolicy: CONTENT_SECURITY_POLICY(
+      (configuration.applications.files.editors.onlyoffice.enabled
+        ? configuration.applications.files.editors.onlyoffice
+        : configuration.applications.files.editors.eurooffice
+      ).externalServer,
+      configuration.applications.files.editors.collabora.externalServer,
+      configuration.applications.files.editors.drawio.externalServer
+    )
+  })
+
+  /* COOKIES */
+  // we use csrf secret to unsign csrf cookie
+  await app.register(fastifyCookie, {
+    secret: configuration.auth.token.csrf.secret,
+    parseOptions: {
+      secure: 'auto',
+      sameSite: configuration.auth.cookieSameSite,
+      httpOnly: true
+    }
+  })
+
+  /* UPLOAD */
+  await app.register(multipart, {
+    preservePath: true,
+    limits: { parts: Infinity, fileSize: configuration.applications.files.maxUploadSize }
+  })
+
+  /* WEBSOCKET */
+  if (!IS_TEST_ENV) {
+    const webSocketAdapter = new WebSocketAdapter(app)
+    await webSocketAdapter.initAdapter()
+    app.useWebSocketAdapter(webSocketAdapter)
+  }
+
+  return app
+}

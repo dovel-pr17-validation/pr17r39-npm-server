@@ -1,0 +1,307 @@
+@mixin recents-theme(
+  $surface,
+  $surface-muted,
+  $surface-hover,
+  $empty-background,
+  $empty-text,
+  $border,
+  $border-hover,
+  $text,
+  $muted,
+  $card-shadow,
+  $card-hover-shadow
+) {
+  app-recents {
+    .recents-day__date,
+    .recents-day__range,
+    .recent-card__time,
+    .recent-card__meta {
+      color: $muted;
+    }
+
+    .recent-card {
+      color: $text;
+      border-color: $border;
+      background: $surface;
+      box-shadow: 0 2px 6px $card-shadow;
+
+      &:hover,
+      &:focus-visible {
+        border-color: $border-hover;
+        background: $surface-hover;
+        box-shadow: 0 4px 10px $card-hover-shadow;
+      }
+    }
+
+    .recent-card__media {
+      border-color: $border;
+      background: $surface-muted;
+    }
+
+    .recents-timeline__empty {
+      color: $empty-text;
+      border-color: $border;
+      background: $empty-background;
+    }
+  }
+}
+
+app-recents {
+  display: block;
+
+  .recents-timeline {
+    width: 100%;
+    margin: 0;
+    padding: 0.55rem 0.7rem 1.25rem;
+  }
+
+  .recents-timeline--with-content {
+    position: relative;
+
+    > .view-switch {
+      position: absolute;
+      top: 0.55rem;
+      right: 0.7rem;
+    }
+
+    .recents-day:first-child .recents-day__label {
+      min-height: 1.9rem;
+      padding-right: 19rem;
+    }
+  }
+
+  .recents-days {
+    display: flex;
+    flex-direction: column;
+    gap: 1.4rem;
+  }
+
+  .recents-day__label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.16rem;
+    margin-bottom: 0.72rem;
+  }
+
+  .recents-day__date {
+    font-size: $font-size-xs;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0.035em;
+    text-transform: uppercase;
+  }
+
+  .recents-day__range {
+    display: flex;
+    align-items: center;
+    gap: 0.22rem;
+    font-size: $font-size-2xs;
+    line-height: 1.2;
+    opacity: 0.78;
+    text-transform: capitalize;
+  }
+
+  .recents-day__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+    gap: 0.72rem;
+  }
+
+  .recent-card {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    min-height: 5.20rem;
+    padding: 0.65rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid;
+    border-radius: $nav-pills-border-radius;
+    text-align: left;
+    appearance: none;
+    cursor: pointer;
+    animation: recent-card-enter 0.24s ease both;
+    transition: background-color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+
+    &:hover,
+    &:focus-visible {
+      transform: translateY(-1px);
+    }
+
+    &:focus-visible {
+      outline: 2px solid rgba($primary, 0.4);
+      outline-offset: 2px;
+    }
+  }
+
+  .recent-card__top {
+    min-width: 0;
+    padding-right: 2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .recent-card__media {
+    width: 2.4rem;
+    height: 2.4rem;
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid;
+    border-radius: $nav-pills-border-radius;
+
+    app-user-avatar {
+      display: grid;
+      place-items: center;
+    }
+  }
+
+  .recent-card__file-icon {
+    width: 1.45rem;
+    height: 1.45rem;
+    object-fit: contain;
+  }
+
+  .recent-card__summary {
+    min-width: 0;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.22rem;
+  }
+
+  .recent-card__badge {
+    position: absolute;
+    top: 0.65rem;
+    right: 0.7rem;
+  }
+
+  .recent-card__time {
+    font-size: $font-size-2xs;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .recent-card__content {
+    min-width: 0;
+    margin-top: auto;
+    padding-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .recent-card__title,
+  .recent-card__comment {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    font-weight: 550;
+    line-height: 1.25;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .recent-card__title {
+    font-size: $font-size-base;
+  }
+
+  .recent-card__meta {
+    min-width: 0;
+    font-size: $font-size-2xs;
+    line-height: 1.15;
+  }
+
+  .recent-card.recent-card--comment {
+    .recent-card__comment {
+      display: -webkit-box;
+      font-size: $font-size-sm;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      white-space: normal;
+      overflow-wrap: break-word;
+    }
+
+    .recent-card__media {
+      overflow: visible;
+      border: 0;
+      background: transparent;
+    }
+  }
+
+  .recents-timeline__empty {
+    min-height: 12rem;
+    padding: 1.25rem;
+    display: grid;
+    place-content: center;
+    gap: 2rem;
+    border: 1px dashed;
+    border-radius: $nav-pills-border-radius;
+    text-align: center;
+    margin-top: 1.125rem;
+
+    > div {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.3rem;
+      font-size: $font-size-md;
+
+      > .lucide {
+        font-size: $font-size-xl;
+      }
+    }
+  }
+
+  @media (max-width: 767.98px) {
+    .recents-timeline {
+      padding-right: 0.35rem;
+      padding-left: 0.35rem;
+    }
+
+    .view-switch {
+      width: 100%;
+    }
+
+    .recents-days {
+      margin-top: 0.7rem;
+    }
+
+    .recents-day__label {
+      align-items: center;
+      text-align: center;
+    }
+
+    .recents-timeline--with-content {
+      > .view-switch {
+        position: static;
+      }
+
+      .recents-day:first-child .recents-day__label {
+        min-height: 0;
+        padding-right: 0;
+      }
+    }
+
+    .view-switch__option {
+      min-width: 0;
+      flex: 1;
+    }
+
+  }
+}
+
+@keyframes recent-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

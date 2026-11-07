@@ -1,0 +1,95 @@
+<div class="files-viewer-text" [style.height.px]="currentHeight()">
+  <div (pointerdown)="hideTooltips()"
+       class="app-top-menu app-top-menu-tool-bar"
+       [attr.aria-label]="'Actions' | translate:locale.language"
+       role="toolbar">
+    <button
+      (click)="toggleReadonly()"
+      [attr.aria-label]="(isReadonly() || !isWriteable() ? 'Read-only' : 'Read-write') | translate:locale.language"
+      [tooltip]="(isReadonly() || !isWriteable() ? 'Read-only' : 'Read-write') | translate:locale.language"
+      triggers="hover"
+      [adaptivePosition]="true"
+      class="btn {{ isReadonly() ? 'btn-warning' : 'btn-default' }}"
+      type="button"
+      [disabled]="!isSupported() || !isWriteable() || isSaving()">
+      <svg [lucideIcon]="isReadonly() ? icons.LucideLock : icons.LucideLockOpen"></svg>
+    </button>
+    <button
+      (click)="save()"
+      [attr.aria-label]="'Save' | translate:locale.language"
+      [tooltip]="(canSave() ? 'Save' : undefined) | translate:locale.language"
+      triggers="hover"
+      [delay]="0"
+      [isDisabled]="!canSave()"
+      class="btn btn-default app-top-menu-tool-bar__action--icon app-top-menu-tool-bar__action--quiet"
+      type="button"
+      [disabled]="!canSave()">
+      @if (isSaving()) {
+        <svg [lucideIcon]="icons.LucideLoader" class="icon-spin"></svg>
+      } @else {
+        <svg [lucideIcon]="icons.LucideSave"></svg>
+      }
+    </button>
+    <button
+      (click)="onUndo()"
+      [attr.aria-label]="'Undo' | translate:locale.language"
+      [disabled]="!canUndo()"
+      [tooltip]="'Undo' | translate:locale.language"
+      triggers="hover"
+      class="d-none d-sm-block btn btn-custom"
+      type="button">
+      <svg [lucideIcon]="icons.LucideUndo"></svg>
+    </button>
+    <button
+      (click)="onRedo()"
+      [attr.aria-label]="'Redo' | translate:locale.language"
+      [disabled]="!canRedo()"
+      [tooltip]="'Redo' | translate:locale.language"
+      triggers="hover"
+      class="d-none d-sm-block btn btn-custom"
+      type="button">
+      <svg [lucideIcon]="icons.LucideRedo"></svg>
+    </button>
+    <button
+      btnCheckbox
+      [attr.aria-label]="'Line Wrap' | translate:locale.language"
+      [ngModel]="lineWrapping()"
+      (ngModelChange)="lineWrapping.set($event)"
+      [tooltip]="'Line Wrap' | translate:locale.language"
+      triggers="hover"
+      class="btn btn-custom"
+      type="button">
+      <svg [lucideIcon]="icons.LucideTextWrap"></svg>
+    </button>
+    <button
+      btnCheckbox
+      [attr.aria-label]="'Search' | translate:locale.language"
+      [ngModel]="isSearchPanelOpen()"
+      (ngModelChange)="toggleSearch()"
+      [tooltip]="'Search' | translate:locale.language"
+      triggers="hover"
+      class="d-none d-sm-block btn btn-custom"
+      type="button">
+      <svg [lucideIcon]="icons.LucideSearch"></svg>
+    </button>
+  </div>
+  @if (warnOnUnsavedChanges()) {
+    <app-files-viewer-unsaved-changes
+      [saving]="isSaving()"
+      (saveAndExit)="save(true)"
+      (closeWithoutSaving)="onClose()"
+      (keepEditing)="warnOnUnsavedChanges.set(false)" />
+  }
+  <code-editor
+    #editor
+    [languages]="languages"
+    [language]="currentLanguage"
+    [(ngModel)]="content"
+    (change)="contentChange($event)"
+    [theme]="currentTheme"
+    [readonly]="!canEditContent()"
+    [disabled]="!canEditContent()"
+    [extensions]="searchAdapter.extensions"
+    [lineWrapping]="lineWrapping()" />
+  <app-files-viewer-search [adapter]="searchAdapter"></app-files-viewer-search>
+</div>

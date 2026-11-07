@@ -1,0 +1,87 @@
+import { createMock, DeepMocked } from '@golevelup/ts-vitest'
+import { ExecutionContext, Logger } from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
+import { USER_ROLE } from '../constants/user.js'
+import { UserHaveRole } from '../decorators/roles.decorator.js'
+import { UserModel } from '../models/user.model.js'
+import { generateUserTest } from '../utils/test.js'
+import { UserRolesGuard } from './roles.guard.js'
+
+describe(UserRolesGuard.name, () => {
+  let reflector: Reflector
+  let rolesGuard: UserRolesGuard
+  let userTest: UserModel
+  let context: DeepMocked<ExecutionContext>
+
+  beforeAll(async () => {
+    reflector = new Reflector()
+    rolesGuard = new UserRolesGuard(reflector)
+    userTest = new UserModel(generateUserTest())
+    Logger.overrideLogger(['fatal'])
+  })
+
+  it('should be defined', () => {
+    expect(reflector).toBeDefined()
+    expect(rolesGuard).toBeDefined()
+    expect(userTest).toBeDefined()
+  })
+
+  it('should pass with a valid role', async () => {
+    userTest.role = USER_ROLE.GUEST
+    context = createMock<ExecutionContext>()
+    UserHaveRole(USER_ROLE.GUEST)(context.getHandler())
+    context.switchToHttp().getRequest.mockReturnValue({
+      user: userTest
+    })
+    expect(rolesGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should pass with a higher user role', async () => {
+    userTest.role = USER_ROLE.USER
+    context = createMock<ExecutionContext>()
+    UserHaveRole(USER_ROLE.GUEST)(context.getHandler())
+    context.switchToHttp().getRequest.mockReturnValue({
+      user: userTest
+    })
+    expect(rolesGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should not pass with a lower role', async () => {
+    userTest.role = USER_ROLE.GUEST
+    context = createMock<ExecutionContext>()
+    UserHaveRole(USER_ROLE.USER)(context.getHandler())
+    context.switchToHttp().getRequest.mockReturnValue({
+      user: userTest
+    })
+    expect(rolesGuard.canActivate(context)).toBeFalsy()
+  })
+
+  it('should not pass with an undefined user role', async () => {
+    ;(userTest as any).role = undefined
+    context = createMock<ExecutionContext>()
+    UserHaveRole(USER_ROLE.USER)(context.getHandler())
+    context.switchToHttp().getRequest.mockReturnValue({
+      user: userTest
+    })
+    expect(rolesGuard.canActivate(context)).toBeFalsy()
+  })
+
+  it('should not pass with a missing decorator', async () => {
+    userTest.role = USER_ROLE.USER
+    context = createMock<ExecutionContext>()
+    context.switchToHttp().getRequest.mockReturnValue({
+      user: userTest
+    })
+    expect(rolesGuard.canActivate(context)).toBeFalsy()
+  })
+
+  it('should pass with an empty decorator', async () => {
+    userTest.role = USER_ROLE.USER
+    context = createMock<ExecutionContext>()
+    UserHaveRole()(context.getHandler())
+    context.switchToHttp().getRequest.mockReturnValue({
+      user: userTest
+    })
+    expect(rolesGuard.canActivate(context)).toBeTruthy()
+  })
+})

@@ -1,0 +1,44 @@
+<div class="modal-header">
+  <h4 class="modal-title">
+    <svg [lucideIcon]="icons.LucideUserMinus"></svg>
+    <span>{{ user.fullName }}</span>
+  </h4>
+  @if (user) {
+    <h4 class="modal-title ms-auto">
+      <span l10nTranslate>Delete user</span>
+    </h4>
+  }
+  <button (click)="onClose()" aria-label="Close" class="btn-close btn-close-white {{user ? 'ms-2' : 'ms-auto'}} ms-2" type="button"></button>
+</div>
+<div class="modal-body">
+  <div class="d-flex align-items-center avatar mb-3">
+    <img class="avatar-img" [src]="user.avatarUrl" alt="">
+    <div class="d-flex flex-column">
+      <span class="mx-2"><b>{{ user.login | capitalize }}</b></span>
+      <span class="mx-2">{{ user.email }}</span>
+    </div>
+  </div>
+  <div class="form-check form-check-inline mt-3">
+    <div class="d-flex">
+      <label class="form-check-label" for="deleteSpace">
+        <input class="form-check-input" [(ngModel)]="deleteSpace" id="deleteSpace" type="checkbox">
+        <span l10nTranslate>Delete all user files</span>
+      </label>
+    </div>
+  </div>
+</div>
+<div class="modal-footer">
+  <button (click)="onClose()"
+          class="btn btn-secondary ms-auto"
+          data-dismiss="modal"
+          type="button"
+          l10nTranslate>
+    Cancel
+  </button>
+  <button (click)="onSubmit()"
+          [disabled]="submitted" class="btn btn-danger"
+          type="button"
+          l10nTranslate>
+    Confirm
+  </button>
+</div>

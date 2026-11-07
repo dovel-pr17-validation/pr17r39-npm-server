@@ -1,0 +1,140 @@
+<div class="app-top-menu app-top-menu-tool-bar"
+     [attr.aria-label]="'Actions' | translate:locale.language"
+     role="toolbar">
+  <button (click)="loadClients()"
+          [attr.aria-label]="'Refresh' | translate:locale.language"
+          class="d-none d-md-flex align-items-center justify-content-center btn btn-default app-top-menu-tool-bar__action--quiet app-top-menu-tool-bar__action--breadcrumb-aligned"
+          type="button">
+    <svg [lucideIcon]="icons.LucideRotateCw"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>Refresh</span>
+  </button>
+  <button (click)="onDeleteClient()"
+          [attr.aria-label]="'Delete' | translate:locale.language"
+          [disabled]="!selected"
+          class="btn btn-default app-top-menu-tool-bar__action--quiet ms-auto"
+          type="button">
+    <svg [lucideIcon]="icons.LucideTrash"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>Delete</span>
+  </button>
+</div>
+<div class="app-sync-clients" appAutoResize>
+  @for (client of clients; track client.id) {
+    <div (click)="onSelectClient(client)"
+         [class.sync-client-card--selected]="selected && selected.id === client.id"
+         class="card dialog-tab-card sync-client-card">
+      <div class="card-body p-0">
+        <div class="sync-client-layout">
+          <div class="sync-client-details">
+            <div class="sync-client-header">
+              <div class="d-flex align-items-center min-width-0">
+                <span class="circle-primary-icon me-2">
+                  <svg [lucideIcon]="icons.CLIENT"></svg>
+                </span>
+                <div class="d-flex flex-column text-truncate">
+                  <span class="sync-client-title text-truncate">{{ client.info.node }}</span>
+                  <span class="sync-client-subtitle text-truncate">{{ client.info.type }}</span>
+                </div>
+              </div>
+              <div class="d-flex align-items-center flex-nowrap ms-2">
+                <div class="badge bg-primary">{{ client.info.version }}</div>
+                @if (client.isCurrentClient) {
+                  <svg [lucideIcon]="icons.LucideCircle"
+                           [container]="'body'"
+                           [tooltip]="'This client' | translate:locale.language"
+                           class="text-light-green cursor-pointer ms-2 sync-client-current-indicator">
+                  </svg>
+                }
+              </div>
+            </div>
+            <div class="sync-client-meta-line {{client.expiration.reached ? 'text-bold text-danger' : client.expiration.approaching ? 'text-bold text-warning' : ''}}">
+              <svg [lucideIcon]="icons.LucideKeyRound"></svg>
+              <span l10nTranslate>{{ client.expiration.reached ? 'The access has expired' : 'The access expires' }}</span>&nbsp;{{ client.expiration.value | amTimeAgo }}
+            </div>
+            <div class="sync-client-meta-line">
+              <app-platform-icon [platform]="client.info.os" class="osIcon"></app-platform-icon>
+              <span class="text-truncate">{{ client.osName }} {{ client.info.osRelease }}</span>
+            </div>
+            <div class="sync-client-meta-line">
+              <svg [lucideIcon]="icons.LucideCircleUserRound"></svg>
+              <span class="text-truncate">{{ client.info.user }}</span>
+            </div>
+            <div class="sync-client-meta-line">
+              <svg [lucideIcon]="icons.LucideAtSign"></svg>
+              <span class="text-truncate">{{ client.currentIp }}&nbsp;-&nbsp;{{ client.lastIp }}</span>
+            </div>
+            <div class="d-flex flex-column align-items-start sync-client-meta-line">
+              <div class="sync-client-meta-line">
+                <svg [lucideIcon]="icons.LucideClock"></svg>
+                <span class="text-truncate">{{ client.currentAccess | amDateFormat:'L HH:mm:ss' }}</span>
+              </div>
+              <div class="sync-client-meta-line text-muted">
+                <svg [lucideIcon]="icons.LucideClock"></svg>
+                <span class="text-truncate">{{ client.lastAccess | amDateFormat:'L HH:mm:ss' }}</span>
+              </div>
+            </div>
+          </div>
+          <div class="sync-client-paths">
+            <div class="sync-client-paths-header">
+              <span l10nTranslate>Synchronizations</span>
+            </div>
+            @if (client.paths.length) {
+              @for (path of client.paths; track path.id) {
+                <div (click)="onSelectPath(path)"
+                     (appTap)="onEditPath(path, client)"
+                     [class.dialog-check-card--active]="selectedPath && selectedPath.id === path.id"
+                     class="card dialog-check-card dialog-check-card--interactive sync-path-card">
+                  <div class="card-body p-2">
+                    <div class="d-flex align-items-stretch text-truncate sync-path-row">
+                      <div class="sync-path-main d-flex align-items-center text-truncate me-auto">
+                        <img [src]="path.mimeUrl" alt="" class="sync-path-image" draggable="false">
+                        <div class="d-flex flex-column text-truncate ms-2">
+                          <span class="fs-base text-truncate user-select-none text-bold">{{ path.settings.name }}</span>
+                          <div class="d-inline-flex align-items-center text-{{path.iconClass}} fs-sm">
+                            <svg [lucideIcon]="path.icon" class="me-1"></svg>
+                            <span class="text-truncate user-select-none">{{ path.showedPath }}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="sync-path-side">
+                        <div class="sync-path-badges">
+                          <div class="badge bg-dark">
+                            <svg [lucideIcon]="icons.LucideCirclePlus"></svg>
+                            {{ path.createdAt | amTimeAgo:true }}
+                          </div>
+                          <div class="badge sync-newly-{{path.newly}}">
+                            <svg [lucideIcon]="icons.LucideRefreshCw"></svg>
+                            @if (path.newly) {
+                              {{ path.settings.lastSync | amTimeAgo:true }}
+                            } @else {
+                              {{ 'never' | translate:locale.language }}
+                            }
+                          </div>
+                        </div>
+                        <div class="sync-path-actions">
+                          <button (click)="$event.stopPropagation(); gotoPath(path, client)"
+                                  [tooltip]="'Go to' | translate:locale.language"
+                                  class="btn btn-default"
+                                  type="button">
+                            <svg [lucideIcon]="icons.LucideMapPin"></svg>
+                          </button>
+                          <button (click)="$event.stopPropagation(); onEditPath(path, client)"
+                                  [tooltip]="'Edit' | translate:locale.language"
+                                  class="btn btn-default"
+                                  type="button">
+                            <svg [lucideIcon]="icons.LucidePencil"></svg>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              }
+            } @else {
+              <div class="sync-client-path-empty text-muted" l10nTranslate>No synchronized folder</div>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  }
+</div>

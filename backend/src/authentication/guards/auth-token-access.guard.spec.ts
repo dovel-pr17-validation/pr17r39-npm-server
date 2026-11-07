@@ -1,0 +1,271 @@
+import { sign } from '@fastify/cookie'
+import { createMock, DeepMocked } from '@golevelup/ts-vitest'
+import { ExecutionContext } from '@nestjs/common'
+import { Reflector } from '@nestjs/core'
+import { JwtModule, JwtService } from '@nestjs/jwt'
+import { PassportModule } from '@nestjs/passport'
+import { Test, TestingModule } from '@nestjs/testing'
+import { PinoLogger } from 'nestjs-pino'
+import crypto from 'node:crypto'
+import { USER_PERMISSION, USER_ROLE } from '../../applications/users/constants/user.js'
+import { WEB_DAV_CONTEXT, WebDAVContext } from '../../applications/webdav/decorators/webdav-context.decorator.js'
+import { configuration } from '../../configuration/config.environment.js'
+import { AuthConfig } from '../auth.config.js'
+import { AuthManager } from '../auth.service.js'
+import { CSRF_ERROR } from '../constants/auth.js'
+import { AuthTokenOptional } from '../decorators/auth-token-optional.decorator.js'
+import { AUTH_TOKEN_SKIP, AuthTokenSkip } from '../decorators/auth-token-skip.decorator.js'
+import type { JwtIdentityPayload, JwtPayload } from '../interfaces/jwt-payload.interface.js'
+import { TOKEN_TYPE } from '../interfaces/token.interface.js'
+import { AuthAnonymousGuard } from './auth-anonymous.guard.js'
+import { AuthAnonymousStrategy } from './auth-anonymous.strategy.js'
+import { AuthTokenAccessGuard } from './auth-token-access.guard.js'
+import { AuthTokenAccessStrategy } from './auth-token-access.strategy.js'
+
+describe(AuthTokenAccessGuard.name, () => {
+  const csrfToken: string = crypto.randomUUID()
+  const accessTokenIdentity: JwtIdentityPayload = {
+    id: 1,
+    login: 'foo',
+    email: 'foo@sync-in.test',
+    fullName: 'Foo Bar',
+    language: 'fr',
+    role: USER_ROLE.USER,
+    applications: [USER_PERMISSION.DESKTOP_APP, USER_PERMISSION.PERSONAL_SPACE],
+    preferences: { showHiddenFiles: false }
+  }
+  let authConfig: AuthConfig
+  let jwtService: JwtService
+  let authAccessGuard: AuthTokenAccessGuard
+  let authAnonymousGuard: AuthAnonymousGuard
+  let authAnonymousStrategy: AuthAnonymousStrategy
+  let reflector: Reflector
+  let accessTokenWithoutCSRF: string
+  let accessToken: string
+  let temporaryTwoFaToken: string
+  let context: DeepMocked<ExecutionContext>
+
+  beforeAll(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      imports: [JwtModule.register({ global: true }), PassportModule],
+      providers: [
+        AuthTokenAccessStrategy,
+        AuthAnonymousStrategy,
+        AuthAnonymousGuard,
+        AuthManager,
+        {
+          provide: PinoLogger,
+          useValue: {
+            assign: () => undefined
+          }
+        }
+      ]
+    }).compile()
+
+    authConfig = configuration.auth
+    jwtService = module.get<JwtService>(JwtService)
+    reflector = new Reflector()
+    authAccessGuard = new AuthTokenAccessGuard(reflector)
+    authAnonymousStrategy = module.get<AuthAnonymousStrategy>(AuthAnonymousStrategy)
+    authAnonymousGuard = module.get<AuthAnonymousGuard>(AuthAnonymousGuard)
+    accessToken = await jwtService.signAsync(
+      { tokenType: TOKEN_TYPE.ACCESS, identity: accessTokenIdentity, [TOKEN_TYPE.CSRF]: csrfToken } as JwtPayload,
+      {
+        secret: authConfig.token.access.secret,
+        expiresIn: 30
+      }
+    )
+    accessTokenWithoutCSRF = await jwtService.signAsync({ tokenType: TOKEN_TYPE.ACCESS, identity: accessTokenIdentity } as JwtPayload, {
+      secret: authConfig.token.access.secret,
+      expiresIn: 30
+    })
+    temporaryTwoFaToken = await jwtService.signAsync(
+      { tokenType: TOKEN_TYPE.ACCESS_2FA, identity: { id: 1, login: 'foo', twoFaEnabled: true }, csrf: csrfToken } as JwtPayload,
+      {
+        secret: authConfig.token.access.secret,
+        expiresIn: 30
+      }
+    )
+    context = createMock<ExecutionContext>()
+  })
+
+  it('should be defined', () => {
+    expect(authConfig).toBeDefined()
+    expect(jwtService).toBeDefined()
+    expect(authAccessGuard).toBeDefined()
+    expect(authAnonymousGuard).toBeDefined()
+    expect(authAnonymousStrategy).toBeDefined()
+    expect(accessToken).toBeDefined()
+    expect(accessTokenWithoutCSRF).toBeDefined()
+    expect(temporaryTwoFaToken).toBeDefined()
+    expect(csrfToken).toBeDefined()
+  })
+
+  it('should pass with a valid access token in cookies with CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: sign(csrfToken, authConfig.token.csrf.secret) },
+      cookies: {
+        [authConfig.token.access.name]: accessToken
+      }
+    })
+    expect(await authAccessGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should pass with a valid access token in request header with no CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer ${accessToken}`
+      }
+    })
+    expect(await authAccessGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should hydrate user from the access token identity', async () => {
+    const request = {
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer ${accessToken}`
+      }
+    } as any
+    context.switchToHttp().getRequest.mockReturnValue(request)
+
+    expect(await authAccessGuard.canActivate(context)).toBe(true)
+    expect(request.user).toMatchObject(accessTokenIdentity)
+    expect(request.user.preferences.showHiddenFiles).toBe(false)
+    expect(request.user.haveRole(USER_ROLE.USER)).toBe(true)
+    expect(request.user.havePermission(USER_PERMISSION.DESKTOP_APP)).toBe(true)
+  })
+
+  it('should throw an error with an invalid access token in cookies', async () => {
+    // Cookies test
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {},
+      cookies: {
+        [authConfig.token.access.name]: 'bar'
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).rejects.toThrow('Unauthorized')
+  })
+
+  it('should throw an error with an invalid access token in request header', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer bar`
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).rejects.toThrow('Unauthorized')
+  })
+
+  it('should reject a temporary 2FA token in the authorization header', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer ${temporaryTwoFaToken}`
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).rejects.toThrow('Unauthorized')
+  })
+
+  it('should throw an error with a valid access token in cookies and a missing CSRF in request header', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {},
+      cookies: {
+        [authConfig.token.access.name]: accessToken
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).rejects.toThrow(new RegExp(CSRF_ERROR.MISSING_HEADERS))
+  })
+
+  it('should throw an error with a valid access token in cookies and a missing CSRF claim in the access token', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: csrfToken },
+      cookies: {
+        [authConfig.token.access.name]: accessTokenWithoutCSRF
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).rejects.toThrow(new RegExp(CSRF_ERROR.MISSING_JWT))
+  })
+
+  it('should throw an error with a valid access token in cookies and a mismatch CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: csrfToken + '*' },
+      cookies: {
+        [authConfig.token.access.name]: accessToken
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).rejects.toThrow(new RegExp(CSRF_ERROR.MISMATCH))
+  })
+
+  it('should pass with method GET and a valid access token in cookies and a mismatch CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      method: 'GET',
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: csrfToken + '*' },
+      cookies: {
+        [authConfig.token.access.name]: accessToken
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).resolves.not.toThrow()
+  })
+
+  it('should throw an error with method POST and a valid access token in cookies and a mismatch CSRF', async () => {
+    context.switchToHttp().getRequest.mockReturnValue({
+      method: 'POST',
+      raw: { user: '' },
+      headers: { [authConfig.token.csrf.name]: csrfToken + '*' },
+      cookies: {
+        [authConfig.token.access.name]: accessToken
+      }
+    })
+    await expect(authAccessGuard.canActivate(context)).rejects.toThrow(new RegExp(CSRF_ERROR.MISMATCH))
+  })
+
+  it('should bypass access token when AuthTokenSkip decorator is applied to context', () => {
+    context = createMock<ExecutionContext>()
+    AuthTokenSkip()(context.getHandler())
+    expect(reflector.getAllAndOverride<boolean>(AUTH_TOKEN_SKIP, [context.getHandler(), context.getClass()])).toBe(true)
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer bar`
+      }
+    })
+    expect(authAccessGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should bypass access token with WebDAVContext decorator is applied to context', () => {
+    context = createMock<ExecutionContext>()
+    WebDAVContext()(context.getHandler())
+    expect(reflector.getAllAndOverride<boolean>(AUTH_TOKEN_SKIP, [context.getHandler(), context.getClass()])).toBe(undefined)
+    expect(reflector.getAllAndOverride<boolean>(WEB_DAV_CONTEXT, [context.getHandler(), context.getClass()])).toBe(true)
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      headers: {
+        authorization: `Bearer bar`
+      }
+    })
+    expect(authAccessGuard.canActivate(context)).toBe(true)
+  })
+
+  it('should pass without a valid access token when AuthTokenOptional is applied to context', async () => {
+    const spyAuthenticate = vi.spyOn(authAnonymousStrategy, 'authenticate')
+    context = createMock<ExecutionContext>()
+    AuthTokenOptional()(context.getHandler())
+    expect(reflector.getAllAndOverride<boolean>(AUTH_TOKEN_SKIP, [context.getHandler(), context.getClass()])).toBe(true)
+    context.switchToHttp().getRequest.mockReturnValue({
+      raw: { user: '' },
+      authorization: `Bearer bar`
+    })
+    expect(authAccessGuard.canActivate(context)).toBe(true)
+    expect(await authAnonymousGuard.canActivate(context)).toBe(true)
+    expect(spyAuthenticate).toHaveBeenCalledTimes(1)
+    spyAuthenticate.mockClear()
+  })
+})

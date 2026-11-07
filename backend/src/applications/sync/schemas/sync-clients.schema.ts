@@ -1,0 +1,27 @@
+import { sql } from 'drizzle-orm'
+import { bigint, boolean, char, datetime, index, mysqlTable, varchar } from 'drizzle-orm/mysql-core'
+import { jsonColumn } from '../../../infrastructure/database/columns.js'
+import { users } from '../../users/schemas/users.schema.js'
+import type { SyncClientInfo } from '../interfaces/sync-client.interface.js'
+
+export const syncClients = mysqlTable(
+  'sync_clients',
+  {
+    id: char('id', { length: 36 }).primaryKey(),
+    ownerId: bigint('ownerId', { mode: 'number', unsigned: true })
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    token: char('token', { length: 36 }).notNull(),
+    tokenExpiration: bigint('tokenExpiration', { mode: 'number', unsigned: true }).notNull(),
+    info: jsonColumn<SyncClientInfo>()('info').notNull(),
+    enabled: boolean('enabled').default(true).notNull(),
+    currentIp: varchar('currentIp', { length: 45 }),
+    lastIp: varchar('lastIp', { length: 45 }),
+    currentAccess: datetime('currentAccess', { mode: 'date' }),
+    lastAccess: datetime('lastAccess', { mode: 'date' }),
+    createdAt: datetime('createdAt', { mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull()
+  },
+  (table) => [index('owner_idx').on(table.ownerId), index('token_idx').on(table.token)]
+)

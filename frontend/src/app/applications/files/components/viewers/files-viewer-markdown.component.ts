@@ -1,0 +1,679 @@
+import { CodeEditor } from '@acrodata/code-editor'
+import { Component, effect, ElementRef, HostListener, OnDestroy, OnInit, signal, viewChild, ViewEncapsulation } from '@angular/core'
+import { FormsModule } from '@angular/forms'
+import { redo, redoDepth, undo, undoDepth } from '@codemirror/commands'
+import { LanguageDescription } from '@codemirror/language'
+import { languages } from '@codemirror/language-data'
+import {
+  LucideCode,
+  LucideDynamicIcon,
+  LucideEye,
+  LucideImage,
+  LucideItalic,
+  LucideKeyboard,
+  LucideLetterB,
+  LucideLetterH,
+  LucideLink,
+  LucideList,
+  LucideListOrdered,
+  LucideLoader,
+  LucideLock,
+  LucideLockOpen,
+  LucideMinus,
+  LucideQuote,
+  LucideRedo,
+  LucideSave,
+  LucideSearch,
+  LucideSquareCheck,
+  LucideSquareMinus,
+  LucideSquarePlus,
+  LucideStrikethrough,
+  LucideTable,
+  LucideTextWrap,
+  LucideTrash,
+  LucideUnderline,
+  LucideUndo
+} from '@lucide/angular'
+import { Editor, Extension, isNodeSelection, type Range } from '@tiptap/core'
+import type { SetImageOptions } from '@tiptap/extension-image'
+import { TaskItem } from '@tiptap/extension-list'
+import { TableKit } from '@tiptap/extension-table'
+import { TaskList } from '@tiptap/extension-task-list'
+import { Markdown } from '@tiptap/markdown'
+import StarterKit from '@tiptap/starter-kit'
+import { L10nTranslateDirective, L10nTranslatePipe } from 'angular-l10n'
+import { ButtonCheckboxDirective } from 'ngx-bootstrap/buttons'
+import { BsDropdownModule } from 'ngx-bootstrap/dropdown'
+import { TooltipModule } from 'ngx-bootstrap/tooltip'
+import { TiptapEditorDirective } from 'ngx-tiptap'
+import type { FileViewerSearchAdapter } from '../../interfaces/file-viewer-search.interface'
+import { SHORT_MIME } from '../../files.constants'
+import { FilesViewerEditableBase } from './files-viewer-editable-base'
+import { CodeMirrorFileViewerSearchAdapter } from './components/files-viewer-codemirror-search-adapter'
+import { FilesViewerSearchComponent } from './components/files-viewer-search.component'
+import { TipTapFileViewerSearchAdapter } from './components/files-viewer-tiptap-search-adapter'
+import { FilesViewerUnsavedChangesComponent } from './components/files-viewer-unsaved-changes.component'
+import { isAllowedAbsoluteImageSource, MarkdownImage, resolveMarkdownRelativeImageUrl } from './utils/markdown-image.utils'
+import { markdownHeadingSlug, MarkdownLink, resolveMarkdownLink } from './utils/markdown-link.utils'
+
+type MarkdownHeadingLevel = 1 | 2 | 3 | 4
+type MarkdownInlineMark = 'bold' | 'code' | 'italic' | 'strike' | 'underline'
+type MarkdownEditorMode = 'source' | 'visual'
+
+const ExitInlineCodeOnEnter = Extension.create({
+  name: 'exitInlineCodeOnEnter',
+
+  addKeyboardShortcuts() {
+    return {
+      Enter: () => {
+        if (!this.editor.isActive('code') || this.editor.isActive('codeBlock')) return false
+        return this.editor.chain().splitBlock().unsetMark('code').run()
+      }
+    }
+  }
+})
+
+@Component({
+  selector: 'app-files-viewer-markdown',
+  encapsulation: ViewEncapsulation.None,
+  imports: [
+    CodeEditor,
+    TiptapEditorDirective,
+    TooltipModule,
+    FormsModule,
+    ButtonCheckboxDirective,
+    BsDropdownModule,
+    LucideDynamicIcon,
+    L10nTranslatePipe,
+    L10nTranslateDirective,
+    FilesViewerSearchComponent,
+    FilesViewerUnsavedChangesComponent
+  ],
+  styleUrl: 'files-viewer-markdown.component.scss',
+  templateUrl: 'files-viewer-markdown.component.html'
+})
+export class FilesViewerMarkdownComponent extends FilesViewerEditableBase implements OnInit, OnDestroy {
+  private openingLink = false
+  private headingRafId: number | null = null
+  protected isSourceMode = signal(false)
+  protected lineWrapping = signal(false)
+  protected sourceContent = ''
+  protected currentLanguage: string | undefined = undefined
+  protected readonly languages: LanguageDescription[] = languages
+  protected readonly sourceSearchAdapter = new CodeMirrorFileViewerSearchAdapter(() => this.sourceView)
+  protected readonly visualSearchAdapter = new TipTapFileViewerSearchAdapter(() => this.editor)
+  protected readonly editor = new Editor({
+    extensions: [
+      StarterKit.configure({
+        link: false
+      }),
+      MarkdownLink.configure({ openOnClick: false }),
+      ExitInlineCodeOnEnter,
+      TaskList,
+      TaskItem.configure({
+        nested: true
+      }),
+      TableKit.configure({
+        table: {
+          resizable: true
+        }
+      }),
+      MarkdownImage.configure({
+        allowBase64: true,
+        HTMLAttributes: {
+          decoding: 'async',
+          loading: 'lazy'
+        },
+        resolveSource: (source) => (isAllowedAbsoluteImageSource(source) ? source : resolveMarkdownRelativeImageUrl(this.file(), source))
+      }),
+      Markdown,
+      this.visualSearchAdapter.extension
+    ],
+    editorProps: {
+      handleDOMEvents: { click: (_view, event) => this.followLink(event) }
+    },
+    editable: false,
+    content: '',
+    contentType: 'markdown',
+    onUpdate: () => {
+      this.markModifiedIfNeeded()
+      this.visualSearchAdapter.sync()
+    },
+    onSelectionUpdate: () => this.visualSearchAdapter.sync()
+  })
+  protected readonly icons = {
+    LucideTextWrap,
+    LucideLetterB,
+    LucideCode,
+    LucideEye,
+    LucideSave,
+    LucideLetterH,
+    LucideImage,
+    LucideItalic,
+    LucideKeyboard,
+    LucideLink,
+    LucideListOrdered,
+    LucideList,
+    LucideLock,
+    LucideLockOpen,
+    LucideSearch,
+    LucideMinus,
+    LucideQuote,
+    LucideUndo,
+    LucideRedo,
+    LucideSquareCheck,
+    LucideLoader,
+    LucideStrikethrough,
+    LucideTable,
+    LucideTrash,
+    LucideUnderline,
+    LucideSquareMinus,
+    LucideSquarePlus
+  }
+  protected readonly headingLevels: MarkdownHeadingLevel[] = [1, 2, 3, 4]
+  private readonly sourceEditor = viewChild<CodeEditor>('sourceEditor')
+  private readonly imageFileInput = viewChild<ElementRef<HTMLInputElement>>('imageFileInput')
+  private focusRafId: number | null = null
+  private savedContent = ''
+
+  constructor() {
+    super()
+    effect(() => {
+      const editable = this.canEditContent() && this.isSupported()
+      if (!this.editor.isDestroyed) {
+        this.editor.setEditable(editable, false)
+      }
+    })
+  }
+
+  private get sourceView() {
+    return this.sourceEditor()?.view || null
+  }
+
+  @HostListener('document:keydown', ['$event'])
+  onKeyDown(event: KeyboardEvent) {
+    if (!this.isActiveDialog()) return
+    if (event.key === 'Escape' || event.key === 'Esc') {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (this.isSearchPanelOpen()) {
+        this.toggleSearch()
+      } else if (this.warnOnUnsavedChanges()) {
+        this.warnOnUnsavedChanges.set(false)
+      } else if (this.isModified()) {
+        this.warnOnUnsavedChanges.set(true)
+      } else {
+        this.onClose().catch(console.error)
+      }
+      return
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault()
+      this.save()
+      return
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault()
+      event.stopPropagation()
+      this.toggleSearch()
+    }
+  }
+
+  async ngOnInit() {
+    const language: LanguageDescription = LanguageDescription.matchFilename(languages, this.file().name)
+    this.currentLanguage = language?.name || 'Markdown'
+    this.isSupported.set(true)
+    this.loadContent().catch(console.error)
+  }
+
+  override ngOnDestroy() {
+    super.ngOnDestroy()
+    if (this.focusRafId !== null) {
+      cancelAnimationFrame(this.focusRafId)
+    }
+    if (this.headingRafId !== null) cancelAnimationFrame(this.headingRafId)
+    this.editor.destroy()
+  }
+
+  protected onUndo() {
+    if (this.isSourceMode()) {
+      this.runSourceHistory(undo)
+      return
+    }
+    this.runEditorCommand(() => this.editor.chain().focus().undo().run())
+  }
+
+  protected onRedo() {
+    if (this.isSourceMode()) {
+      this.runSourceHistory(redo)
+      return
+    }
+    this.runEditorCommand(() => this.editor.chain().focus().redo().run())
+  }
+
+  protected canUndo(): boolean {
+    if (this.isSourceMode()) {
+      return this.canRunSourceHistory(undoDepth)
+    }
+    return this.canEditVisual() && !this.editor.isDestroyed && this.editor.can().undo()
+  }
+
+  protected canRedo(): boolean {
+    if (this.isSourceMode()) {
+      return this.canRunSourceHistory(redoDepth)
+    }
+    return this.canEditVisual() && !this.editor.isDestroyed && this.editor.can().redo()
+  }
+
+  protected toggleViewMode() {
+    this.setSourceMode(!this.isSourceMode())
+  }
+
+  protected setSourceMode(sourceMode: boolean) {
+    if (sourceMode === this.isSourceMode()) return
+    if (!this.isSourceMode()) {
+      this.sourceContent = this.editor.getMarkdown()
+    }
+    if (!sourceMode) {
+      this.setMarkdownContent(this.sourceContent)
+    }
+    this.isSourceMode.set(sourceMode)
+    this.scheduleEditorFocus(sourceMode ? 'source' : 'visual')
+  }
+
+  protected sourceContentChange() {
+    if (this.isSourceMode()) {
+      this.markModifiedIfNeeded()
+    }
+  }
+
+  protected toggleSearch() {
+    this.activeSearchAdapter().toggle()
+  }
+
+  protected activeSearchAdapter(): FileViewerSearchAdapter {
+    return this.isSourceMode() ? this.sourceSearchAdapter : this.visualSearchAdapter
+  }
+
+  protected isSearchPanelOpen(): boolean {
+    return this.activeSearchAdapter().isOpen()
+  }
+
+  protected toggleHeading(level: MarkdownHeadingLevel) {
+    this.runEditorCommand(() => this.editor.chain().focus().toggleHeading({ level }).run())
+  }
+
+  protected toggleBold() {
+    this.toggleInlineMark('bold')
+  }
+
+  protected toggleItalic() {
+    this.toggleInlineMark('italic')
+  }
+
+  protected toggleUnderline() {
+    this.toggleInlineMark('underline')
+  }
+
+  protected toggleStrike() {
+    this.toggleInlineMark('strike')
+  }
+
+  protected toggleCode() {
+    this.toggleInlineMark('code')
+  }
+
+  protected toggleBulletList() {
+    this.runEditorCommand(() => this.editor.chain().focus().toggleBulletList().run())
+  }
+
+  protected toggleOrderedList() {
+    this.runEditorCommand(() => this.editor.chain().focus().toggleOrderedList().run())
+  }
+
+  protected toggleTaskList() {
+    this.runEditorCommand(() => this.editor.chain().focus().toggleTaskList().run())
+  }
+
+  protected toggleBlockquote() {
+    this.runEditorCommand(() => this.editor.chain().focus().toggleBlockquote().run())
+  }
+
+  protected toggleCodeBlock() {
+    this.runEditorCommand(() => this.editor.chain().focus().toggleCodeBlock().run())
+  }
+
+  protected setHorizontalRule() {
+    this.runEditorCommand(() => this.editor.chain().focus().setHorizontalRule().run())
+  }
+
+  protected setLink() {
+    this.runEditorCommand(() => {
+      const previousUrl = this.editor.getAttributes('link').href as string | undefined
+      const url = window.prompt('URL', previousUrl || 'https://')
+      if (url === null) return false
+      if (!url.trim()) {
+        return this.editor.chain().focus().extendMarkRange('link').unsetLink().run()
+      }
+      return this.editor.chain().focus().extendMarkRange('link').setLink({ href: url.trim() }).run()
+    })
+  }
+
+  protected openImageFilePicker() {
+    this.runEditorCommand(() => {
+      const inputElement = this.imageFileInput()?.nativeElement
+      if (!inputElement) return false
+      inputElement.value = ''
+      inputElement.click()
+      return true
+    })
+  }
+
+  protected insertImageFromFile(event: Event) {
+    const inputElement = event.target as HTMLInputElement
+    const imageFile = inputElement.files?.[0]
+    inputElement.value = ''
+    if (!imageFile || !this.canEditVisual()) return
+    if (!imageFile.type.startsWith('image/')) {
+      this.layout.sendNotification('error', 'Unable to insert image', 'Unsupported image file')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const src = typeof reader.result === 'string' ? reader.result : ''
+      if (!src) {
+        this.layout.sendNotification('error', 'Unable to insert image', imageFile.name)
+        return
+      }
+      this.insertImage({ src, alt: imageFile.name })
+    }
+    reader.onerror = () => this.layout.sendNotification('error', 'Unable to insert image', imageFile.name)
+    reader.readAsDataURL(imageFile)
+  }
+
+  protected insertImageFromUrl() {
+    this.runEditorCommand(() => {
+      const imageAttributes = this.editor.getAttributes('image')
+      const previousSrc = imageAttributes.src as string | undefined
+      const src = window
+        .prompt(
+          this.layout.translateString('Image from URL'),
+          previousSrc && isAllowedAbsoluteImageSource(previousSrc) ? previousSrc : `${window.location.origin}/`
+        )
+        ?.trim()
+      if (!src) return false
+      if (!isAllowedAbsoluteImageSource(src)) {
+        this.layout.sendNotification('error', 'Unable to insert image', 'Invalid image URL')
+        return false
+      }
+      const previousAlt = imageAttributes.alt as string | undefined
+      const alt = window.prompt(this.layout.translateString('Description'), previousAlt || '')
+      if (alt === null) return false
+      return this.insertImage({ src, alt: alt.trim() || undefined })
+    })
+  }
+
+  protected insertImageFromRelativePath() {
+    this.runEditorCommand(() => {
+      const imageAttributes = this.editor.getAttributes('image')
+      const previousSrc = imageAttributes.src as string | undefined
+      const src = window
+        .prompt(
+          this.layout.translateString('Image from relative path'),
+          previousSrc && resolveMarkdownRelativeImageUrl(this.file(), previousSrc) ? previousSrc : 'images/'
+        )
+        ?.trim()
+      if (!src) return false
+      if (!resolveMarkdownRelativeImageUrl(this.file(), src)) {
+        this.layout.sendNotification('error', 'Unable to insert image', 'Invalid relative image path')
+        return false
+      }
+      const previousAlt = imageAttributes.alt as string | undefined
+      const alt = window.prompt(this.layout.translateString('Description'), previousAlt || '')
+      if (alt === null) return false
+      return this.insertImage({ src, alt: alt.trim() || undefined })
+    })
+  }
+
+  protected insertTable() {
+    this.runEditorCommand(() => this.editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())
+  }
+
+  protected addTableRow(position: 'above' | 'below') {
+    this.runEditorCommand(() => {
+      const command = this.editor.chain().focus()
+      return position === 'above' ? command.addRowBefore().run() : command.addRowAfter().run()
+    })
+  }
+
+  protected deleteTableRow() {
+    this.runEditorCommand(() => this.editor.chain().focus().deleteRow().run())
+  }
+
+  protected addTableColumn(position: 'left' | 'right') {
+    this.runEditorCommand(() => {
+      const command = this.editor.chain().focus()
+      return position === 'left' ? command.addColumnBefore().run() : command.addColumnAfter().run()
+    })
+  }
+
+  protected deleteTableColumn() {
+    this.runEditorCommand(() => this.editor.chain().focus().deleteColumn().run())
+  }
+
+  protected deleteTable() {
+    this.runEditorCommand(() => this.editor.chain().focus().deleteTable().run())
+  }
+
+  protected canEditTable(): boolean {
+    return this.canEditVisual() && this.editor.isActive('table')
+  }
+
+  protected isSelectionActive(name: string, attributes?: object): boolean {
+    return this.editor.isActive(name, attributes)
+  }
+
+  protected canEditVisual(): boolean {
+    return !this.isSourceMode() && this.canEditContent()
+  }
+
+  protected currentFileContent(): string {
+    return this.currentMarkdown()
+  }
+
+  protected onContentLoaded(content: string) {
+    this.savedContent = content
+    this.sourceContent = content
+    this.setMarkdownContent(content)
+    this.isModified.set(false)
+    const fragment = this.file().markdownFragment || ''
+    if (fragment) {
+      this.scrollToHeading(fragment)
+    } else {
+      this.scheduleEditorFocus('visual', 'start')
+    }
+    delete this.file().markdownFragment
+  }
+
+  protected override onContentSaved(content: string) {
+    this.savedContent = content
+  }
+
+  protected override onSaveFinished(_success: boolean) {
+    this.scheduleEditorFocus(this.isSourceMode() ? 'source' : 'visual', undefined, true)
+  }
+
+  private followLink(event: MouseEvent): boolean {
+    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null
+    if (!anchor) return false
+    event.preventDefault()
+    const href = anchor.getAttribute('href') || ''
+    if (/^(https?:|mailto:)/i.test(href)) {
+      this.layout.openUrl(href)
+      return true
+    }
+    const target = resolveMarkdownLink(this.file(), href)
+    if (!target) {
+      this.layout.sendNotification('warning', 'Unable to open document', href)
+      return true
+    }
+    if (target.path === this.file().path) {
+      this.scrollToHeading(target.fragment)
+    } else if (!this.openingLink) {
+      this.openingLink = true
+      this.filesService
+        .open(target.path, { expectedShortMime: SHORT_MIME.MARKDOWN, fragment: target.fragment })
+        .finally(() => (this.openingLink = false))
+    }
+    return true
+  }
+
+  private scrollToHeading(fragment: string) {
+    if (this.headingRafId !== null) {
+      cancelAnimationFrame(this.headingRafId)
+      this.headingRafId = null
+    }
+    if (this.editor.isDestroyed) return
+    const target = fragment.toLowerCase()
+    this.headingRafId = requestAnimationFrame(() => {
+      this.headingRafId = null
+      if (this.editor.isDestroyed || !this.editor.view.dom.isConnected) return
+      if (!target) {
+        this.editor.view.dom.parentElement?.scrollTo({ top: 0 })
+        return
+      }
+      const counts = new Map<string, number>()
+      const headings = Array.from((this.editor.view.dom as HTMLElement).querySelectorAll('h1,h2,h3,h4,h5,h6'))
+      const heading = headings.find((element) => {
+        const text = element.textContent || ''
+        const slug = markdownHeadingSlug(text)
+        const occurrence = counts.get(slug) || 0
+        counts.set(slug, occurrence + 1)
+        return text.toLowerCase() === target || `${slug}${occurrence ? `-${occurrence}` : ''}` === target
+      })
+      heading?.scrollIntoView({ block: 'start' })
+    })
+  }
+
+  private runEditorCommand(command: () => boolean) {
+    if (this.canEditVisual() && !this.editor.isDestroyed) {
+      command()
+    }
+  }
+
+  private toggleInlineMark(markName: MarkdownInlineMark) {
+    this.runEditorCommand(() => {
+      const wordRange = this.currentWordRange()
+      if (!wordRange) {
+        return this.editor.chain().focus().toggleMark(markName, {}, { extendEmptyMarkRange: true }).run()
+      }
+
+      const cursorPosition = this.editor.state.selection.from
+      const command = this.editor.chain().focus().setTextSelection(wordRange)
+      return (this.editor.isActive(markName) ? command.unsetMark(markName) : command.setMark(markName)).setTextSelection(cursorPosition).run()
+    })
+  }
+
+  private insertImage(options: SetImageOptions): boolean {
+    if (!this.canEditVisual() || this.editor.isDestroyed) return false
+    const { selection } = this.editor.state
+    const command = this.editor.chain().focus()
+    return isNodeSelection(selection) && selection.node.type.name === 'image'
+      ? command.updateAttributes('image', options).run()
+      : command.setImage(options).run()
+  }
+
+  private currentWordRange(): Range | null {
+    const { selection } = this.editor.state
+    if (!selection.empty) return null
+
+    const { $from } = selection
+    const text = $from.parent.textBetween(0, $from.parent.content.size, '\n', '\ufffc')
+    const offset = $from.parentOffset
+
+    if (!this.isWordCharacter(text[offset - 1]) && !this.isWordCharacter(text[offset])) {
+      return null
+    }
+
+    let start = offset
+    let end = offset
+
+    while (start > 0 && this.isWordCharacter(text[start - 1])) {
+      start--
+    }
+
+    while (end < text.length && this.isWordCharacter(text[end])) {
+      end++
+    }
+
+    if (start === end) return null
+
+    return {
+      from: $from.start() + start,
+      to: $from.start() + end
+    }
+  }
+
+  private isWordCharacter(character: string | undefined): boolean {
+    return !!character && /[\p{L}\p{N}_]/u.test(character)
+  }
+
+  private runSourceHistory(command: typeof undo) {
+    const view = this.sourceView
+    if (view && this.canEditContent()) {
+      command({ state: view.state, dispatch: view.dispatch })
+    }
+  }
+
+  private canRunSourceHistory(depth: typeof undoDepth): boolean {
+    const view = this.sourceView
+    return this.canEditContent() && !!view && depth(view.state) > 0
+  }
+
+  private currentMarkdown(): string {
+    if (this.isSourceMode()) {
+      return this.sourceContent
+    }
+    this.sourceContent = this.editor.getMarkdown()
+    return this.sourceContent
+  }
+
+  private markModifiedIfNeeded() {
+    const content = this.isSourceMode() ? this.sourceContent : this.editor.getMarkdown()
+    this.isModified.set(content !== this.savedContent)
+  }
+
+  private setMarkdownContent(content: string) {
+    this.editor.chain().setMeta('addToHistory', false).setContent(content, { emitUpdate: false, contentType: 'markdown' }).run()
+  }
+
+  private scheduleEditorFocus(mode: MarkdownEditorMode, position?: 'start', onlyIfUnfocused = false) {
+    if (this.focusRafId !== null) {
+      cancelAnimationFrame(this.focusRafId)
+    }
+    this.focusRafId = requestAnimationFrame(() => {
+      this.focusRafId = null
+      const sourceMode = mode === 'source'
+      if (this.isSourceMode() !== sourceMode) return
+      if (onlyIfUnfocused && !this.canRestoreEditorFocus()) return
+      if (!sourceMode) {
+        if (!this.editor.isDestroyed) {
+          this.editor.commands.focus(position)
+        }
+        return
+      }
+      const view = this.sourceView
+      if (!view) return
+      view.requestMeasure({
+        read: () => undefined,
+        write: () => {
+          if (this.isSourceMode() && (!onlyIfUnfocused || this.canRestoreEditorFocus())) {
+            view.focus()
+          }
+        }
+      })
+    })
+  }
+}

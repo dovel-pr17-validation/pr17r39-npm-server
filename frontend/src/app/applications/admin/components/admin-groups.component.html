@@ -1,0 +1,205 @@
+<!--Start Top Menu-->
+<div class="app-top-menu app-top-menu-tool-bar"
+     [attr.aria-label]="'Actions' | translate:locale.language"
+     role="toolbar">
+  <div class="btn-group" dropdown>
+    <button class="btn btn-default dropdown-toggle app-top-menu-tool-bar__action--quiet app-top-menu-tool-bar__action--breadcrumb-aligned"
+            [attr.aria-label]="'New' | translate:locale.language"
+            dropdownToggle
+            type="button">
+      <svg [lucideIcon]="icons.LucidePlus"></svg>
+      <span class="app-top-menu-tool-bar__label" l10nTranslate>New</span>
+    </button>
+    <ul *dropdownMenu class="dropdown-menu" role="menu">
+      <li role="menuitem">
+        <a (click)="openDialog(true)" class="dropdown-item" [class.disabled]="!!currentGroup && personalGroupsView">
+          <span l10nTranslate><svg [lucideIcon]="icons.GROUPS"></svg>
+            {{ personalGroupsView ? 'Personal group' : 'Group' }}</span>
+        </a>
+      </li>
+      <li role="menuitem">
+        <a (click)="addUserToGroupDialog()" class="dropdown-item" [class.disabled]="!currentGroup">
+          <span l10nTranslate><svg [lucideIcon]="icons.LucideUserRoundPlus"></svg>Add members</span>
+        </a>
+      </li>
+    </ul>
+  </div>
+  <button (click)="openDialog()"
+          [attr.aria-label]="(selected?.isGroup ? 'Edit group' : 'Edit user') | translate:locale.language"
+          [disabled]="!selected"
+          class="btn btn-default app-top-menu-tool-bar__action--quiet"
+          [tooltip]="(selected?.isGroup ? 'Edit group' : 'Edit user') | translate:locale.language"
+          type="button">
+    <svg [lucideIcon]="icons.LucidePencil"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>Edit</span>
+  </button>
+  <button (click)="openDialog(false, true)"
+          [attr.aria-label]="(selected?.isUser ? 'Remove from group' : 'Delete group') | translate:locale.language"
+          class="d-none d-sm-block btn btn-default app-top-menu-tool-bar__action--quiet"
+          [disabled]="!selected"
+          type="button">
+    <svg [lucideIcon]="selected?.isUser ? icons.LucideUserMinus : icons.LucideTrash"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>Delete</span>
+  </button>
+  <button (click)="refresh()"
+          [attr.aria-label]="'Refresh' | translate:locale.language"
+          class="d-none d-md-block btn btn-default"
+          [tooltip]="'Refresh' | translate:locale.language"
+          type="button">
+    <svg [lucideIcon]="icons.LucideRotateCw" [class]="loading ? 'icon-spin' : ''"></svg>
+  </button>
+  <div class="d-flex align-items-center ms-auto">
+    <div class="view-switch" role="group" aria-label="Select group type">
+      <button
+        type="button"
+        class="view-switch__option"
+        [class.active]="!personalGroupsView"
+        [attr.aria-pressed]="!personalGroupsView"
+        (click)="onPersonalGroupsView(false)"
+      >
+        {{ 'administrative_groups_short' | translate:locale.language }}
+      </button>
+      <button
+        type="button"
+        class="view-switch__option"
+        [class.active]="personalGroupsView"
+        [attr.aria-pressed]="personalGroupsView"
+        (click)="onPersonalGroupsView(true)"
+      >
+        {{ 'personal_groups_short' | translate:locale.language }}
+      </button>
+    </div>
+  </div>
+</div>
+<!--End Top Menu-->
+<!--Start Table Files Content-->
+<table class="app-table">
+  <thead>
+  <tr>
+    @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+      @if (th.value.show) {
+        <th (click)="sortBy(th.key)"
+            [style.width.%]="th.value.width"
+            [class.text-align-center]="th.value.textCenter"
+            [class.cursor-pointer]="th.value.sortable"
+            class="{{th.value.class}}"
+            l10nTranslate>
+          {{ th.value.label }}
+          @if (sortTable.sortParam.column === th.key) {
+            <svg [lucideIcon]="sortTable.sortParam.asc ? icons.LucideArrowDown : icons.LucideArrowUp"></svg>
+          }
+        </th>
+      }
+    }
+  </tr>
+  </thead>
+</table>
+<app-virtual-scroll (contextmenu)="onContextMenu($event)"
+                    [bufferAmount]="5"
+                    [items]="members | searchFilter:navbarSearch.viewFilter()">
+  <table class="app-table">
+    <tbody tabindex="-1">
+      @for (m of scrollView?.viewPortItems; track m.mid) {
+        <tr (click)="onSelect(m)"
+            (contextmenu)="onTargetContextMenu($event, m)"
+            (appTap)="onMemberActivate(m)"
+            [class.selected]="m.mid === selected?.mid">
+          @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+            @if (th.value.show) {
+              <td [style.width.%]="th.value.width"
+                  [class.text-align-center]="th.value.textCenter"
+                  class="{{th.value.class}}">
+                @switch (th.key) {
+                  @case ('name') {
+                    <div class="d-flex align-items-center avatar">
+                      @if (m.isUser) {
+                        <img class="avatar-img" [src]="m.avatarUrl" alt="">
+                      } @else {
+                        <span class="{{m.isPersonalGroup ? 'circle-purple-icon' : 'circle-primary-icon'}}">
+                          <svg [lucideIcon]="icons.GROUPS"></svg>
+                        </span>
+                      }
+                      <div class="d-flex flex-column text-truncate">
+                        <span class="no-pointer-events" draggable="false">
+                          {{ m.name }}
+                          @if (m.isUser && m.isGroupManager) {
+                            <svg class="m-0" [lucideIcon]="icons.LucideKeyRound"></svg>
+                          }
+                        </span>
+                        <span class="no-pointer-events text-muted fs-xs" draggable="false">{{ m.description }}</span>
+                      </div>
+                    </div>
+                  }
+                  @case ('members') {
+                    @if (m.isGroup) {
+                      <app-badge-members [members]="m.counts"></app-badge-members>
+                    }
+                  }
+                  @case ('type') {
+                    @if (m.isUser && m.isGroupManager) {
+                      <span l10nTranslate>manager</span>
+                    } @else {
+                      <span l10nTranslate>{{ m.type }}</span>
+                    }
+                  }
+                  @case ('createdAndModified') {
+                    <span class="d-flex justify-content-center {{th.value.newly && m[th.value.newly] ? 'badge prop-newly-' + m[th.value.newly] : ''}}">
+                        <span class="d-flex flex-column fs-xs">
+                          <span>{{ m.createdAt | amDateFormat }}</span>
+                          @if (m.modifiedAt) {
+                            <span>{{ m.modifiedAt | amDateFormat }}</span>
+                          }
+                        </span>
+                    </span>
+                  }
+                }
+              </td>
+            }
+          }
+        </tr>
+      }
+    </tbody>
+  </table>
+</app-virtual-scroll>
+<!--End Table Files Content-->
+<!--Start Foot Content-->
+<div class="app-foot-menu">
+  <span class="mx-auto">{{ members.length }} {{ 'groups' | translate:locale.language }}</span>
+</div>
+<!--End Foot Content-->
+<!--Start Context Menu -->
+<context-menu #MainContextMenu>
+  @if (!!currentGroup && !personalGroupsView || !currentGroup && personalGroupsView) {
+    <ng-template (execute)="openDialog(true)" contextMenuItem>
+      <span l10nTranslate><svg [lucideIcon]="icons.LucidePlus"></svg>
+        {{ personalGroupsView ? 'Personal group' : 'Group' }}</span>
+    </ng-template>
+  }
+  @if (!!currentGroup) {
+    <ng-template (execute)="addUserToGroupDialog()" contextMenuItem>
+      <span l10nTranslate><svg [lucideIcon]="icons.LucideUserRoundPlus"></svg>Add members</span>
+    </ng-template>
+  }
+  <ng-template [divider]="true" contextMenuItem></ng-template>
+  <ng-template (execute)="refresh()" contextMenuItem>
+    <span l10nTranslate><svg [lucideIcon]="icons.LucideRotateCw"></svg>Refresh</span>
+  </ng-template>
+</context-menu>
+<context-menu #TargetContextMenu>
+  @if (selected) {
+    <ng-template (execute)="openDialog()" contextMenuItem>
+      <span l10nTranslate><svg [lucideIcon]="icons.LucidePencil"></svg>
+        {{ selected.isGroup ? 'Edit group' : 'Edit user' }}</span>
+    </ng-template>
+    @if (selected.isGroup) {
+      <ng-template (execute)="openDialog(false, true)" contextMenuItem>
+        <span l10nTranslate><svg [lucideIcon]="icons.LucideTrash"></svg>Delete group</span>
+      </ng-template>
+    } @else {
+      <ng-template (execute)="openDialog(false, true)" contextMenuItem>
+        <span l10nTranslate><svg [lucideIcon]="icons.LucideUserMinus"></svg>Remove from group</span>
+      </ng-template>
+    }
+  }
+</context-menu>
+<!--End Context Menu-->

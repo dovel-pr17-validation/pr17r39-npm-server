@@ -1,0 +1,964 @@
+import { toErrorMessage } from '../../../common/errors.js'
+import { Inject, Injectable, Logger } from '@nestjs/common'
+import { and, countDistinct, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, notInArray, or, SQL, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/mysql-core'
+import { MySql2PreparedQuery, MySqlQueryResult } from 'drizzle-orm/mysql2'
+import { CACHE_AUTH_WEBDAV_PREFIX } from '../../../authentication/constants/cache.js'
+import { anonymizePassword, comparePassword, uniquePermissions } from '../../../common/functions.js'
+import { CacheDecorator } from '../../../infrastructure/cache/cache.decorator.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { configuration } from '../../../configuration/config.environment.js'
+import { DB_TOKEN_PROVIDER } from '../../../infrastructure/database/constants.js'
+import { type DBSchema } from '../../../infrastructure/database/interfaces/database.interface.js'
+import {
+  concatDistinctObjectsInArray,
+  convertToSelect,
+  dateTimeUTC,
+  dbCheckAffectedRows,
+  dbGetInsertedId,
+  dbParseJson
+} from '../../../infrastructure/database/utils.js'
+import { GROUP_TYPE, GROUP_VISIBILITY } from '../constants/group.js'
+import { MEMBER_TYPE } from '../constants/member.js'
+import { USER_GROUP_ROLE, USER_MAX_PASSWORD_ATTEMPTS, USER_ONLINE_STATUS, USER_PERMS_SEP, USER_ROLE } from '../constants/user.js'
+import type { UserCreateOrUpdateGroupDto } from '../dto/create-or-update-group.dto.js'
+import type { CreateUserDto } from '../dto/create-or-update-user.dto.js'
+import type { ValidatedSearchMembersDto } from '../dto/search-members.dto.js'
+import { GroupMember, GroupWithMembers } from '../interfaces/group-member.js'
+import { GuestUser } from '../interfaces/guest-user.interface.js'
+import { Member } from '../interfaces/member.interface.js'
+import type { UserAccessUpdateResult } from '../interfaces/user-access-update-result.interface.js'
+import type { UserPreferences } from '../interfaces/user-preferences.interface.js'
+import { UserSecrets } from '../interfaces/user-secrets.interface.js'
+import { UserOnline } from '../interfaces/websocket.interface.js'
+import { UserModel } from '../models/user.model.js'
+import type { Group } from '../schemas/group.interface.js'
+import { groups } from '../schemas/groups.schema.js'
+import type { UserGroup } from '../schemas/user-group.interface.js'
+import type { User } from '../schemas/user.interface.js'
+import { usersGroups } from '../schemas/users-groups.schema.js'
+import { usersGuests } from '../schemas/users-guests.schema.js'
+import { userFullNameSQL, users } from '../schemas/users.schema.js'
+import { normalizeUserPreferences } from '../utils/user.js'
+
+@Injectable()
+export class UsersQueries {
+  private readonly logger = new Logger(UsersQueries.name)
+  private fromExternalIdOrEmailPermissionsQuery: MySql2PreparedQuery<any> | null = null
+  private fromLoginOrEmailPermissionsQuery: MySql2PreparedQuery<any> | null = null
+  private fromIdPermissionsQuery: MySql2PreparedQuery<any> | null = null
+
+  constructor(
+    @Inject(DB_TOKEN_PROVIDER) private readonly db: DBSchema,
+    private readonly cache: Cache
+  ) {}
+
+  checkUserExists(login?: string | null, email?: string | null): Promise<{ login?: string; email?: string } | undefined> {
+    if (!login && !email) {
+      throw new Error('login or email must be specified')
+    }
+    const columns: { login?: boolean; email?: boolean } = {}
+    const where: SQL[] = []
+    if (login) {
+      columns.login = true
+      where.push(eq(users.login, login))
+    }
+    if (email) {
+      columns.email = true
+      where.push(eq(users.email, email))
+    }
+    const operator = login && email ? or : and
+    return this.db.query.users.findFirst({
+      columns: columns,
+      where: operator(...where)
+    })
+  }
+
+  setOnlineStatus(userId: number, onlineStatus: USER_ONLINE_STATUS): Promise<boolean> {
+    return this.updateUserOrGuest(userId, { onlineStatus: onlineStatus })
+  }
+
+  getOnlineUsers(userIds: number[]): Promise<UserOnline[]> {
+    return this.db
+      .select({
+        id: users.id,
+        login: users.login,
+        email: users.email,
+        fullName: userFullNameSQL(users),
+        onlineStatus: users.onlineStatus
+      } satisfies Record<keyof UserOnline, any>)
+      .from(users)
+      .where(inArray(users.id, userIds))
+  }
+
+  async checkGroupNameExists(groupName: string): Promise<boolean> {
+    const [group] = await this.db.select({ name: groups.name }).from(groups).where(eq(groups.name, groupName)).limit(1)
+    return !!group?.name
+  }
+
+  async compareUserPassword(userId: number, password: string): Promise<boolean> {
+    const [hash] = await this.selectUsers(['password'], [eq(users.id, userId)])
+    return comparePassword(password, hash?.password)
+  }
+
+  async from(userId?: number | null, loginOrEmail?: string): Promise<User | null> {
+    // retrieve user with application permissions
+    let pQuery = userId ? this.fromIdPermissionsQuery : this.fromLoginOrEmailPermissionsQuery
+    if (!pQuery) {
+      const where = userId
+        ? eq(users.id, sql.placeholder('userId'))
+        : and(
+            lte(users.role, USER_ROLE.GUEST),
+            or(eq(users.login, sql.placeholder('loginOrEmail')), eq(users.email, sql.placeholder('loginOrEmail')))
+          )
+      pQuery = this.db
+        .select({
+          user: users,
+          groupsPermissions: sql`GROUP_CONCAT(DISTINCT (${groups.permissions}) SEPARATOR ${USER_PERMS_SEP})`
+        })
+        .from(users)
+        .leftJoin(usersGroups, eq(usersGroups.userId, users.id))
+        .leftJoin(groups, and(eq(groups.id, usersGroups.groupId), ne(groups.permissions, '')))
+        .where(where)
+        .groupBy(users.id)
+        .limit(1)
+        .prepare()
+      if (userId) {
+        this.fromIdPermissionsQuery = pQuery
+      } else {
+        this.fromLoginOrEmailPermissionsQuery = pQuery
+      }
+    }
+    const r = await pQuery.execute(userId ? { userId } : { loginOrEmail: loginOrEmail?.trim() })
+    if (!r.length) return null
+    const [user, groupsPermissions] = [r[0].user, r[0].groupsPermissions]
+    // merge user and groups permissions
+    user.permissions = uniquePermissions(`${user.permissions},${groupsPermissions}`, USER_PERMS_SEP)
+    return user
+  }
+
+  async fromExternalIdOrEmail(externalId: string, email: string): Promise<User | null> {
+    if (!this.fromExternalIdOrEmailPermissionsQuery) {
+      const externalIdPlaceholder = sql.placeholder('externalId')
+      const emailPlaceholder = sql.placeholder('email')
+      this.fromExternalIdOrEmailPermissionsQuery = this.db
+        .select({
+          user: users,
+          groupsPermissions: sql`GROUP_CONCAT(DISTINCT (${groups.permissions}) SEPARATOR ${USER_PERMS_SEP})`
+        })
+        .from(users)
+        .leftJoin(usersGroups, eq(usersGroups.userId, users.id))
+        .leftJoin(groups, and(eq(groups.id, usersGroups.groupId), ne(groups.permissions, '')))
+        .where(and(lte(users.role, USER_ROLE.GUEST), or(eq(users.externalId, externalIdPlaceholder), eq(users.email, emailPlaceholder))))
+        .groupBy(users.id)
+        .orderBy(desc(eq(users.externalId, externalIdPlaceholder)))
+        .limit(1)
+        .prepare()
+    }
+    const r = await this.fromExternalIdOrEmailPermissionsQuery.execute({ externalId, email })
+    if (!r.length) return null
+    const [user, groupsPermissions] = [r[0].user, r[0].groupsPermissions]
+    user.permissions = uniquePermissions(`${user.permissions},${groupsPermissions}`, USER_PERMS_SEP)
+    return user
+  }
+
+  async getUserSecrets(userId: number): Promise<UserSecrets> {
+    const [r] = await this.db.select({ secrets: users.secrets }).from(users).where(eq(users.id, userId)).limit(1)
+    return r!.secrets || {}
+  }
+
+  async mutateUserSecrets<T>(userId: number, mutate: (secrets: UserSecrets) => { result: T; secrets?: UserSecrets }): Promise<T> {
+    // Every secrets writer must use the latest document while holding the same row lock.
+    return this.db.transaction(async (tx) => {
+      const [user] = await tx.select({ secrets: users.secrets }).from(users).where(eq(users.id, userId)).limit(1).for('update')
+      if (!user) {
+        throw new Error(`User (${userId}) not found`)
+      }
+      const mutation = mutate(user.secrets || {})
+      if (mutation.secrets !== undefined) {
+        dbCheckAffectedRows(await tx.update(users).set({ secrets: mutation.secrets }).where(eq(users.id, userId)), 1)
+      }
+      return mutation.result
+    })
+  }
+
+  async updateUserPreferences(userId: number, patch: Partial<UserPreferences>): Promise<UserPreferences> {
+    return this.db.transaction(async (tx) => {
+      const [user] = await tx.select({ preferences: users.preferences }).from(users).where(eq(users.id, userId)).limit(1).for('update')
+      if (!user) {
+        throw new Error(`User (${userId}) not found`)
+      }
+      const currentPreferences = normalizeUserPreferences(user.preferences)
+      const preferences = { ...currentPreferences, ...patch }
+      if (
+        preferences.theme === currentPreferences.theme &&
+        preferences.editor === currentPreferences.editor &&
+        preferences.showHiddenFiles === currentPreferences.showHiddenFiles &&
+        preferences.singleClickNavigation === currentPreferences.singleClickNavigation &&
+        preferences.useSystemNotifications === currentPreferences.useSystemNotifications &&
+        preferences.sidebarQuickAccessVisibility === currentPreferences.sidebarQuickAccessVisibility &&
+        preferences.sidebarQuickAccessPosition === currentPreferences.sidebarQuickAccessPosition
+      ) {
+        return currentPreferences
+      }
+      dbCheckAffectedRows(await tx.update(users).set({ preferences }).where(eq(users.id, userId)), 1)
+      return preferences
+    })
+  }
+
+  selectUsers<K extends keyof User>(fields: readonly K[], where: SQL[]): Promise<Pick<User, K>[]> {
+    const select = convertToSelect(users, fields)
+    return this.db
+      .select(select)
+      .from(users)
+      .where(and(...where)) as Promise<Pick<User, K>[]>
+  }
+
+  async usersHaveRole(userIds: number[], role: USER_ROLE): Promise<boolean> {
+    const uniqueUserIds = [...new Set(userIds)]
+    if (!uniqueUserIds.length) return true
+    const matchingUsers = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(inArray(users.id, uniqueUserIds), lte(users.role, role)))
+    return matchingUsers.length === uniqueUserIds.length
+  }
+
+  async selectUserProperties<K extends keyof User>(userId: number, fields: readonly K[]): Promise<Pick<User, K> | undefined> {
+    const select = convertToSelect(users, fields)
+    const [user] = (await this.db.select(select).from(users).where(eq(users.id, userId)).limit(1)) as Pick<User, K>[]
+    return user
+  }
+
+  async createUserOrGuest(createUserDto: CreateUserDto, userRole: USER_ROLE): Promise<User['id']> {
+    const userId: number = dbGetInsertedId(await this.db.insert(users).values({ ...createUserDto, role: userRole } as User))
+    if (createUserDto.groups?.length) {
+      await this.db.insert(usersGroups).values(createUserDto.groups.map((gid: number) => ({ userId: userId, groupId: gid })))
+    }
+    if (userRole === USER_ROLE.GUEST && createUserDto.managers?.length) {
+      await this.db.insert(usersGuests).values(createUserDto.managers.map((uid: number) => ({ guestId: userId, userId: uid })))
+    }
+    return userId
+  }
+
+  async updateUserOrGuest(userId: number, set: Partial<Record<Exclude<keyof User, 'secrets'>, any>>, userRole?: USER_ROLE): Promise<boolean> {
+    try {
+      dbCheckAffectedRows(
+        await this.db
+          .update(users)
+          .set({ ...set, ...(userRole && { role: userRole }) } as User)
+          .where(eq(users.id, userId)),
+        1
+      )
+      this.logger.verbose({ tag: this.updateUserOrGuest.name, msg: `user (${userId}) was updated : ${JSON.stringify(anonymizePassword(set))}` })
+      if (['login', 'email', 'password', 'isActive', 'role', 'permissions'].some((field) => field in set)) {
+        await this.clearWebDAVAuthCache(userId)
+      }
+      return true
+    } catch (e) {
+      this.logger.error({
+        tag: this.updateUserOrGuest.name,
+        msg: `user (${userId}) was not updated : ${JSON.stringify(anonymizePassword(set))} : ${toErrorMessage(e)}`
+      })
+      return false
+    }
+  }
+
+  async bindExternalId(userId: number, externalId: string): Promise<boolean> {
+    try {
+      const isBound = await this.db.transaction(async (tx) => {
+        const [user]: Pick<User, 'externalId'>[] = await tx
+          .select({ externalId: users.externalId })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1)
+          .for('update')
+
+        if (!user) {
+          return false
+        }
+
+        if (user.externalId !== null) {
+          return user.externalId === externalId
+        }
+
+        dbCheckAffectedRows(
+          await tx
+            .update(users)
+            .set({ externalId })
+            .where(and(eq(users.id, userId), isNull(users.externalId))),
+          1
+        )
+        return true
+      })
+
+      if (isBound) {
+        this.logger.verbose({ tag: this.bindExternalId.name, msg: `external identity was bound to user (${userId})` })
+      } else {
+        this.logger.warn({ tag: this.bindExternalId.name, msg: `external identity binding was rejected for user (${userId})` })
+      }
+      return isBound
+    } catch (e) {
+      this.logger.error({ tag: this.bindExternalId.name, msg: `external identity was not bound to user (${userId}) : ${toErrorMessage(e)}` })
+      return false
+    }
+  }
+
+  async updateAccesses(userId: number, ip: string | null, attemptsAction: 'preserve' | 'reset' | 'increment'): Promise<UserAccessUpdateResult> {
+    const passwordAttemptsUpdate =
+      attemptsAction === 'reset'
+        ? sql`, ${sql.identifier(users.passwordAttempts.name)} = ${sql.param(0, users.passwordAttempts)}`
+        : attemptsAction === 'increment'
+          ? sql`, ${sql.identifier(users.passwordAttempts.name)} = LEAST(${users.passwordAttempts} + 1, ${USER_MAX_PASSWORD_ATTEMPTS})`
+          : sql``
+    const updateAccessesQuery = () => sql`
+      UPDATE ${users}
+      SET ${sql.identifier(users.lastAccess.name)}    = ${users.currentAccess},
+          ${sql.identifier(users.currentAccess.name)} = ${sql.param(new Date(), users.currentAccess)},
+          ${sql.identifier(users.lastIp.name)}        = ${users.currentIp},
+          ${sql.identifier(users.currentIp.name)}     = ${sql.param(ip, users.currentIp)} ${passwordAttemptsUpdate}
+      WHERE ${users.id} = ${userId}
+    `
+    try {
+      // Drizzle orders UPDATE assignments by schema order.
+      // Keep each previous value assignment first because MariaDB evaluates them left-to-right.
+      let temporaryLockStarted = false
+      if (attemptsAction === 'increment') {
+        // Serialize failures so only one request can report the transition to a temporary lock.
+        temporaryLockStarted = await this.db.transaction(async (tx) => {
+          const [user]: Pick<User, 'passwordAttempts'>[] = await tx
+            .select({ passwordAttempts: users.passwordAttempts })
+            .from(users)
+            .where(eq(users.id, userId))
+            .limit(1)
+            .for('update')
+          if (!user) {
+            throw new Error(`User (${userId}) not found`)
+          }
+          const currentPasswordAttempts = user.passwordAttempts ?? 0
+          if (currentPasswordAttempts >= USER_MAX_PASSWORD_ATTEMPTS) {
+            // Do not move currentAccess: it is also the start of the temporary lock period.
+            return false
+          }
+          dbCheckAffectedRows(await tx.execute(updateAccessesQuery()), 1)
+          return currentPasswordAttempts + 1 >= USER_MAX_PASSWORD_ATTEMPTS
+        })
+      } else {
+        dbCheckAffectedRows(await this.db.execute(updateAccessesQuery()), 1)
+      }
+      this.logger.verbose({ tag: this.updateAccesses.name, msg: `accesses for user (${userId}) were updated` })
+      return { success: true, temporaryLockStarted }
+    } catch (e) {
+      this.logger.error({ tag: this.updateAccesses.name, msg: `accesses for user (${userId}) were not updated : ${toErrorMessage(e)}` })
+      return { success: false, temporaryLockStarted: false }
+    }
+  }
+
+  async resetExpiredPasswordAttempts(userId: number, expiredBefore: Date): Promise<boolean> {
+    try {
+      // The conditional update lets concurrent requests release an expired lock without resetting newer failures.
+      const result = await this.db
+        .update(users)
+        .set({ passwordAttempts: 0 })
+        .where(
+          and(
+            eq(users.id, userId),
+            gte(users.passwordAttempts, USER_MAX_PASSWORD_ATTEMPTS),
+            or(isNull(users.currentAccess), lte(users.currentAccess, expiredBefore))
+          )
+        )
+      if (!dbCheckAffectedRows(result, 1, false)) {
+        this.logger.warn({ tag: this.resetExpiredPasswordAttempts.name, msg: `expired password lock for user (${userId}) was not released` })
+        return false
+      }
+      this.logger.verbose({ tag: this.resetExpiredPasswordAttempts.name, msg: `expired password lock for user (${userId}) was released` })
+      return true
+    } catch (e) {
+      this.logger.error({
+        tag: this.resetExpiredPasswordAttempts.name,
+        msg: `expired password lock for user (${userId}) was not released : ${toErrorMessage(e)}`
+      })
+      return false
+    }
+  }
+
+  async deleteGuestLink(userId: number): Promise<void> {
+    dbCheckAffectedRows(await this.db.delete(users).where(and(eq(users.id, userId), eq(users.role, USER_ROLE.LINK))), 1)
+  }
+
+  async searchUsersOrGroups(searchMembersDto: ValidatedSearchMembersDto, userId?: number): Promise<Member[]> {
+    // `userId` is required for user routes to avoid searching across all users and groups
+    const limit = searchMembersDto.onlyUsers || searchMembersDto.onlyGroups ? 6 : 3
+    const members: Member[] = []
+    if (!searchMembersDto.onlyGroups) {
+      for (const u of await this.searchUsers(searchMembersDto, userId, limit)) {
+        members.push({
+          id: u.id,
+          login: u.login,
+          name: u.fullName,
+          description: u.email,
+          type: u.role === USER_ROLE.GUEST ? MEMBER_TYPE.GUEST : MEMBER_TYPE.USER,
+          permissions: searchMembersDto.withPermissions ? u.permissions : undefined
+        })
+      }
+    }
+    if (!searchMembersDto.onlyUsers) {
+      for (const g of await this.searchGroups(searchMembersDto, userId, limit)) {
+        members.push({
+          id: g.id,
+          name: g.name,
+          description: g.description,
+          type: g.type === GROUP_TYPE.USER ? MEMBER_TYPE.GROUP : MEMBER_TYPE.PGROUP,
+          permissions: searchMembersDto.withPermissions ? g.permissions : undefined
+        })
+      }
+    }
+    return members
+  }
+
+  async groupFromName(userId: number, name: string): Promise<(Pick<Group, 'id' | 'name' | 'type'> & { role: UserGroup['role'] }) | undefined> {
+    const [group] = await this.db
+      .select({
+        id: groups.id,
+        name: groups.name,
+        type: groups.type,
+        role: usersGroups.role
+      } satisfies Partial<Record<keyof Group, any>> & { role: any })
+      .from(usersGroups)
+      .innerJoin(groups, eq(groups.id, usersGroups.groupId))
+      .where(and(eq(usersGroups.userId, userId), eq(groups.name, name)))
+      .limit(1)
+    return group
+  }
+
+  async browseRootGroups(userId: number): Promise<Member[]> {
+    const members = alias(usersGroups, 'members')
+    return this.db
+      .select({
+        id: groups.id,
+        name: groups.name,
+        description: groups.description,
+        createdAt: groups.createdAt,
+        modifiedAt: groups.modifiedAt,
+        type: sql<MEMBER_TYPE>`IF(${groups.type} = ${GROUP_TYPE.USER}, ${MEMBER_TYPE.GROUP}, ${MEMBER_TYPE.PGROUP})`,
+        groupRole: sql<USER_GROUP_ROLE>`${usersGroups.role}`,
+        counts: { users: countDistinct(members.userId) }
+      } satisfies { [K in keyof Member]: any })
+      .from(usersGroups)
+      .innerJoin(groups, and(eq(groups.id, usersGroups.groupId), eq(usersGroups.userId, userId)))
+      .leftJoin(members, eq(members.groupId, groups.id))
+      .groupBy(groups.id)
+  }
+
+  browseGroupMembers(groupId: number): Promise<Member[]> {
+    return this.db
+      .select({
+        id: users.id,
+        login: users.login,
+        name: userFullNameSQL(users).as('name'),
+        description: users.email,
+        createdAt: usersGroups.createdAt,
+        type: sql<MEMBER_TYPE>`IF(${users.role} = ${USER_ROLE.GUEST}, ${MEMBER_TYPE.GUEST}, ${MEMBER_TYPE.USER})`,
+        groupRole: sql<USER_GROUP_ROLE>`${usersGroups.role}`
+      } satisfies { [K in keyof Member]: any })
+      .from(groups)
+      .innerJoin(usersGroups, and(eq(usersGroups.groupId, groups.id), eq(usersGroups.groupId, groupId)))
+      .leftJoin(users, eq(users.id, usersGroups.userId))
+      .groupBy(users.id) as Promise<Member[]>
+  }
+
+  async canDeletePersonalGroup(userId: number, groupId: number): Promise<boolean> {
+    const [group] = await this.db
+      .select({ id: usersGroups.groupId })
+      .from(usersGroups)
+      .innerJoin(groups, and(eq(groups.id, usersGroups.groupId)))
+      .where(
+        and(
+          eq(groups.type, GROUP_TYPE.PERSONAL),
+          eq(usersGroups.userId, userId),
+          eq(usersGroups.groupId, groupId),
+          eq(usersGroups.role, USER_GROUP_ROLE.MANAGER)
+        )
+      )
+      .limit(1)
+    return !!group?.id
+  }
+
+  async getGroup(userId: number, groupId: number, asAdmin = false): Promise<GroupMember | undefined> {
+    const [group] = await this.db
+      .select({
+        id: groups.id,
+        name: groups.name,
+        description: groups.description,
+        createdAt: groups.createdAt,
+        modifiedAt: groups.modifiedAt,
+        type: sql<MEMBER_TYPE>`IF(${groups.type} = ${GROUP_TYPE.USER}, ${MEMBER_TYPE.GROUP}, ${MEMBER_TYPE.PGROUP})`
+      })
+      .from(usersGroups)
+      .innerJoin(groups, and(eq(groups.id, usersGroups.groupId)))
+      .where(
+        and(
+          eq(usersGroups.groupId, groupId),
+          sql`IF(${+asAdmin} = 0, ${usersGroups.userId} = ${userId} AND ${usersGroups.role} = ${USER_GROUP_ROLE.MANAGER}, 1)`
+        )
+      )
+      .limit(1)
+    return group
+  }
+
+  async getGroupWithMembers(userId: number, groupId: number, asAdmin = false): Promise<GroupWithMembers | undefined> {
+    const usersGroupsAlias: any = alias(usersGroups, 'usersFromGroups')
+    const [group] = await this.db
+      .select({
+        id: groups.id,
+        name: groups.name,
+        description: groups.description,
+        createdAt: groups.createdAt,
+        modifiedAt: groups.modifiedAt,
+        type: sql<MEMBER_TYPE>`IF(${groups.type} = ${GROUP_TYPE.USER}, ${MEMBER_TYPE.GROUP}, ${MEMBER_TYPE.PGROUP})`,
+        members: concatDistinctObjectsInArray(users.id, {
+          id: users.id,
+          login: users.login,
+          name: userFullNameSQL(users),
+          description: users.email,
+          type: sql<MEMBER_TYPE>`IF(${users.role} = ${USER_ROLE.GUEST}, ${MEMBER_TYPE.GUEST}, ${MEMBER_TYPE.USER})`,
+          groupRole: usersGroupsAlias.role,
+          createdAt: dateTimeUTC(usersGroupsAlias.createdAt)
+        } satisfies { [K in keyof Member]: any })
+      } satisfies { [K in keyof GroupWithMembers]: any })
+      .from(usersGroups)
+      .innerJoin(groups, eq(groups.id, usersGroups.groupId))
+      .leftJoin(usersGroupsAlias, and(eq(usersGroupsAlias.groupId, groups.id)))
+      .leftJoin(users, eq(users.id, usersGroupsAlias.userId))
+      .where(
+        and(
+          eq(usersGroups.groupId, groupId),
+          sql`IF(${+asAdmin} = 0, ${usersGroups.userId} = ${userId} AND ${usersGroups.role} = ${USER_GROUP_ROLE.MANAGER}, 1)`
+        )
+      )
+      .groupBy(groups.id)
+      .limit(1)
+    return group
+  }
+
+  async deletePersonalGroup(groupId: number): Promise<boolean> {
+    return dbCheckAffectedRows(
+      await this.db
+        .delete(groups)
+        .where(and(eq(groups.id, groupId), eq(groups.type, GROUP_TYPE.PERSONAL)))
+        .limit(1),
+      1,
+      false
+    )
+  }
+
+  async createPersonalGroup(managerId: number, userCreateOrUpdateGroupDto: UserCreateOrUpdateGroupDto): Promise<Group['id']> {
+    const groupId: number = dbGetInsertedId(
+      await this.db.insert(groups).values({
+        ...userCreateOrUpdateGroupDto,
+        type: GROUP_TYPE.PERSONAL,
+        visibility: GROUP_VISIBILITY.PRIVATE
+      } as Group)
+    )
+    await this.db.insert(usersGroups).values({ userId: managerId, groupId: groupId, role: USER_GROUP_ROLE.MANAGER } as UserGroup)
+    return groupId
+  }
+
+  async updateGroup(groupId: number, set: Partial<Record<keyof Group, any>>) {
+    if (Object.keys(set).length) {
+      try {
+        await this.db.update(groups).set(set).where(eq(groups.id, groupId))
+        this.logger.log({ tag: this.updateGroup.name, msg: `group (${groupId}) was updated : ${JSON.stringify(set)}` })
+      } catch (e) {
+        this.logger.error({ tag: this.updateGroup.name, msg: `group (${groupId}) was not updated : ${JSON.stringify(set)} : ${toErrorMessage(e)}` })
+        throw new Error('Group was not updated', { cause: e })
+      }
+    }
+  }
+
+  async updateGroupMembers(
+    groupId: number,
+    members: {
+      add?: Pick<Member, 'id' | 'groupRole'>[]
+      remove?: UserGroup['userId'][]
+    }
+  ): Promise<void> {
+    if (members?.add?.length) {
+      try {
+        await this.db.insert(usersGroups).values(members.add.map((m) => ({ userId: m.id, groupId: groupId, role: m.groupRole })))
+        // clear cache
+        void this.clearWhiteListCaches(members.add.map((m) => m.id))
+        this.logger.log({
+          tag: this.updateGroupMembers.name,
+          msg: `users ${JSON.stringify(members.add.map((m) => m.id))} was added to group (${groupId})`
+        })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateGroupMembers.name,
+          msg: `users ${JSON.stringify(members.add.map((m) => m.id))} was not added to group (${groupId}) : ${toErrorMessage(e)}`
+        })
+        throw new Error('Group members was not added', { cause: e })
+      }
+    }
+    if (members?.remove?.length) {
+      try {
+        await this.db
+          .delete(usersGroups)
+          .where(and(eq(usersGroups.groupId, groupId), inArray(usersGroups.userId, members.remove)))
+          .limit(members.remove.length)
+        // clear cache
+        void this.clearWhiteListCaches(members.remove)
+        this.logger.log({ tag: this.updateGroupMembers.name, msg: `users ${JSON.stringify(members.remove)} was removed from group (${groupId})` })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateGroupMembers.name,
+          msg: `users ${JSON.stringify(members.remove)} was not removed from group (${groupId}) : ${toErrorMessage(e)}`
+        })
+        throw new Error('Group members was not removed', { cause: e })
+      }
+    }
+  }
+
+  async listGuests(guestId: null, managerId?: number | null, asAdmin?: boolean): Promise<GuestUser[]>
+  async listGuests(guestId: number, managerId?: number | null, asAdmin?: boolean): Promise<GuestUser | undefined>
+  async listGuests(guestId: number | null, managerId?: number | null, asAdmin = false): Promise<GuestUser | GuestUser[] | undefined> {
+    const where: SQL[] = [...(guestId ? [eq(usersGuests.guestId, guestId)] : []), ...(asAdmin ? [] : [eq(usersGuests.userId, managerId as number)])]
+    const managersGuestAlias: any = alias(usersGuests, 'managersGuestAlias')
+    const managersAlias: any = alias(users, 'managersAlias')
+    const q = this.db
+      .select({
+        id: users.id,
+        login: users.login,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        fullName: userFullNameSQL(users),
+        role: users.role,
+        isActive: users.isActive,
+        passwordAttempts: users.passwordAttempts,
+        language: users.language,
+        notification: users.notification,
+        currentAccess: users.currentAccess,
+        lastAccess: users.lastAccess,
+        currentIp: users.currentIp,
+        lastIp: users.lastIp,
+        createdAt: users.createdAt,
+        managers: concatDistinctObjectsInArray(managersAlias.id, {
+          id: managersAlias.id,
+          login: managersAlias.login,
+          name: userFullNameSQL(managersAlias),
+          type: sql`${MEMBER_TYPE.USER}`,
+          description: managersAlias.email,
+          createdAt: dateTimeUTC(managersGuestAlias.createdAt)
+        } satisfies { [K in keyof Member]: any }),
+        ...(guestId && {
+          groups: concatDistinctObjectsInArray(groups.id, {
+            id: groups.id,
+            name: groups.name,
+            description: groups.description,
+            type: sql`${MEMBER_TYPE.PGROUP}`,
+            permissions: groups.permissions,
+            createdAt: dateTimeUTC(usersGroups.createdAt)
+          } satisfies { [K in keyof Member]: any })
+        })
+      } satisfies { [K in keyof GuestUser]: any })
+      .from(usersGuests)
+    q.innerJoin(users, and(eq(users.id, usersGuests.guestId), eq(users.role, USER_ROLE.GUEST)))
+    q.leftJoin(managersGuestAlias, eq(managersGuestAlias.guestId, users.id))
+    q.leftJoin(managersAlias, eq(managersAlias.id, managersGuestAlias.userId))
+    if (guestId) {
+      q.leftJoin(usersGroups, eq(usersGroups.userId, users.id))
+      q.leftJoin(groups, and(eq(groups.id, usersGroups.groupId), eq(groups.type, GROUP_TYPE.PERSONAL)))
+    }
+    q.where(and(...where))
+    q.groupBy(users.id)
+    if (guestId) q.limit(1)
+    const guests = await q
+    if (!guestId) return guests as GuestUser[]
+    return guests[0]
+  }
+
+  async isGuestManager(managerId: number, guestId: number): Promise<{ id: number; login: string } | undefined> {
+    const [guest] = await this.db
+      .select({ id: usersGuests.guestId, login: users.login })
+      .from(usersGuests)
+      .innerJoin(users, eq(users.id, usersGuests.guestId))
+      .where(and(eq(usersGuests.userId, managerId), eq(usersGuests.guestId, guestId), eq(users.role, USER_ROLE.GUEST)))
+      .limit(1)
+    return guest
+  }
+
+  @CacheDecorator(1800)
+  async usersWhitelist(userId: number, lowerOrEqualUserRole: USER_ROLE = USER_ROLE.GUEST): Promise<number[]> {
+    /* Get the list of user ids allowed to the current user
+       - the current user, when their role is lower than or equal to lowerOrEqualUserRole
+       - users with no groups only when applications.users.showUngroupedUsers = true
+         (guest accounts are excluded from this global branch, and guest requesters never get this branch)
+         (also excludes users with a role higher than lowerOrEqualUserRole)
+       - all users who are members of groups visible to the current user
+         (VISIBLE groups for everyone, PRIVATE groups only if the current user is a member, never members of ISOLATED groups)
+       - all guests managed by the current user
+       - all managers who manage the current guest
+    */
+    if (await this.isGuestLink(userId)) {
+      // Guest-link accounts must never receive a user whitelist
+      return []
+    }
+    const showUngroupedUsers = +configuration.applications.users.showUngroupedUsers
+    const userIds = sql`
+    WITH visible_groups AS (
+      SELECT ${groups.id} AS id
+      FROM ${groups}
+      LEFT JOIN ${usersGroups}
+        ON ${usersGroups.groupId} = ${groups.id}
+       AND ${usersGroups.userId} = ${userId}
+      WHERE
+        ${groups.visibility} != ${GROUP_VISIBILITY.ISOLATED}
+        AND (
+          ${groups.visibility} = ${GROUP_VISIBILITY.VISIBLE}
+          OR (
+            ${groups.visibility} = ${GROUP_VISIBILITY.PRIVATE}
+            AND ${usersGroups.userId} IS NOT NULL
+          )
+        )
+    )
+    SELECT JSON_ARRAYAGG(id) AS ids
+    FROM (
+      -- 0) Current user
+      SELECT ${users.id} AS id
+      FROM ${users}
+      WHERE ${users.id} = ${userId}
+        AND ${users.role} <= ${lowerOrEqualUserRole}
+
+      UNION
+
+      -- 1) Users from groups visible to the current user
+      SELECT ${users.id} AS id
+      FROM ${users}
+      INNER JOIN ${usersGroups}
+        ON ${usersGroups.userId} = ${users.id}
+      INNER JOIN visible_groups
+        ON visible_groups.id = ${usersGroups.groupId}
+      WHERE ${users.role} <= ${lowerOrEqualUserRole}
+
+      UNION
+
+      -- 2) Users with no groups
+      SELECT ${users.id} AS id
+      FROM ${users}
+      WHERE
+        ${showUngroupedUsers} = 1
+        AND
+        ${users.role} <= ${lowerOrEqualUserRole}
+        -- Guests without (personal) groups are not globally visible.
+        -- They are allowed only through part 1 (shared visible group) or part 3 (manager relation).
+        AND ${users.role} != ${USER_ROLE.GUEST}
+        -- Guests must not see all users without groups:
+        -- this branch is enabled only for non-guest requesters.
+        AND EXISTS (
+          SELECT 1
+          FROM ${users}
+          WHERE ${users.id} = ${userId}
+            AND ${users.role} != ${USER_ROLE.GUEST}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${usersGroups}
+          WHERE ${usersGroups.userId} = ${users.id}
+        )
+
+      UNION
+
+      -- 3) Guests managed by the user and managers of the current guest
+      SELECT CASE
+               WHEN ${usersGuests.userId} = ${userId} THEN ${usersGuests.guestId}
+               WHEN ${usersGuests.guestId} = ${userId} THEN ${usersGuests.userId}
+             END AS id
+      FROM ${usersGuests}
+      WHERE ${usersGuests.userId} = ${userId}
+         OR ${usersGuests.guestId} = ${userId}
+    ) AS usersUnion
+  `
+    const [r] = (await this.db.execute(userIds)) as unknown as [{ ids: unknown }[], unknown]
+    return dbParseJson(r[0]!.ids) || []
+  }
+
+  @CacheDecorator(1800)
+  async groupsWhitelist(userId: number, groupType?: GROUP_TYPE, userGroupRole?: USER_GROUP_ROLE): Promise<number[]> {
+    /* Get the list of group IDs the current user is allowed to see.
+       - A group marked VISIBLE is always included.
+       - A group marked ISOLATED is always excluded.
+       - A PRIVATE group is included only if the user is a direct member of it.
+       - Visibility does not inherit from parent or child groups.
+    */
+    if (await this.isGuestLink(userId)) {
+      // Guest-link accounts must never receive a group whitelist
+      return []
+    }
+    const optionalFilters: SQL[] = [
+      ...(groupType != null ? [eq(groups.type, groupType)] : []),
+      ...(userGroupRole != null ? [eq(usersGroups.role, userGroupRole)] : [])
+    ]
+    const q = this.db
+      .select({ id: sql`JSON_ARRAYAGG(${groups.id}) as ids` })
+      .from(groups)
+      .leftJoin(usersGroups, and(eq(usersGroups.groupId, groups.id), eq(usersGroups.userId, userId)))
+      .where(
+        and(
+          ...optionalFilters,
+          ne(groups.visibility, GROUP_VISIBILITY.ISOLATED),
+          or(eq(groups.visibility, GROUP_VISIBILITY.VISIBLE), and(eq(groups.visibility, GROUP_VISIBILITY.PRIVATE), isNotNull(usersGroups.userId)))
+        )
+      )
+    const [r] = (await this.db.execute(q)) as unknown as [{ ids: unknown }[], unknown]
+    return dbParseJson(r[0]!.ids) || []
+  }
+
+  async clearWhiteListCaches(userIds: number[] | '*'): Promise<void> {
+    try {
+      // '*' -> Means all entries
+      const whitelists = [this.usersWhitelist.name, this.groupsWhitelist.name]
+      const keysToDelete: string[] = []
+      if (userIds === '*') {
+        const patterns = whitelists.map((whitelist) => this.cache.genSlugKey(this.constructor.name, whitelist, userIds))
+        for (const pattern of patterns) {
+          keysToDelete.push(...(await this.cache.keys(pattern)))
+        }
+      } else {
+        // exact keys for 1-arg cache calls
+        keysToDelete.push(...whitelists.flatMap((whitelist) => userIds.map((id) => this.cache.genSlugKey(this.constructor.name, whitelist, id))))
+        // dynamic keys for optional-args cache calls
+        const patterns = whitelists.flatMap((whitelist) => userIds.map((id) => this.cache.genSlugKey(this.constructor.name, whitelist, id, '*')))
+        for (const pattern of patterns) {
+          keysToDelete.push(...(await this.cache.keys(pattern)))
+        }
+      }
+      this.logger.verbose({ tag: this.clearWhiteListCaches.name, msg: JSON.stringify(keysToDelete) })
+      await this.cache.mdel(keysToDelete)
+    } catch (e) {
+      this.logger.error({ tag: this.clearWhiteListCaches.name, msg: toErrorMessage(e) })
+    }
+  }
+
+  async clearWebDAVAuthCache(userIds: number | number[]): Promise<void> {
+    try {
+      const targetUserIds = new Set(Array.isArray(userIds) ? userIds : [userIds])
+      if (!targetUserIds.size) return
+      // Cache keys use a credential HMAC and cannot be rebuilt from the stored password hashes.
+      // Inspect cached values and remove every positive WebDAV authentication entry for the targeted users.
+      const keys = await this.cache.keys(`${CACHE_AUTH_WEBDAV_PREFIX}-*`)
+      const keysToDelete: string[] = []
+      for (const key of keys) {
+        const cachedUser: null | undefined | Partial<UserModel> = await this.cache.get(key)
+        if (cachedUser?.id !== undefined && targetUserIds.has(cachedUser.id)) {
+          keysToDelete.push(key)
+        }
+      }
+      if (keysToDelete.length) {
+        await this.cache.mdel(keysToDelete)
+      }
+    } catch (e) {
+      this.logger.error({ tag: this.clearWebDAVAuthCache.name, msg: toErrorMessage(e) })
+    }
+  }
+
+  async allUserIdsFromGroupsAndSubGroups(groupIds: number[]): Promise<number[]> {
+    if (!groupIds.length) return []
+    const subGroup: any = alias(groups, 'subGroup')
+    const withChildren: any = sql`
+      WITH RECURSIVE child (id, parentId) AS
+                       (SELECT ${groups.id}, ${groups.parentId}
+                        FROM ${groups}
+                        WHERE ${inArray(groups.id, groupIds)}
+                        UNION
+                        SELECT ${subGroup.id},
+                               ${subGroup.parentId}
+                        FROM ${groups} AS subGroup
+                               INNER JOIN child AS cs ON ${subGroup.parentId} = cs.id)
+      SELECT DISTINCT ${usersGroups.userId} as userId
+      FROM child
+             INNER JOIN ${usersGroups} ON child.id = ${usersGroups.groupId}
+    `
+    const [r]: { userId: number }[][] = (await this.db.execute(withChildren)) as MySqlQueryResult
+    return r.map(({ userId }) => userId)
+  }
+
+  private async isGuestLink(userId: number): Promise<boolean> {
+    const [user] = await this.db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1)
+    return !user || user.role === USER_ROLE.LINK
+  }
+
+  private async searchGroups(
+    searchMembersDto: ValidatedSearchMembersDto,
+    userId?: number,
+    limit = 3
+  ): Promise<Pick<Group, 'id' | 'name' | 'description' | 'type' | 'permissions'>[]> {
+    /* Search for groups */
+    const where: SQL[] = [or(like(groups.name, `%${searchMembersDto.search}%`), like(groups.description, `%${searchMembersDto.search}%`))!]
+    if (userId) {
+      const userRole = searchMembersDto.isGroupManager ? USER_GROUP_ROLE.MANAGER : undefined
+      let idsWhitelist: number[] = await this.groupsWhitelist(userId, undefined, userRole)
+      if (searchMembersDto.ignoreGroupIds?.length) {
+        idsWhitelist = idsWhitelist.filter((id) => searchMembersDto.ignoreGroupIds!.indexOf(id) === -1)
+      }
+      where.unshift(inArray(groups.id, idsWhitelist))
+    } else if (searchMembersDto.ignoreGroupIds?.length) {
+      where.unshift(notInArray(groups.id, searchMembersDto.ignoreGroupIds))
+    }
+
+    if (searchMembersDto.excludePersonalGroups) {
+      where.unshift(eq(groups.type, GROUP_TYPE.USER))
+    } else if (searchMembersDto.onlyPersonalGroups) {
+      where.unshift(eq(groups.type, GROUP_TYPE.PERSONAL))
+    }
+
+    return this.db
+      .select({ id: groups.id, name: groups.name, description: groups.description, type: groups.type, permissions: groups.permissions })
+      .from(groups)
+      .where(and(...where))
+      .limit(limit)
+  }
+
+  private async searchUsers(
+    searchMembersDto: ValidatedSearchMembersDto,
+    userId?: number,
+    limit = 3
+  ): Promise<Pick<UserModel, 'id' | 'login' | 'email' | 'fullName' | 'role' | 'permissions'>[]> {
+    /* Search for users */
+    const where: SQL[] = [
+      ne(users.role, USER_ROLE.LINK),
+      or(like(sql`CONCAT_WS('-', ${users.login}, ${users.email}, ${users.firstName}, ${users.lastName})`, `%${searchMembersDto.search}%`))!
+    ]
+    if (userId) {
+      let idsWhitelist: number[] = await this.usersWhitelist(userId)
+      if (searchMembersDto.ignoreUserIds?.length) {
+        idsWhitelist = idsWhitelist.filter((id) => searchMembersDto.ignoreUserIds!.indexOf(id) === -1)
+      }
+      where.unshift(inArray(users.id, idsWhitelist))
+    } else {
+      if (searchMembersDto.ignoreUserIds?.length) {
+        where.unshift(notInArray(users.id, searchMembersDto.ignoreUserIds))
+      }
+    }
+    if (typeof searchMembersDto.usersRole !== 'undefined') {
+      if (searchMembersDto.usersRole === USER_ROLE.USER) {
+        // allow admin users
+        where.unshift(lte(users.role, searchMembersDto.usersRole as USER_ROLE))
+      } else {
+        where.unshift(eq(users.role, searchMembersDto.usersRole as USER_ROLE))
+      }
+    }
+    return this.db
+      .select({
+        id: users.id,
+        login: users.login,
+        email: users.email,
+        fullName: userFullNameSQL(users),
+        role: users.role,
+        permissions: users.permissions
+      })
+      .from(users)
+      .where(and(...where))
+      .limit(limit)
+  }
+}

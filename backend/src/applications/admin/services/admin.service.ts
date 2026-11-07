@@ -1,0 +1,79 @@
+import { toErrorMessage } from '../../../common/errors.js'
+import { HttpService } from '@nestjs/axios'
+import { Injectable, Logger } from '@nestjs/common'
+import type { AxiosResponse } from 'axios'
+import { VERSION } from '../../../app.constants.js'
+import { APP_URL } from '../../../common/shared.js'
+import { configuration } from '../../../configuration/config.environment.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { HTTP_METHOD } from '../../applications.constants.js'
+import { NOTIFICATION_APP, NOTIFICATION_APP_EVENT } from '../../notifications/constants/notifications.js'
+import { NotificationContent } from '../../notifications/interfaces/notification-properties.interface.js'
+import type { UserMailNotification } from '../../notifications/interfaces/user-mail-notification.interface.js'
+import { NotificationsManager } from '../../notifications/services/notifications-manager.service.js'
+import { AdminUsersQueries } from '../../users/services/admin-users-queries.service.js'
+import type { ServerReleaseNotification, ServerReleaseVersionManifest } from '../interfaces/check-update.interfaces.js'
+import { isServerUpdateAvailable } from '../utils/check-update.js'
+
+@Injectable()
+export class AdminService {
+  private readonly logger = new Logger(AdminService.name)
+
+  constructor(
+    private readonly http: HttpService,
+    private readonly cache: Cache,
+    private readonly notificationsManager: NotificationsManager,
+    private readonly adminUsersQueries: AdminUsersQueries
+  ) {}
+
+  async checkServerUpdateAndNotify() {
+    let lastVersion: string
+    try {
+      const res: AxiosResponse<ServerReleaseVersionManifest> = await this.http.axiosRef({
+        method: HTTP_METHOD.GET,
+        url: APP_URL.SERVER_VERSION_MANIFEST,
+        headers: {
+          Referer: configuration.server.publicUrl
+        }
+      })
+      lastVersion = res.data?.tag_name || ''
+    } catch (e) {
+      this.logger.warn({ tag: this.checkServerUpdateAndNotify.name, msg: `unable to check update: ${toErrorMessage(e)}` })
+      return
+    }
+    if (!lastVersion.startsWith('v')) {
+      this.logger.warn({ tag: this.checkServerUpdateAndNotify.name, msg: `unable to check version: ${lastVersion}` })
+      return
+    }
+    lastVersion = lastVersion.slice(1) // remove 'v' to compare with the current version
+    if (!isServerUpdateAvailable(VERSION, lastVersion)) {
+      return
+    }
+    // Get the last version that was notified to administrators
+    const notifiedVersion: ServerReleaseNotification = await this.cache.get(this.checkServerUpdateAndNotify.name)
+    if (!notifiedVersion?.version) {
+      // The version was never stored, do it
+      await this.cache.set(this.checkServerUpdateAndNotify.name, { version: VERSION } satisfies ServerReleaseNotification, 0)
+      return
+    }
+    if (notifiedVersion.version === lastVersion) {
+      // Notification was already sent to administrators
+      return
+    }
+    const adminsToNotify: UserMailNotification[] = await this.adminUsersQueries.listAdminsToNotify()
+    if (!adminsToNotify.length) {
+      return
+    }
+    const notification: NotificationContent = {
+      app: NOTIFICATION_APP.UPDATE_AVAILABLE,
+      event: NOTIFICATION_APP_EVENT.UPDATE_AVAILABLE,
+      element: lastVersion,
+      externalUrl: APP_URL.RELEASES,
+      url: null
+    }
+    this.notificationsManager
+      .create(adminsToNotify, notification)
+      .then(() => this.cache.set(this.checkServerUpdateAndNotify.name, { version: lastVersion } satisfies ServerReleaseNotification, 0))
+      .catch((e: Error) => this.logger.error({ tag: this.checkServerUpdateAndNotify.name, msg: toErrorMessage(e) }))
+  }
+}

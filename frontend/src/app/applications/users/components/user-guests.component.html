@@ -1,0 +1,147 @@
+<!--Start Top Menu-->
+<div class="app-top-menu app-top-menu-tool-bar"
+     [attr.aria-label]="'Actions' | translate:locale.language"
+     role="toolbar">
+  <button (click)="openGuestDialog(true)"
+          [attr.aria-label]="'New guest' | translate:locale.language"
+          [disabled]="!canCreateGuest"
+          class="btn btn-default app-top-menu-tool-bar__action--quiet app-top-menu-tool-bar__action--breadcrumb-aligned"
+          type="button">
+    <svg [lucideIcon]="icons.LucidePlus"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>New guest</span>
+  </button>
+  <button (click)="openGuestDialog()"
+          [attr.aria-label]="'Edit guest' | translate:locale.language"
+          [disabled]="!selected"
+          class="btn btn-default app-top-menu-tool-bar__action--quiet"
+          type="button">
+    <svg [lucideIcon]="icons.LucidePencil"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>Edit guest</span>
+  </button>
+  <div class="d-flex align-items-center">
+    <button (click)="loadGuests()"
+            [attr.aria-label]="'Refresh' | translate:locale.language"
+            class="d-none d-md-block btn btn-default"
+            [tooltip]="'Refresh' | translate:locale.language"
+            type="button">
+      <svg [lucideIcon]="icons.LucideRotateCw" [class]="loading ? 'icon-spin' : ''"></svg>
+    </button>
+  </div>
+</div>
+<!--End Top Menu-->
+<!--Start Table Files Content-->
+<table class="app-table">
+  <thead>
+  <tr>
+    @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+      @if (th.value.show) {
+        <th (click)="sortBy(th.key)"
+            [style.width.%]="th.value.width"
+            [class.text-align-center]="th.value.textCenter"
+            [class.cursor-pointer]="th.value.sortable"
+            class="{{th.value.class}}"
+            l10nTranslate>
+          {{ th.value.label }}
+          @if (sortTable.sortParam.column === th.key) {
+            <svg [lucideIcon]="sortTable.sortParam.asc ? icons.LucideArrowDown : icons.LucideArrowUp"></svg>
+          }
+        </th>
+      }
+    }
+  </tr>
+  </thead>
+</table>
+<app-virtual-scroll (contextmenu)="onContextMenu($event)"
+                    [bufferAmount]="5"
+                    [items]="guests | searchFilter:navbarSearch.viewFilter()">
+  <table class="app-table">
+    <tbody tabindex="-1">
+      @for (u of scrollView?.viewPortItems; track u.id) {
+        <tr (click)="onSelect(u)"
+            (contextmenu)="onTargetContextMenu($event, u)"
+            (appTap)="onGuestActivate(u)"
+            [class.disabled]="!u.isActive"
+            [class.selected]="u.id === selected?.id">
+          @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+            @if (th.value.show) {
+              <td [style.width.%]="th.value.width"
+                  [class.text-align-center]="th.value.textCenter"
+                  class="{{th.value.class}}">
+                @switch (th.key) {
+                  @case ('login') {
+                    <div class="d-flex align-items-center avatar">
+                      <img class="avatar-img" [src]="u.avatarUrl" alt="">
+                      <div class="d-flex flex-column text-truncate">
+                        <span class="no-pointer-events" draggable="false">
+                          {{ u.login }}
+                        </span>
+                        <span class="no-pointer-events text-muted fs-xs" draggable="false">{{ u.email }}</span>
+                      </div>
+                    </div>
+                  }
+                  @case ('fullName') {
+                    <div class="d-flex flex-column">
+                      <span class="no-pointer-events" draggable="false">{{ u.fullName }}</span>
+                    </div>
+                  }
+                  @case ('managers') {
+                    <app-user-avatar-stack [users]="u.managers" [isMember]="true" [container]="'body'"></app-user-avatar-stack>
+                  }
+                  @case ('isActive') {
+                    <span class="{{u.isActive && !u.isTemporarilyLocked ? 'text-success' : 'text-danger'}}" l10nTranslate>
+                      {{ u.userIsActiveText }}
+                    </span>
+                  }
+                  @case ('createdAt') {
+                    {{ u.createdAt | amTimeAgo:true }}
+                  }
+                  @case ('currentAccess') {
+                    @if (u.currentAccess) {
+                      <span class="d-flex justify-content-center {{th.value.newly && u[th.value.newly] ? 'badge prop-newly-' + u[th.value.newly] : ''}}"
+                           (mouseover)="u.currentAccessHover = true"
+                           (focus)="u.currentAccessHover = true"
+                           (mouseleave)="u.currentAccessHover = false">
+                        @if (u.currentAccessHover) {
+                          <span class="d-flex flex-column">
+                            <span>{{ u.currentAccess | amDateFormat }}</span>
+                            <span>{{ u.lastAccess | amDateFormat }}</span>
+                          </span>
+                        } @else {
+                          <span>{{ u.hTimeAgo }}</span>
+                        }
+                      </span>
+                    } @else {
+                      <span class="badge bg-danger" l10nTranslate>never</span>
+                    }
+                  }
+                }
+              </td>
+            }
+          }
+        </tr>
+      }
+    </tbody>
+  </table>
+</app-virtual-scroll>
+<!--End Table Files Content-->
+<!--Start Foot Content-->
+<div class="app-foot-menu">
+  <span class="mx-auto">{{ guests.length }} {{ 'guests' | translate:locale.language }}</span>
+</div>
+<!--End Foot Content-->
+<!--Start Context Menu -->
+<context-menu #MainContextMenu>
+  <ng-template (execute)="openGuestDialog(true)" contextMenuItem>
+    <span l10nTranslate><svg [lucideIcon]="icons.LucidePlus"></svg>New guest</span>
+  </ng-template>
+  <ng-template [divider]="true" contextMenuItem></ng-template>
+  <ng-template (execute)="loadGuests()" contextMenuItem>
+    <span l10nTranslate><svg [lucideIcon]="icons.LucideRotateCw"></svg>Refresh</span>
+  </ng-template>
+</context-menu>
+<context-menu #TargetContextMenu>
+  <ng-template (execute)="openGuestDialog()" contextMenuItem>
+    <span l10nTranslate><svg [lucideIcon]="icons.LucidePencil"></svg>Edit guest</span>
+  </ng-template>
+</context-menu>
+<!--End Context Menu-->

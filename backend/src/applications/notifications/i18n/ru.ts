@@ -1,0 +1,50 @@
+export const ru = {
+  'If you no longer wish to receive notifications, change your preferences directly from your user space.':
+    'Если вы больше не хотите получать уведомления, измените настройки прямо в вашем пользовательском пространстве.',
+  'Access it from': 'Доступно отсюда',
+  Comment: 'Комментарий',
+  commented: 'прокомментировал(а)',
+  'You receive this notification if you are the owner of the file or if you have also commented on this file':
+    'Вы получаете это уведомление, если являетесь владельцем файла или также оставляли комментарий к нему',
+  Space: 'Пространство',
+  'from the space': 'из пространства',
+  'to the space': 'в пространство',
+  'Access your spaces from': 'Доступ к вашим пространствам',
+  'Access this space from': 'Доступ к этому пространству',
+  'You now have access to the space': 'Теперь у вас есть доступ к пространству',
+  'You no longer have access to the space': 'У вас больше нет доступа к пространству',
+  'This space has been permanently deleted': 'Это пространство было безвозвратно удалено',
+  anchored: 'закрепил(а)',
+  unanchored: 'открепил(а)',
+  Share: 'Общий доступ',
+  'shared with you': 'поделился(лась) с вами',
+  'no longer share with you': 'больше не делится с вами',
+  'You now have access to the share': 'Теперь у вас есть доступ к общему ресурсу',
+  'You no longer have access to the share': 'У вас больше нет доступа к общему ресурсу',
+  'You are no longer a member of the parent share, your child share has been deleted':
+    'Вы больше не участник родительского общего ресурса, ваш дочерний ресурс был удалён',
+  'Access your shares from': 'Доступ к вашим общим ресурсам',
+  'Access password': 'Пароль доступа',
+  Sync: 'Синхронизация',
+  'Access your syncs from': 'Доступ к вашим синхронизациям',
+  'You are no longer synchronizing': 'Вы больше не синхронизируете',
+  'Unlock Request': 'Запрос на разблокировку',
+  'You receive this notification because you have a lock on this file.':
+    'Вы получили это уведомление, потому что у вас есть блокировка на этом файле.',
+  'sends you a request to unlock the file': 'отправляет вам запрос на разблокировку файла',
+  'Security notification': 'Уведомление безопасности',
+  'Your account is temporarily locked for 15 minutes due to too many failed sign-in attempts':
+    'Ваша учетная запись временно заблокирована на 15 минут из-за слишком большого количества неудачных попыток входа',
+  'You can try signing in again after 15 minutes. If you did not make these attempts, please contact your administrator.':
+    'Вы можете повторить попытку входа через 15 минут. Если эти попытки совершали не вы, обратитесь к администратору.',
+  'Two-factor authentication (2FA) on your account has been disabled': 'Двухфакторная аутентификация (2FA) для вашего аккаунта была отключена',
+  'Two-factor authentication (2FA) on your account has been enabled': 'Двухфакторная аутентификация (2FA) для вашего аккаунта была включена',
+  'You received this notification because the security of your Sync-in account has changed. If you think this was a mistake, please review your security settings or contact your administrator.':
+    'Вы получили это уведомление, потому что изменились настройки безопасности вашего аккаунта в Sync-in. Если вы считаете, что это ошибка, проверьте настройки безопасности или свяжитесь с администратором.',
+  'Address IP': 'IP-адрес',
+  Browser: 'Браузер',
+  'New Version Available': 'Доступна новая версия',
+  'You receive this notification because you are the administrator of this server.':
+    'Вы получаете это уведомление, потому что вы являетесь администратором этого сервера.',
+  'A new update is available': 'Доступно новое обновление'
+} as const

@@ -1,0 +1,220 @@
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import { Totp } from 'time2fa'
+import { NOTIFICATION_APP, NOTIFICATION_APP_EVENT } from '../../../applications/notifications/constants/notifications.js'
+import { NotificationContent } from '../../../applications/notifications/interfaces/notification-properties.interface.js'
+import { NotificationsManager } from '../../../applications/notifications/services/notifications-manager.service.js'
+import { UserModel } from '../../../applications/users/models/user.model.js'
+import { UsersManager } from '../../../applications/users/services/users-manager.service.js'
+import { ACTION } from '../../../common/constants.js'
+import { toErrorMessage } from '../../../common/errors.js'
+import { generateShortUUID } from '../../../common/functions.js'
+import { qrcodeToDataURL } from '../../../common/qrcode.js'
+import { configuration } from '../../../configuration/config.environment.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { TWO_FA_CODE_LENGTH } from '../../constants/auth.js'
+import { FastifyAuthenticatedRequest } from '../../interfaces/auth-request.interface.js'
+import { decryptSecret, encryptSecret } from '../../utils/crypt-secret.js'
+import type { TwoFaVerifyDto, TwoFaVerifyWithPasswordDto } from './auth-two-fa.dtos.js'
+import { TwoFaEnableResult, TwoFaSetup, TwoFaVerifyResult } from './auth-two-fa.interfaces.js'
+
+@Injectable()
+export class AuthProvider2FA {
+  private readonly logger = new Logger(AuthProvider2FA.name)
+  private readonly cacheKeyPrefix = 'auth-2fa-pending-user-'
+
+  constructor(
+    private readonly cache: Cache,
+    private readonly usersManager: UsersManager,
+    private readonly notificationsManager: NotificationsManager
+  ) {}
+
+  async initTwoFactor(user: UserModel): Promise<TwoFaSetup> {
+    const { secret, qrDataUrl } = this.generateSecretAndQr(user.email)
+    // store encrypted secret in cache for 5 minutes
+    await this.cache.set(this.getCacheKey(user.id), this.encryptSecret(secret), 300)
+    return { secret, qrDataUrl }
+  }
+
+  async enableTwoFactor(body: TwoFaVerifyWithPasswordDto, req: FastifyAuthenticatedRequest): Promise<TwoFaEnableResult> {
+    // retrieve encrypted secret from cache
+    const cacheKey = this.getCacheKey(req.user.id)
+    const secret: string = await this.cache.get(cacheKey)
+    if (!secret) {
+      throw new HttpException('The secret has expired', HttpStatus.BAD_REQUEST)
+    }
+    // load user
+    const user = await this.loadUser(req.user.id, req.ip)
+    // verify user password
+    await this.verifyUserPassword(user, body.password, req.ip)
+    const auth = await this.validateVerificationCode(body, user, secret)
+    await this.usersManager.updateAccesses(user, req.ip, auth.success, true)
+    if (!auth.success) {
+      throw new HttpException(auth.message, HttpStatus.FORBIDDEN)
+    }
+    // generate recovery codes
+    const recoveryCodes = this.generateRecoveryCodes()
+    // store and enable TwoFA & recovery codes
+    await this.usersManager.updateSecrets(user.id, {
+      twoFaSecret: secret,
+      recoveryCodes: recoveryCodes.map((code) => this.encryptSecret(code))
+    })
+    await this.cache.del(cacheKey)
+    this.sendEmailNotification(req, ACTION.ADD)
+    return { ...auth, recoveryCodes: recoveryCodes }
+  }
+
+  async disableTwoFactor(body: TwoFaVerifyWithPasswordDto, req: FastifyAuthenticatedRequest): Promise<TwoFaVerifyResult> {
+    // load user
+    const user = await this.loadUser(req.user.id, req.ip)
+    // verify user password
+    await this.verifyUserPassword(user, body.password, req.ip)
+    const auth = await this.validateVerificationCode(body, user)
+    await this.usersManager.updateAccesses(user, req.ip, auth.success, true)
+    if (!auth.success) {
+      throw new HttpException(auth.message, HttpStatus.FORBIDDEN)
+    }
+    // store and disable TwoFA & recovery codes
+    await this.usersManager.updateSecrets(user.id, { twoFaSecret: undefined, recoveryCodes: undefined })
+    this.sendEmailNotification(req, ACTION.DELETE)
+    return auth
+  }
+
+  async verify(verifyDto: TwoFaVerifyDto, req: FastifyAuthenticatedRequest, fromLogin?: false, secret?: string): Promise<TwoFaVerifyResult>
+  async verify(verifyDto: TwoFaVerifyDto, req: FastifyAuthenticatedRequest, fromLogin: true, secret?: string): Promise<[TwoFaVerifyResult, UserModel]>
+  async verify(
+    verifyDto: TwoFaVerifyDto,
+    req: FastifyAuthenticatedRequest,
+    fromLogin = false,
+    secret?: string
+  ): Promise<TwoFaVerifyResult | [TwoFaVerifyResult, UserModel]> {
+    const user = await this.loadUser(req.user.id, req.ip)
+    const auth = await this.validateVerificationCode(verifyDto, user, secret)
+    await this.usersManager.updateAccesses(user, req.ip, auth.success, true)
+    return fromLogin ? [auth, user] : auth
+  }
+
+  async adminResetUserTwoFa(userId: number) {
+    const auth: TwoFaVerifyResult = { success: false, message: '' }
+    try {
+      await this.usersManager.updateSecrets(userId, { twoFaSecret: undefined, recoveryCodes: undefined })
+      auth.success = true
+    } catch (e) {
+      auth.success = false
+      auth.message = toErrorMessage(e)
+      this.logger.error({ tag: this.adminResetUserTwoFa.name, msg: toErrorMessage(e) })
+    }
+    return auth
+  }
+
+  async loadUser(userId: number, ip: string) {
+    const user = await this.usersManager.fromUserId(userId)
+    if (!user) {
+      this.logger.warn({ tag: this.loadUser.name, msg: `User ${userId} (${ip}) not found` })
+      throw new HttpException(`User not found`, HttpStatus.NOT_FOUND)
+    }
+    await this.usersManager.validateUserAccess(user)
+    return user
+  }
+
+  async verifyUserPassword(user: UserModel, password: string, ip: string) {
+    // This function works with any authentication method, provided that
+    // the authentication service implements proper user password updates in the database.
+    if (!(await this.usersManager.compareUserPassword(user.id, password))) {
+      await this.usersManager.updateAccesses(user, ip, false, true)
+      throw new HttpException('Incorrect code or password', HttpStatus.BAD_REQUEST)
+    }
+  }
+
+  private async validateVerificationCode(verifyDto: TwoFaVerifyDto, user: UserModel, secret?: string): Promise<TwoFaVerifyResult> {
+    secret = secret || user.secrets!.twoFaSecret
+    return verifyDto.isRecoveryCode
+      ? await this.validateRecoveryCode(user.id, verifyDto.code, user.secrets!.recoveryCodes)
+      : this.validateTwoFactorCode(verifyDto.code, secret)
+  }
+
+  validateTwoFactorCode(code: string, encryptedSecret?: string): TwoFaVerifyResult {
+    const auth: TwoFaVerifyResult = { success: false, message: '' }
+    if (!encryptedSecret) {
+      auth.message = 'Incorrect code or password'
+      return auth
+    }
+    try {
+      auth.success = Totp.validate({ passcode: code, secret: this.decryptSecret(encryptedSecret), drift: 1 })
+      if (!auth.success) auth.message = 'Incorrect code or password'
+    } catch (e) {
+      this.logger.error({ tag: this.validateTwoFactorCode.name, msg: toErrorMessage(e) })
+      auth.message = toErrorMessage(e)
+    }
+    return auth
+  }
+
+  async validateRecoveryCode(userId: number, code: string, encryptedCodes?: string[]): Promise<TwoFaVerifyResult> {
+    const auth: TwoFaVerifyResult = { success: false, message: '' }
+    if (!encryptedCodes || encryptedCodes.length === 0) {
+      auth.message = 'Invalid code'
+      return auth
+    }
+    try {
+      let matchedEncryptedCode: string | undefined
+      for (const encCode of encryptedCodes) {
+        const decryptedCode = this.decryptSecret(encCode)
+        if (code === decryptedCode) {
+          matchedEncryptedCode = encCode
+          break
+        }
+      }
+      if (matchedEncryptedCode) {
+        auth.success = await this.usersManager.consumeRecoveryCode(userId, matchedEncryptedCode)
+        if (!auth.success) auth.message = 'Invalid code'
+      } else {
+        auth.message = 'Invalid code'
+      }
+    } catch (e) {
+      this.logger.error({ tag: this.validateRecoveryCode.name, msg: toErrorMessage(e) })
+      auth.message = toErrorMessage(e, 'Invalid code')
+    }
+    return auth
+  }
+
+  private generateSecretAndQr(userEmail: string): TwoFaSetup {
+    // Generate secret + otpauth URL + QR (DataURL)
+    // Totp.generateKey returns { issuer, user, config, secret, url }
+    const key = Totp.generateKey({ issuer: configuration.auth.mfa.totp.issuer, user: userEmail }, { digits: TWO_FA_CODE_LENGTH })
+    const qrDataUrl = qrcodeToDataURL(key.url)
+    return { secret: key.secret, qrDataUrl: qrDataUrl }
+  }
+
+  private getCacheKey(userId: number): string {
+    return `${this.cacheKeyPrefix}${userId}`
+  }
+
+  private encryptSecret(secret: string): string {
+    if (configuration.auth.encryptionKey) {
+      return encryptSecret(secret, configuration.auth.encryptionKey)
+    }
+    return secret
+  }
+
+  private decryptSecret(secret: string): string {
+    if (configuration.auth.encryptionKey) {
+      return decryptSecret(secret, configuration.auth.encryptionKey)
+    }
+    return secret
+  }
+
+  private generateRecoveryCodes(count = 5): string[] {
+    return Array.from({ length: count }, () => generateShortUUID())
+  }
+
+  private sendEmailNotification(req: FastifyAuthenticatedRequest, action: ACTION.ADD | ACTION.DELETE) {
+    const notification: NotificationContent = {
+      app: NOTIFICATION_APP.AUTH_2FA,
+      event: NOTIFICATION_APP_EVENT.AUTH_2FA[action],
+      element: req.headers['user-agent'] as string,
+      url: req.ip
+    }
+    this.notificationsManager
+      .sendEmailNotification([req.user], notification)
+      .catch((e: Error) => this.logger.error({ tag: this.sendEmailNotification.name, msg: toErrorMessage(e) }))
+  }
+}

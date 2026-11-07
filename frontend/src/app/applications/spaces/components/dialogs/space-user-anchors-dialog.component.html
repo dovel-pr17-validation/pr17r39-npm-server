@@ -1,0 +1,31 @@
+<div class="modal-header">
+  <h4 class="modal-title">
+    <svg [lucideIcon]="icons.SPACES"></svg>
+    <span>{{ space.name }}</span>
+  </h4>
+  @if (loading) {
+    <svg [lucideIcon]="icons.LucideLoader" class="ms-2 icon-spin"></svg>
+  }
+  <h4 class="modal-title ms-auto">
+    <span l10nTranslate>Manage my anchored files</span>
+  </h4>
+  <button (click)="layout.closeDialog()" aria-label="Close" class="btn-close btn-close-white ms-2" type="button"></button>
+</div>
+<div class="modal-body">
+  <app-space-manage-roots [space]="space" [user]="user" [showUsers]="false" [addRootFile]="addRootFileEvent"></app-space-manage-roots>
+  @if (!space.roots.length) {
+    <span l10nTranslate>You have no files anchored on this space</span>
+  }
+</div>
+<div class="modal-footer">
+  <button (click)="openSelectRootDialog()"
+          class="btn btn-success" type="button" l10nTranslate>
+    <svg [lucideIcon]="icons.LucidePlus"></svg>
+    <svg [lucideIcon]="icons.LucideAnchor"></svg>
+    File
+  </button>
+  <button (click)="layout.closeDialog()" class="btn btn-secondary ms-auto" data-dismiss="modal" type="button" l10nTranslate>Cancel</button>
+  <button (click)="onSubmit()" [disabled]="submitted" class="btn btn-primary" type="button" l10nTranslate>
+    Confirm
+  </button>
+</div>

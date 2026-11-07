@@ -1,0 +1,256 @@
+import { CanActivate, ExecutionContext, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import { FastifyReply } from 'fastify'
+import { toErrorMessage } from '../../../common/errors.js'
+import { urlToPath } from '../../../common/functions.js'
+import { decodeUrl } from '../../../common/shared.js'
+import { HTTP_METHOD } from '../../applications.constants.js'
+import { CACHE_LOCK_DEFAULT_TTL } from '../../files/constants/cache.js'
+import { USER_PERMISSION } from '../../users/constants/user.js'
+import {
+  ALLOW_EMPTY_BODY_METHODS,
+  DEPTH,
+  HEADER,
+  LOCK_SCOPE,
+  OPTIONS_HEADERS,
+  PROPPATCH_PROP_UPDATE,
+  PROPSTAT,
+  REGEX_BASE_PATH
+} from '../constants/webdav.js'
+import { IfHeader } from '../interfaces/if-header.interface.js'
+import { FastifyDAVPendingRequest, FastifyDAVRequest } from '../interfaces/webdav.interface.js'
+import { parseIfHeader } from '../utils/if-header.js'
+import { PROPFIND_ALL_PROP } from '../utils/webdav.js'
+import { xmlIsValid, xmlParse } from '../utils/xml.js'
+
+@Injectable()
+export class WebDAVProtocolGuard implements CanActivate {
+  private readonly logger = new Logger(WebDAVProtocolGuard.name)
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const req: FastifyDAVRequest = ctx.switchToHttp().getRequest()
+    const res: FastifyReply = ctx.switchToHttp().getResponse()
+    this.checkUserPermission(req)
+    this.setDAVContext(req)
+    switch (req.method) {
+      case HTTP_METHOD.OPTIONS:
+        // hook to stop propagation and return headers on all webdav routes
+        res.headers(OPTIONS_HEADERS)
+        throw new HttpException('', HttpStatus.OK)
+      case HTTP_METHOD.PROPFIND:
+        return this.propfindMethod(req)
+      case HTTP_METHOD.LOCK:
+        return this.lockMethod(req)
+      case HTTP_METHOD.UNLOCK:
+        return this.unlockMethod(req)
+      case HTTP_METHOD.PUT:
+        return this.putMethod(req)
+      case HTTP_METHOD.DELETE:
+        return this.deleteMethod(req)
+      case HTTP_METHOD.PROPPATCH:
+        return this.proppatchMethod(req)
+      case HTTP_METHOD.MKCOL:
+        return this.mkcolMethod(req)
+      case HTTP_METHOD.COPY:
+        return this.copyMoveMethod(req)
+      case HTTP_METHOD.MOVE:
+        return this.copyMoveMethod(req, true)
+      default:
+        return true
+    }
+  }
+
+  private checkUserPermission(req: FastifyDAVPendingRequest) {
+    if (req.method !== HTTP_METHOD.OPTIONS && !req.user.havePermission(USER_PERMISSION.WEBDAV)) {
+      this.logger.warn({ tag: this.checkUserPermission.name, msg: `does not have permission : ${USER_PERMISSION.WEBDAV}` })
+      throw new HttpException('Missing permission', HttpStatus.FORBIDDEN)
+    }
+  }
+
+  private setDAVContext(req: FastifyDAVPendingRequest): void {
+    req.dav = {
+      url: decodeUrl(req.originalUrl),
+      depth: DEPTH.RESOURCE
+    }
+  }
+
+  private parseBody(req: FastifyDAVRequest) {
+    let valid: true | { err: { code?: string; msg: string; line: number; col: number } }
+    try {
+      valid = xmlIsValid(req.body.toString())
+    } catch (e) {
+      const code = e !== null && typeof e === 'object' && 'code' in e && typeof e.code === 'string' ? e.code : undefined
+      valid = {
+        err: {
+          code,
+          msg: `Invalid body content: ${toErrorMessage(e)}`,
+          line: 0,
+          col: 0
+        }
+      }
+    }
+    if (valid === true) {
+      req.dav.body = xmlParse(req.body)
+    } else if (valid.err.code === undefined && ALLOW_EMPTY_BODY_METHODS.indexOf(req.method) > -1) {
+      req.dav.body = null
+    } else {
+      throw new HttpException(`${valid.err.code} : ${valid.err.msg}`, HttpStatus.BAD_REQUEST)
+    }
+    return true
+  }
+
+  private parseIfHeader(req: FastifyDAVRequest) {
+    // stores if headers, examine it later
+    if (req.headers[HEADER.IF]) {
+      this.logger.verbose({ tag: this.parseIfHeader.name, msg: `If header before : ${JSON.stringify(req.headers[HEADER.IF])}` })
+      const ifHeaders: IfHeader[] = parseIfHeader(req.headers[HEADER.IF] as string)
+      this.logger.verbose({ tag: this.parseIfHeader.name, msg: `If header after : ${JSON.stringify(ifHeaders)}` })
+      if (ifHeaders.length) req.dav.ifHeaders = ifHeaders
+    }
+  }
+
+  private propfindMethod(req: FastifyDAVRequest) {
+    req.dav.depth = (req.headers[HEADER.DEPTH] as string | undefined)?.toLowerCase() as DEPTH
+    if (!req.dav.depth || (req.dav.depth !== DEPTH.MEMBERS && req.dav.depth !== DEPTH.RESOURCE)) {
+      if (!req.dav.depth) {
+        this.logger.warn({ tag: this.propfindMethod.name, msg: 'Missing propfind depth, default value 1 was set' })
+      } else if (req.dav.depth === DEPTH.INFINITY) {
+        this.logger.warn({ tag: this.propfindMethod.name, msg: 'Infinite depth is disabled for security reasons, default value 1 was set' })
+      } else {
+        this.logger.warn({ tag: this.propfindMethod.name, msg: `Invalid propfind depth header : ${req.dav.depth}, default value 1 was set` })
+      }
+      req.dav.depth = DEPTH.MEMBERS
+    }
+    if (this.parseBody(req)) {
+      if (req.dav.body) {
+        for (const propType in req.dav.body.propfind) {
+          if (Object.values(PROPSTAT).indexOf(propType as PROPSTAT) > -1) {
+            req.dav.propfindMode = propType as PROPSTAT
+            break
+          }
+        }
+        if (!req.dav.propfindMode) {
+          this.logger.warn({ tag: this.propfindMethod.name, msg: `Invalid propfind mode : ${JSON.stringify(Object.keys(req.dav.body.propfind))}` })
+          throw new HttpException('Invalid propfind mode', HttpStatus.BAD_REQUEST)
+        }
+      } else {
+        // propfind request allow empty body
+        req.dav.body = PROPFIND_ALL_PROP
+        req.dav.propfindMode = PROPSTAT.ALLPROP
+      }
+    }
+    this.parseIfHeader(req)
+    return true
+  }
+
+  private proppatchMethod(req: FastifyDAVRequest) {
+    req.dav.depth = ((req.headers[HEADER.DEPTH] as any) || DEPTH.RESOURCE).toLowerCase() as DEPTH
+    this.parseBody(req)
+    if (!req.dav.body || Object.keys(req.dav.body).indexOf(PROPPATCH_PROP_UPDATE) === -1) {
+      this.logger.debug({ tag: this.proppatchMethod.name, msg: `'${PROPPATCH_PROP_UPDATE}' is missing : ${JSON.stringify(req.dav.body)}` })
+      throw new HttpException(`'${PROPPATCH_PROP_UPDATE}' is missing`, HttpStatus.BAD_REQUEST)
+    }
+    this.parseIfHeader(req)
+    return true
+  }
+
+  private lockMethod(req: FastifyDAVRequest) {
+    req.dav.lock = {}
+    if (req.headers[HEADER.TIMEOUT]) {
+      // timeout: 'Infinite, Second-4100000000' | 'Second-4100000000' | 'Infinite'
+      const timeout = req.headers[HEADER.TIMEOUT] as string
+      if (timeout.toLowerCase() === 'infinite') {
+        req.dav.lock.timeout = CACHE_LOCK_DEFAULT_TTL
+      } else {
+        try {
+          const timeoutSplit = timeout.split('-')
+          const seconds = parseInt(timeoutSplit[timeoutSplit.length - 1], 10)
+          req.dav.lock.timeout = seconds > CACHE_LOCK_DEFAULT_TTL ? CACHE_LOCK_DEFAULT_TTL : seconds
+        } catch (e) {
+          this.logger.warn({ tag: this.lockMethod.name, msg: `unable to set timeout, use the default value : ${toErrorMessage(e)}` })
+          req.dav.lock.timeout = CACHE_LOCK_DEFAULT_TTL
+        }
+      }
+    }
+    this.parseBody(req)
+    if (req.dav.body) {
+      if (!req.dav.body.lockinfo) {
+        this.logger.warn({ tag: this.lockMethod.name, msg: `Missing lockinfo : ${JSON.stringify(req.dav.body)}` })
+        throw new HttpException('Missing lockinfo', HttpStatus.BAD_REQUEST)
+      }
+      try {
+        req.dav.lock.lockscope = Object.keys(req.dav.body.lockinfo.lockscope)[0] as LOCK_SCOPE
+      } catch (e) {
+        this.logger.warn({
+          tag: this.lockMethod.name,
+          msg: `invalid or undefined lockscope : ${JSON.stringify(req.dav.body.lockinfo)} : ${toErrorMessage(e)}`
+        })
+        throw new HttpException('Invalid or undefined lockscope', HttpStatus.BAD_REQUEST)
+      }
+      if (Object.values(LOCK_SCOPE).indexOf(req.dav.lock.lockscope) === -1) {
+        this.logger.warn({ tag: this.lockMethod.name, msg: `invalid or undefined lockscope : ${JSON.stringify(req.dav.body.lockinfo)}` })
+        throw new HttpException('Invalid or undefined lockscope', HttpStatus.BAD_REQUEST)
+      }
+      if (req.dav.body.lockinfo.owner) {
+        const owner = typeof req.dav.body?.lockinfo?.owner === 'string' ? req.dav.body.lockinfo.owner : req.dav.body?.lockinfo?.owner?.href
+        if (typeof owner === 'string') {
+          req.dav.lock.owner = owner.trim()
+        }
+      }
+      const depth: DEPTH = ((req.headers[HEADER.DEPTH] as any) || '').toLowerCase()
+      req.dav.depth = [DEPTH.INFINITY, DEPTH.RESOURCE].indexOf(depth) === -1 ? DEPTH.INFINITY : depth
+    } else {
+      // must ignore depth header on lock refresh request
+      req.dav.depth = null
+    }
+    this.parseIfHeader(req)
+    return true
+  }
+
+  private unlockMethod(req: FastifyDAVRequest) {
+    if (!req.headers[HEADER.LOCK_TOKEN]) {
+      throw new HttpException('Missing lock token', HttpStatus.BAD_REQUEST)
+    }
+    req.dav.lock = { token: (req.headers[HEADER.LOCK_TOKEN] as string).replace('<', '').replace('>', '').trim() }
+    this.parseIfHeader(req)
+    return true
+  }
+
+  private putMethod(req: FastifyDAVRequest) {
+    req.dav.depth = DEPTH.RESOURCE
+    this.parseIfHeader(req)
+    return true
+  }
+
+  private deleteMethod(req: FastifyDAVRequest) {
+    this.parseIfHeader(req)
+    return true
+  }
+
+  private mkcolMethod(req: FastifyDAVRequest) {
+    if (req.headers['content-length'] && req.headers['content-length'] !== '0') {
+      throw new HttpException('no body content required', HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+    }
+    req.dav.depth = DEPTH.RESOURCE
+    this.parseIfHeader(req)
+    return true
+  }
+
+  private copyMoveMethod(req: FastifyDAVRequest, isMove = false) {
+    if (!req.headers[HEADER.DESTINATION]) {
+      throw new HttpException(`Missing ${HEADER.DESTINATION} header`, HttpStatus.BAD_REQUEST)
+    }
+    const destination = urlToPath(req.headers[HEADER.DESTINATION] as string)
+    if (!REGEX_BASE_PATH.test(destination)) {
+      this.logger.warn({ tag: this.copyMoveMethod.name, msg: `The destination does not match the webdav base path : ${destination}` })
+      throw new HttpException('The destination does not match', HttpStatus.BAD_REQUEST)
+    }
+    req.dav.depth = ((req.headers[HEADER.DEPTH] as any) || DEPTH.INFINITY).toLowerCase() as DEPTH
+    req.dav.copyMove = {
+      overwrite: ((req.headers[HEADER.OVERWRITE] as any) || 't').toLowerCase() === 't',
+      destination: destination,
+      isMove: isMove
+    }
+    this.parseIfHeader(req)
+    return true
+  }
+}

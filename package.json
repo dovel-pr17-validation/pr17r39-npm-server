@@ -1,0 +1,131 @@
+{
+  "productName": "Sync-in",
+  "name": "sync-in-server",
+  "version": "2.6.2",
+  "description": "The sovereign platform for file storage, sharing, synchronization, and collaboration",
+  "keywords": [
+    "self-hosted",
+    "self-hosting",
+    "on-premise",
+    "private-cloud",
+    "open-source",
+    "privacy-first",
+    "secure-storage",
+    "file-server",
+    "storage-server",
+    "file-storage",
+    "file-sharing",
+    "file-sync",
+    "file-sync-server",
+    "sync",
+    "synchronization",
+    "webdav",
+    "webdav-server",
+    "collaboration",
+    "realtime",
+    "collaborative-editing",
+    "crdt",
+    "full-text-search",
+    "search-engine",
+    "indexing",
+    "access-control",
+    "secure-links",
+    "document-management",
+    "nextcloud",
+    "owncloud",
+    "dropbox"
+  ],
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/sync-in"
+    },
+    {
+      "type": "liberapay",
+      "url": "https://liberapay.com/sync-in"
+    },
+    {
+      "type": "project",
+      "url": "https://sync-in.com/support"
+    }
+  ],
+  "author": {
+    "name": "Johan Legrand",
+    "email": "johan.legrand@sync-in.com"
+  },
+  "homepage": "https://sync-in.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sync-in/server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Sync-in/server/issues"
+  },
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "os": [
+    "!win32"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "^22.13.0 || >=24.0.0",
+      "onFail": "warn"
+    }
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "build": "npm run build --ws",
+    "release:build": "npm run build && node scripts/build/release.js",
+    "release:clean": "rm -rf release",
+    "bump:version": "npm run test && commit-and-tag-version",
+    "bump:version:patch": "npm run test && commit-and-tag-version --release-as patch",
+    "bump:version:minor": "npm run test && commit-and-tag-version --release-as minor",
+    "bump:version:major": "npm run test && commit-and-tag-version --release-as major",
+    "bump:version:dry": "npm run test && commit-and-tag-version --dry-run",
+    "lint": "npm --ws run lint",
+    "lint:staged": "npm --ws run lint:staged",
+    "test": "npm --ws run lint && npm -w backend test",
+    "start": "node dist/server/main.js",
+    "reset": "rm -rf frontend/node_modules frontend/.angular backend/node_modules node_modules .angular",
+    "reset:hard": "npm run reset && npm cache clean --force",
+    "docker:build": "docker build -t $npm_package_name .",
+    "docker:buildx": "docker buildx build --platform linux/arm64,linux/amd64 --tag syncin/server:latest --tag syncin/server:${npm_package_version} --tag syncin/server:$(echo ${npm_package_version} | cut -d. -f1) . --push",
+    "docker:buildx:nopush": "docker buildx build --platform linux/arm64,linux/amd64 --tag syncin/server:latest --tag syncin/server:${npm_package_version} --tag syncin/server:$(echo ${npm_package_version} | cut -d. -f1) .",
+    "docker:buildx:push:dev": "docker buildx build --platform linux/arm64,linux/amd64 --tag syncin/server:dev . --push",
+    "docker:start": "docker run --name sync-in -it --rm -e SKIP_INIT=true -p 8080:8080 -v ./environment/environment.yaml:/app/environment/environment.yaml $npm_package_name"
+  },
+  "devDependencies": {
+    "commit-and-tag-version": "^13.1.0",
+    "husky": "^9.1.7",
+    "noop3": "^1000.0.0",
+    "prettier": "^3.8.3"
+  },
+  "overrides": {
+    "@napi-rs/canvas": "npm:noop3"
+  },
+  "commit-and-tag-version": {
+    "header": "",
+    "skip": {
+      "commit": true,
+      "tag": true
+    }
+  },
+  "allowScripts": {
+    "fsevents": true,
+    "lmdb": true,
+    "msgpackr-extract": true,
+    "tesseract.js": true,
+    "esbuild": true,
+    "@parcel/watcher": true,
+    "core-js": true,
+    "@swc/core": true
+  }
+}

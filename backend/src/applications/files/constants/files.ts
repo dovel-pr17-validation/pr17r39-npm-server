@@ -1,0 +1,33 @@
+export const DEFAULT_CHECKSUM_ALGORITHM = 'sha512-256'
+export const DEFAULT_DIRECTORY_BUFFER_SIZE = 128
+export const DEFAULT_HIGH_WATER_MARK = 1024 * 1024
+export const DEFAULT_MIME_TYPE = 'application/octet-stream'
+export const TEMPORARY_FILE_PREFIX = '~tmp-'
+export const TEMPORARY_PATH = {
+  STORAGE: '.sync-in-tmp',
+  ACTORS: 'users'
+} as const
+export const EXTRA_MIMES_TYPE = new Map([
+  ['.drawio', 'application-x-drawio'],
+  ['.dwb', 'application-x-drawio-wb'],
+  ['.go', 'text-x-go'],
+  ['.gz', 'application-gzip'],
+  ['.gzip', 'application-gzip'],
+  ['.patch', 'text-x-patch'],
+  ['.ps1', 'text-x-powershell'],
+  ['.py', 'text-x-python'],
+  ['.pyc', 'application-x-python-code'],
+  ['.rb', 'text-x-ruby'],
+  ['.rs', 'text-rust'],
+  ['.tgz', 'application-gzip'],
+  ['.ts', 'text-typescript'],
+  ['.xcf', 'image-x-xcf']
+])
+export const COMPRESSION_EXTENSION = new Map([
+  ['.zip', 'zip'],
+  ['.gzip', 'gzip'],
+  ['.tgz', 'tgz'],
+  ['.gz', 'tgz'],
+  ['.tar.gz', 'tgz'],
+  ['.tar', 'tar']
+])

@@ -1,0 +1,59 @@
+import type { GuestUser } from '@sync-in-server/backend/src/applications/users/interfaces/guest-user.interface'
+import { getNewly } from '../../../common/utils/functions'
+import { dJs } from '../../../common/utils/time'
+import { isUserTemporarilyLocked, userAvatarUrl } from '../user.functions'
+import { MemberModel } from './member.model'
+
+export class GuestUserModel implements GuestUser {
+  id: number
+  login: string
+  email: string
+  firstName: string
+  lastName: string
+  fullName: string
+  role: number
+  isActive: boolean
+  passwordAttempts: number
+  language: string
+  notification: number
+  currentAccess: Date
+  lastAccess: Date
+  currentIp: string
+  lastIp: string
+  createdAt: Date
+  managers: MemberModel[]
+  groups: MemberModel[]
+
+  // extra properties
+  isTemporarilyLocked = false
+  userIsActiveText: string
+  avatarUrl?: string
+  newly = 0
+  hTimeAgo: string
+
+  // hover events
+  currentAccessHover = false
+
+  constructor(guest: GuestUser) {
+    this.setManagers(guest)
+    this.setGroups(guest)
+    Object.assign(this, guest)
+    this.isTemporarilyLocked = isUserTemporarilyLocked(this.isActive, this.passwordAttempts, this.currentAccess)
+    this.avatarUrl = userAvatarUrl(guest.login)
+    this.userIsActiveText = this.isTemporarilyLocked ? 'locked' : this.isActive ? 'active' : 'suspended'
+    this.hTimeAgo = dJs(this.currentAccess).fromNow(true)
+    this.newly = getNewly(this.currentAccess)
+  }
+
+  private setManagers(guest: GuestUser) {
+    if (guest?.managers) {
+      guest.managers = guest.managers.map((g) => new MemberModel(g))
+    }
+  }
+
+  private setGroups(guest: GuestUser) {
+    if (guest?.groups) {
+      guest.groups = guest.groups.map((g) => new MemberModel(g))
+    }
+  }
+}

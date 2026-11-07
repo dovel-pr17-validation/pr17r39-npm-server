@@ -1,0 +1,98 @@
+:root {
+  --font-size-3xl: #{$font-size-3xl};
+  --font-size-xl: #{$font-size-xl};
+  --font-size-lg: #{$font-size-lg};
+  --font-size-md: #{$font-size-md};
+  --font-size-base: #{$font-size-base};
+  --font-size-sm: #{$font-size-sm};
+  --font-size-xs: #{$font-size-xs};
+  --font-size-2xs: #{$font-size-2xs};
+}
+
+.white-space-normal {
+  white-space: normal !important;
+}
+
+.white-space-truncate {
+  white-space: nowrap !important;
+}
+
+.word-break-all {
+  word-break: break-all;
+}
+
+.text-align-center {
+  text-align: center;
+}
+
+.text-align-end {
+  text-align: end;
+}
+
+.text-truncate {
+  @include text-truncate-utility;
+}
+
+.text-file-name-preserve {
+  white-space: pre !important;
+}
+
+.text-gray {
+  color: $gray !important;
+}
+
+.text-purple {
+  color: $purple !important;
+}
+
+.text-muted {
+  color: $muted !important;
+}
+
+.text-light-gray {
+  color: $gray-light;
+}
+
+.text-light-green {
+  color: $light-green;
+}
+
+.text-body-color {
+  color: $body-color;
+}
+
+.text-failed {
+  text-decoration: line-through;
+}
+
+.text-bold {
+  font-weight: 500;
+}
+
+.fs-lg {
+  font-size: var(--font-size-lg, #{$font-size-lg});
+}
+
+.fs-base {
+  font-size: var(--font-size-base, #{$font-size-base});
+}
+
+.fs-md {
+  font-size: var(--font-size-md, #{$font-size-md});
+}
+
+.fs-sm {
+  font-size: var(--font-size-sm, #{$font-size-sm}) !important;
+}
+
+.fs-xs {
+  font-size: var(--font-size-xs, #{$font-size-xs}) !important;
+}
+
+.fs-2xs {
+  font-size: var(--font-size-2xs, #{$font-size-2xs}) !important;
+}
+
+.fw-500 {
+  font-weight: 500;
+}

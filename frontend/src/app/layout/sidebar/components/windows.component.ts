@@ -1,0 +1,63 @@
+import { NgOptimizedImage } from '@angular/common'
+import { Component, inject, OnDestroy } from '@angular/core'
+import { LucideDynamicIcon, LucideX } from '@lucide/angular'
+import { L10nTranslateDirective } from 'angular-l10n'
+import { Subscription } from 'rxjs'
+import { AutoResizeDirective } from '../../../common/directives/auto-resize.directive'
+import { AppWindow, TAB_MENU } from '../../layout.interfaces'
+import { LayoutService } from '../../layout.service'
+
+@Component({
+  selector: 'app-windows',
+  imports: [AutoResizeDirective, LucideDynamicIcon, L10nTranslateDirective, NgOptimizedImage],
+  templateUrl: 'windows.component.html'
+})
+export class WindowsComponent implements OnDestroy {
+  protected readonly icons = { LucideX }
+  protected windows: AppWindow[] = []
+  private readonly layout = inject(LayoutService)
+  private readonly subscription: Subscription = null
+
+  constructor() {
+    this.subscription = this.layout.windows.subscribe((windows: AppWindow[]) => this.setWindows(windows))
+  }
+
+  ngOnDestroy() {
+    this.subscription.unsubscribe()
+  }
+
+  onMaximize(window: AppWindow) {
+    this.layout.restoreDialog(window.id)
+  }
+
+  onClose(ev: MouseEvent, window: AppWindow) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    const modal = this.layout.modalRefs.get(window.id)
+    if (modal) {
+      modal.content.onClose()
+    }
+    this.hideIfNoWindows(this.layout.windows.getValue())
+  }
+
+  onCloseAll() {
+    for (const w of this.layout.windows.getValue()) {
+      const modal = this.layout.modalRefs.get(w.id)
+      if (modal) {
+        modal.content.onClose()
+      }
+    }
+    this.hideIfNoWindows(this.layout.windows.getValue())
+  }
+
+  private setWindows(windows: AppWindow[]) {
+    this.hideIfNoWindows(windows)
+    this.windows = windows
+  }
+
+  private hideIfNoWindows(windows: AppWindow[]) {
+    if (!windows.length) {
+      this.layout.hideRSideBarTab(TAB_MENU.WINDOWS, 1000)
+    }
+  }
+}

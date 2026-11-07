@@ -1,0 +1,60 @@
+<div #viewDropdown="bs-dropdown"
+     aria-label="Display mode"
+     [insideClick]="true"
+     class="btn-group view-switch navigation-view-switch"
+     dropdown
+     role="group">
+  <button (click)="setView('tl'); viewDropdown.hide()"
+          aria-label="List view"
+          [attr.aria-pressed]="!galleryModeEnabled"
+          [class.active]="!galleryModeEnabled"
+          class="view-switch__option"
+          type="button">
+    <svg [lucideIcon]="icons.LucideList"></svg>
+  </button>
+  <button (click)="selectGalleryMode()"
+          aria-label="Gallery view and size options"
+          [attr.aria-pressed]="galleryModeEnabled"
+          [class.active]="galleryModeEnabled"
+          class="view-switch__option dropdown-toggle"
+          dropdownToggle
+          type="button">
+    <svg [lucideIcon]="icons.LucideGrid2x2"></svg>
+  </button>
+  <ul *dropdownMenu class="dropdown-menu dropdown-menu-right navigation-view-menu">
+    <li class="dropdown-header text-bold" l10nTranslate>Size</li>
+    <li class="px-1">
+      <div class="navigation-view-size-selector">
+        <span aria-hidden="true" class="navigation-view-size-preview is-small">
+          <svg [lucideIcon]="icons.LucideGrid2x2"></svg>
+        </span>
+        <div class="navigation-view-size-range-wrapper">
+          <input (input)="setGallerySize($event)"
+                 [attr.aria-valuetext]="gallerySizeLabel"
+                 [value]="gallerySizeIndex"
+                 aria-label="Gallery size"
+                 class="form-range navigation-view-size-range text-primary"
+                 max="4"
+                 min="0"
+                 step="1"
+                 type="range">
+          <div class="navigation-view-size-scale">
+            @for (view of galleryViewOptions; track view.key) {
+              <button (click)="setView(view.key)"
+                      [attr.aria-label]="'Gallery size ' + view.label"
+                      [attr.aria-pressed]="viewMode === view.key"
+                      [class.text-bold]="viewMode === view.key"
+                      [class.text-primary]="viewMode === view.key"
+                      [style.left.%]="$index * 100 / (galleryViewOptions.length - 1)"
+                      class="navigation-view-size-option"
+                      type="button">{{ view.label }}</button>
+            }
+          </div>
+        </div>
+        <span aria-hidden="true" class="navigation-view-size-preview is-large">
+          <svg [lucideIcon]="icons.LucideGrid2x2"></svg>
+        </span>
+      </div>
+    </li>
+  </ul>
+</div>

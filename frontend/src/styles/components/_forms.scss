@@ -1,0 +1,37 @@
+.form-control {
+  &:focus {
+    border-color: $primary;
+    box-shadow: none;
+  }
+
+  &::placeholder {
+    font-size: $font-size-base !important;
+    color: $placeholder-color;
+    opacity: 1;
+  }
+
+  &:not(select) {
+    appearance: none;
+  }
+}
+
+.form-control-sm {
+  &::placeholder {
+    font-size: $font-size-sm !important;
+  }
+}
+
+.form-check-label {
+  font-weight: inherit;
+  cursor: pointer !important;
+  @include no-select-utility;
+
+  input {
+    margin-right: 0.25rem;
+  }
+}
+
+.form-check-input {
+  margin-right: 0 !important;
+}
+

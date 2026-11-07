@@ -1,0 +1,165 @@
+import { Logger } from '@nestjs/common'
+import { setupPrimary } from '@socket.io/cluster-adapter'
+import cluster from 'node:cluster'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import process from 'node:process'
+import { AppService } from './app.service.js'
+import { ENVIRONMENT_PREFIX } from './configuration/config.constants.js'
+import { configuration, loadConfiguration } from './configuration/config.environment.js'
+
+vi.mock('@socket.io/cluster-adapter', () => ({
+  setupPrimary: vi.fn()
+}))
+
+describe(AppService.name, () => {
+  let appService: AppService
+
+  beforeAll(async () => {
+    appService = new AppService()
+    Logger.overrideLogger(['fatal'])
+  })
+
+  it('should be defined', () => {
+    expect(appService).toBeDefined()
+  })
+
+  it('should gracefully stop every worker before exiting the primary', () => {
+    const appServiceState = AppService as unknown as { shuttingDown: boolean; shutdownHooksRegistered: boolean }
+    const previousAdapter = configuration.websocket.adapter
+    const previousRestartOnFailure = configuration.server.restartOnFailure
+    const createWorker = (pid: number) => ({
+      isDead: vi.fn(() => false),
+      process: { pid, kill: vi.fn() }
+    })
+    const firstWorker = createWorker(1)
+    const secondWorker = createWorker(2)
+    const workers = { 1: firstWorker, 2: secondWorker } as any
+    const forkWorker = createWorker(3)
+    const forkSpy = vi.spyOn(cluster, 'fork').mockReturnValue(forkWorker as any)
+    const workersSpy = vi.spyOn(cluster, 'workers', 'get').mockImplementation(() => workers)
+    const clusterOnSpy = vi.spyOn(cluster, 'on')
+    const processOnSpy = vi.spyOn(process, 'on')
+    const processExitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+
+    configuration.websocket.adapter = null as never
+    configuration.server.restartOnFailure = true
+    AppService.clusterize(vi.fn().mockResolvedValue(undefined))
+
+    const shutdownHandler = processOnSpy.mock.calls.find(([event]) => event === 'SIGTERM')?.[1] as (signal: NodeJS.Signals) => void
+    const exitHandler = clusterOnSpy.mock.calls[0][1] as unknown as (worker: typeof firstWorker, code: number, signal: string) => void
+    const forkCallsBeforeShutdown = forkSpy.mock.calls.length
+
+    shutdownHandler('SIGTERM')
+    expect(firstWorker.process.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(secondWorker.process.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(processExitSpy).not.toHaveBeenCalled()
+
+    delete workers[1]
+    exitHandler(firstWorker, 0, 'SIGTERM')
+    expect(processExitSpy).not.toHaveBeenCalled()
+    expect(forkSpy).toHaveBeenCalledTimes(forkCallsBeforeShutdown)
+
+    delete workers[2]
+    exitHandler(secondWorker, 0, 'SIGTERM')
+    expect(processExitSpy).toHaveBeenCalledWith(0)
+    expect(forkSpy).toHaveBeenCalledTimes(forkCallsBeforeShutdown)
+
+    for (const signal of ['SIGINT', 'SIGTERM'] satisfies NodeJS.Signals[]) {
+      const handler = processOnSpy.mock.calls.find(([event]) => event === signal)?.[1] as (signal: NodeJS.Signals) => void
+      process.removeListener(signal, handler)
+    }
+    cluster.removeListener('exit', exitHandler as any)
+    appServiceState.shuttingDown = false
+    appServiceState.shutdownHooksRegistered = false
+    configuration.websocket.adapter = previousAdapter
+    configuration.server.restartOnFailure = previousRestartOnFailure
+    forkSpy.mockRestore()
+    workersSpy.mockRestore()
+    clusterOnSpy.mockRestore()
+    processOnSpy.mockRestore()
+    processExitSpy.mockRestore()
+  })
+
+  it('should clusterize', () => {
+    // --- MASTER, adapter='cluster' -> covers setupPrimary()
+    configuration.websocket.adapter = 'cluster'
+    configuration.server.restartOnFailure = true
+
+    const bootstrap = vi.fn().mockResolvedValue(undefined)
+
+    // IMPORTANT: do NOT call bootstrap() from fork mock
+    const fakeWorker = { process: { pid: 1 } } as any
+    cluster.fork = vi.fn(() => fakeWorker)
+
+    const spyExit = vi.spyOn(cluster, 'on')
+
+    // 1) master path (cluster.isPrimary true by default)
+    expect(() => AppService.clusterize(bootstrap)).not.toThrow()
+
+    // setupPrimary() must have run once (covers the “line 21” site)
+    expect(setupPrimary).toHaveBeenCalledTimes(1)
+
+    // fork called exactly workers times
+    expect(vi.mocked(cluster.fork).mock.calls.length).toBe(configuration.server.workers)
+
+    // --- Test exit handler with ONLY ONE registered handler
+    // TRUE branch: restart twice -> fork called +2
+    const forkCallsAfterMaster = vi.mocked(cluster.fork).mock.calls.length
+    AppService.schedulerPID = 1
+    cluster.emit('exit', { process: { pid: 1 } } as any, 1 as any, 'SIGKILL' as any)
+    AppService.schedulerPID = 0
+    cluster.emit('exit', { process: { pid: 2 } } as any, 1 as any, 'SIGKILL' as any)
+    expect(vi.mocked(cluster.fork).mock.calls.length).toBe(forkCallsAfterMaster + 2)
+
+    // FALSE branch: no restart -> fork unchanged
+    configuration.server.restartOnFailure = false
+    const forkCallsAfterTrue = vi.mocked(cluster.fork).mock.calls.length
+    cluster.emit('exit', { process: { pid: 3 } } as any, 1 as any, 'SIGKILL' as any)
+    expect(vi.mocked(cluster.fork).mock.calls.length).toBe(forkCallsAfterTrue)
+
+    // --- MASTER again, adapter != 'cluster' -> covers the FALSE side of the adapter check
+    configuration.websocket.adapter = null as never
+    expect(() => AppService.clusterize(bootstrap)).not.toThrow()
+    // setupPrimary should NOT be called again
+    expect(setupPrimary).toHaveBeenCalledTimes(1)
+
+    // --- WORKER path (else branch): bootstrap should be called exactly once here
+    vi.spyOn(cluster, 'isPrimary', 'get').mockReturnValue(false)
+    bootstrap.mockClear() // isolate bootstrap count for a worker branch
+    expect(() => AppService.clusterize(bootstrap)).not.toThrow()
+    expect(bootstrap).toHaveBeenCalledTimes(1)
+
+    spyExit.mockClear()
+  })
+
+  it(`should use ${ENVIRONMENT_PREFIX} environment variables to override the configuration`, () => {
+    let conf = configuration
+    expect(conf.logger.stdout).toBe(true)
+    expect(conf.logger.colorize).toBe(true)
+    const tmpSecretFile = path.join(os.tmpdir(), 'secret')
+    fs.writeFileSync(tmpSecretFile, 'fooBAR8888')
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    process.env[`${ENVIRONMENT_PREFIX}APPLICATIONS_FILES_ONLYOFFICE_SECRET`] = 'fooBAR'
+    process.env[`${ENVIRONMENT_PREFIX}LOGGER_STDOUT`] = 'false'
+    process.env[`${ENVIRONMENT_PREFIX}LOGGER_COLORIZE`] = '"false"'
+    process.env[`${ENVIRONMENT_PREFIX}APPLICATIONS_FILES_MAXUPLOADSIZE`] = '8888'
+    process.env[`${ENVIRONMENT_PREFIX}APPLICATIONS_FILES_SAMPLEDOCUMENTS`] = 'microsoft'
+    // docker compose secret file
+    process.env[`${ENVIRONMENT_PREFIX}AUTH_TOKEN_ACCESS_SECRET_FILE`] = tmpSecretFile
+    conf = loadConfiguration()
+    expect(conf.applications.files.editors.onlyoffice.secret).toBe('fooBAR')
+    expect(warnSpy).toHaveBeenCalledWith(
+      `Environment variable "${ENVIRONMENT_PREFIX}APPLICATIONS_FILES_ONLYOFFICE_SECRET" is deprecated. Please use "${ENVIRONMENT_PREFIX}APPLICATIONS_FILES_EDITORS_ONLYOFFICE_SECRET" instead.`
+    )
+    expect(conf.logger.stdout).toBe(false)
+    expect(conf.logger.colorize).toBe(false)
+    expect(conf.applications.files.maxUploadSize).toBe(8888)
+    expect(conf.applications.files.sampleDocuments).toEqual(['microsoft'])
+    expect(conf.auth.token.access.secret).toBe('fooBAR8888')
+    // clean up secret file
+    fs.promises.rm(tmpSecretFile, { force: true }).catch(console.error)
+  })
+})

@@ -1,0 +1,84 @@
+.avatar {
+  position: relative;
+  display: inline-block;
+
+  .avatar-img {
+    width: 30px;
+    height: 30px;
+    object-fit: cover;
+    border-radius: 50%;
+  }
+
+  .avatar-available {
+    width: 10px;
+    height: 10px;
+    background: $light-green;
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    border-radius: 50%;
+  }
+
+  .avatar-busy {
+    @extend .avatar-available;
+    background: $red;
+  }
+
+  .avatar-absent {
+    @extend .avatar-available;
+    background: $yellow;
+  }
+
+  .avatar-offline {
+    @extend .avatar-available;
+    background: $gray;
+  }
+}
+
+
+.avatar-sm {
+  @extend .avatar;
+
+  .avatar-img {
+    width: 28px;
+    height: 28px;
+  }
+
+  .avatar-available {
+    width: 9px;
+    height: 9px;
+  }
+
+}
+
+
+.avatar-lg {
+  @extend .avatar;
+
+  .avatar-img {
+    width: 60px;
+    height: 60px;
+  }
+
+  .avatar-available {
+    width: 16px;
+    height: 16px;
+  }
+
+}
+
+.avatar-xl {
+  @extend .avatar;
+
+  .avatar-img {
+    width: 80px;
+    height: 80px;
+  }
+
+  .avatar-available {
+    width: 20px;
+    height: 20px;
+  }
+
+}

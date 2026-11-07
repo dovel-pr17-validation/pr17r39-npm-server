@@ -1,0 +1,93 @@
+name: Release Workflow
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Ensure release tag commit is in main history
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "${GITHUB_REF}^{commit}" origin/main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release archives
+        run: npm run release:build
+
+      # Publish to DockerHub
+      - name: Docker Login
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker Setup Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Docker Build & Push (multi-arch)
+        run: npm run docker:buildx
+
+      # Publish to NPM (OIDC / Trusted Publishing)
+      - name: Setup Node for npmjs
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish to npmjs.org
+        working-directory: release/sync-in-server
+        run: npm publish
+
+      - name: Extract changelog for current version
+        id: changelog
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > latest-changelog.md
+
+      - name: Validate release GitHub token
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITHUB_TOKEN-}" ]; then
+            echo "::error::Missing RELEASE_GITHUB_TOKEN secret. Use a personal access token from the account that should appear as the GitHub release author."
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        with:
+          draft: true
+          body_path: latest-changelog.md
+          files: |
+            release/*.zip
+            release/*.tar.gz
+
+      - name: Clean build
+        run: npm run release:clean

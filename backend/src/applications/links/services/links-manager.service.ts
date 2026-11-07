@@ -1,0 +1,180 @@
+import { toErrorMessage } from '../../../common/errors.js'
+import { HttpException, HttpStatus, Injectable, Logger, StreamableFile } from '@nestjs/common'
+import { FastifyReply, FastifyRequest } from 'fastify'
+import { AuthManager } from '../../../authentication/auth.service.js'
+import { LoginResponseDto } from '../../../authentication/dto/login-response.dto.js'
+import type { JwtIdentityPayload } from '../../../authentication/interfaces/jwt-payload.interface.js'
+import { serverConfig } from '../../../configuration/config.environment.js'
+import { FilesManager } from '../../files/services/files-manager.service.js'
+import { SendFile } from '../../files/utils/send-file.js'
+import { SPACE_REPOSITORY } from '../../spaces/constants/spaces.js'
+import { SpaceEnv } from '../../spaces/models/space-env.model.js'
+import { SpacesManager } from '../../spaces/services/spaces-manager.service.js'
+import type { UserPasswordDto } from '../../users/dto/user-properties.dto.js'
+import { UserModel } from '../../users/models/user.model.js'
+import { UsersManager } from '../../users/services/users-manager.service.js'
+import { getAvatarBase64 } from '../../users/utils/avatar.js'
+import { LINK_ERROR } from '../constants/links.js'
+import type { LinkEnv } from '../interfaces/link-env.interface.js'
+import { LinkAsUser } from '../interfaces/link-guest.interface.js'
+import { SpaceLink } from '../interfaces/link-space.interface.js'
+import { LinksQueries } from './links-queries.service.js'
+
+@Injectable()
+export class LinksManager {
+  private logger = new Logger(LinksManager.name)
+
+  constructor(
+    private readonly authManager: AuthManager,
+    private readonly usersManager: UsersManager,
+    private readonly filesManager: FilesManager,
+    private readonly spacesManager: SpacesManager,
+    private readonly linksQueries: LinksQueries
+  ) {}
+
+  async linkValidation(identity: JwtIdentityPayload, uuid: string): Promise<{ ok: boolean; error: string | null; link: SpaceLink | null }> {
+    const [_link, check, ok] = await this.linkEnv(identity, uuid)
+    if (!ok) {
+      this.logger.warn({ tag: this.linkValidation.name, msg: `${uuid} : ${check}` })
+    }
+    const spaceLink = ok ? ((await this.linksQueries.spaceLink(uuid)) ?? null) : null
+    if (ok) {
+      if (spaceLink?.owner?.login) {
+        spaceLink.owner.avatar = await getAvatarBase64(spaceLink.owner.login)
+        // For security reasons
+        delete spaceLink.owner.login
+      }
+      if (spaceLink?.share) {
+        // Only used when the link is a file or a directory
+        spaceLink.fileEditors = serverConfig.files.editors
+      }
+    }
+    return { ok: ok, error: ok ? null : check, link: spaceLink }
+  }
+
+  async linkAccess(
+    identity: JwtIdentityPayload,
+    uuid: string,
+    req: FastifyRequest,
+    res: FastifyReply
+  ): Promise<LoginResponseDto | Omit<LoginResponseDto, 'token'>> {
+    const [link, check, ok] = await this.linkEnv(identity, uuid)
+    if (!ok) {
+      this.logger.warn({ tag: this.linkAccess.name, msg: `${link ? `*${link.user.login}* (${link.user.id})` : uuid} : ${check}` })
+      throw new HttpException(check, HttpStatus.BAD_REQUEST)
+    }
+    const user = new UserModel(link.user)
+    if (link.user.id !== identity.id) {
+      // Authenticate the link user for subsequent access
+      await this.consumeLinkAccess(link)
+      this.logger.log({ tag: this.linkAccess.name, msg: `*${user.login}* (${user.id}) is logged` })
+      this.usersManager
+        .updateAccesses(user, req.ip, true)
+        .catch((e: Error) => this.logger.error({ tag: this.linkAccess.name, msg: toErrorMessage(e) }))
+      // bound the whole session to the link expiration
+      return this.authManager.setCookies(user, res, false, undefined, link.expiresAt)
+    }
+    // Already authenticated
+    return { user: user, server: serverConfig }
+  }
+
+  async linkDownload(identity: JwtIdentityPayload, uuid: string, req: FastifyRequest, res: FastifyReply): Promise<StreamableFile> {
+    const [link, check, ok] = await this.linkEnv(identity, uuid)
+    if (!ok) {
+      this.logger.warn({ tag: this.linkDownload.name, msg: `${link ? `*${link.user.login}* (${link.user.id})` : uuid} : ${check}` })
+      throw new HttpException(check, HttpStatus.BAD_REQUEST)
+    }
+    const spaceLink = await this.linksQueries.spaceLink(uuid)
+    if (!spaceLink || spaceLink.space || !spaceLink.share || spaceLink.share.isDir) {
+      this.logger.error({ tag: this.linkDownload.name, msg: `the provided link does not reference a downloadable file` })
+      throw new HttpException('This link does not allow file download', HttpStatus.BAD_REQUEST)
+    }
+    const user = new UserModel(link.user)
+    // A direct download without an existing link session consumes an access
+    if (link.user.id !== identity.id) {
+      await this.consumeLinkAccess(link)
+    }
+    this.logger.log({ tag: this.linkDownload.name, msg: `*${user.login}* (${user.id}) downloading ${spaceLink.share.name}` })
+    const spaceEnv: SpaceEnv = await this.spaceEnvFromLink(user, spaceLink.share)
+    const sendFile: SendFile = this.filesManager.sendFileFromSpace(spaceEnv, spaceLink.share.name)
+    try {
+      await sendFile.checks()
+      return await sendFile.stream(req, res)
+    } catch (e) {
+      this.logger.error({ tag: this.linkDownload.name, msg: `unable to send file : ${toErrorMessage(e)}` })
+      throw new HttpException('Unable to download file', HttpStatus.INTERNAL_SERVER_ERROR)
+    }
+  }
+
+  async linkAuthentication(identity: JwtIdentityPayload, uuid: string, linkPasswordDto: UserPasswordDto, req: FastifyRequest, res: FastifyReply) {
+    const [link, check, ok] = await this.linkEnv(identity, uuid, true)
+    if (!ok) {
+      this.logger.warn({ tag: this.linkAuthentication.name, msg: `${link ? `*${link.user.login}* (${link.user.id})` : uuid} : ${check}` })
+      throw new HttpException(check, HttpStatus.BAD_REQUEST)
+    }
+    const user = new UserModel(link.user)
+    await this.usersManager.validatePasswordAttempts(user)
+    const authSuccess: boolean = await this.usersManager.compareUserPassword(link.user.id, linkPasswordDto.password)
+    this.usersManager
+      .updateAccesses(user, req.ip, authSuccess)
+      .catch((e: Error) => this.logger.error({ tag: this.linkAuthentication.name, msg: toErrorMessage(e) }))
+    if (!authSuccess) {
+      this.logger.warn({ tag: this.linkAuthentication.name, msg: `*${user.login}* (${user.id}) : auth failed` })
+      throw new HttpException(LINK_ERROR.UNAUTHORIZED, HttpStatus.FORBIDDEN)
+    }
+    await this.consumeLinkAccess(link)
+    // authenticate user to allow access
+    this.logger.log({ tag: this.linkAuthentication.name, msg: `*${user.login}* (${user.id}) is logged` })
+    // bound the whole session to the link expiration
+    return this.authManager.setCookies(user, res, false, undefined, link.expiresAt)
+  }
+
+  private async spaceEnvFromLink(user: UserModel, share: NonNullable<SpaceLink['share']>): Promise<SpaceEnv> {
+    const spaceEnv = await this.spacesManager.spaceEnv(user, [SPACE_REPOSITORY.SHARES, share.alias])
+    if (!spaceEnv) {
+      throw new HttpException(LINK_ERROR.NOT_FOUND, HttpStatus.BAD_REQUEST)
+    }
+    return spaceEnv
+  }
+
+  private async linkEnv(identity: JwtIdentityPayload, uuid: string, ignoreAuth: boolean = false): Promise<LinkEnv> {
+    const link = await this.linksQueries.linkFromUUID(uuid)
+    if (!link) {
+      return [link, LINK_ERROR.NOT_FOUND, false]
+    }
+    const check = this.checkLink(identity, link, ignoreAuth)
+    return check === true ? [link, true, true] : [link, check, false]
+  }
+
+  private checkLink(identity: JwtIdentityPayload, link: LinkAsUser, ignoreAuth: boolean = false): string | true {
+    if (!link.user.isActive) {
+      return LINK_ERROR.DISABLED
+    }
+    if (link.user.id !== identity.id && link.limitAccess !== 0 && link.nbAccess >= link.limitAccess) {
+      return LINK_ERROR.EXCEEDED
+    }
+    if (this.isLinkExpired(link)) {
+      return LINK_ERROR.EXPIRED
+    }
+    if (!ignoreAuth && link.requireAuth && link.user.id !== identity.id) {
+      return LINK_ERROR.UNAUTHORIZED
+    }
+    return true
+  }
+
+  private async consumeLinkAccess(link: LinkAsUser): Promise<void> {
+    if (this.isLinkExpired(link)) {
+      throw new HttpException(LINK_ERROR.EXPIRED, HttpStatus.BAD_REQUEST)
+    }
+    if (!(await this.linksQueries.consumeLinkAccess(link.uuid))) {
+      if (this.isLinkExpired(link)) {
+        throw new HttpException(LINK_ERROR.EXPIRED, HttpStatus.BAD_REQUEST)
+      }
+      throw new HttpException(LINK_ERROR.EXCEEDED, HttpStatus.BAD_REQUEST)
+    }
+  }
+
+  private isLinkExpired(link: LinkAsUser): boolean {
+    return !!link.expiresAt && new Date() >= link.expiresAt
+  }
+}

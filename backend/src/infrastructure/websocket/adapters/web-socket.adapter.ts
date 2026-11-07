@@ -1,0 +1,139 @@
+import { Injectable, Logger } from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
+import { type NestFastifyApplication } from '@nestjs/platform-fastify'
+import { IoAdapter } from '@nestjs/platform-socket.io'
+import { WsException } from '@nestjs/websockets'
+import { type FastifyInstance } from 'fastify'
+import cluster from 'node:cluster'
+import { Namespace, ServerOptions, Socket } from 'socket.io'
+import { USERS_WS } from '../../../applications/users/constants/websocket.js'
+import { UserModel } from '../../../applications/users/models/user.model.js'
+import { UsersManager } from '../../../applications/users/services/users-manager.service.js'
+import { type JwtPayload } from '../../../authentication/interfaces/jwt-payload.interface.js'
+import { TOKEN_TYPE } from '../../../authentication/interfaces/token.interface.js'
+import { toErrorMessage } from '../../../common/errors.js'
+import { configuration } from '../../../configuration/config.environment.js'
+import { getClientAddress } from '../utils.js'
+import { ClusterAdapter } from './cluster.adapter.js'
+import { RedisAdapter } from './redis.adapter.js'
+
+@Injectable()
+export class WebSocketAdapter extends IoAdapter {
+  private adapter?: RedisAdapter | ClusterAdapter
+  private readonly app: NestFastifyApplication
+  private readonly fastify: FastifyInstance
+  protected override readonly logger: Logger = new Logger(WebSocketAdapter.name)
+  private readonly jwtService: JwtService
+  private readonly usersManager: UsersManager
+
+  constructor(app: NestFastifyApplication) {
+    super(app)
+    this.app = app
+    this.fastify = app.getHttpAdapter().getInstance()
+    this.jwtService = app.get<JwtService>(JwtService)
+    this.usersManager = app.get<UsersManager>(UsersManager)
+  }
+
+  async initAdapter() {
+    this.adapter = await this.getAdapter()
+  }
+
+  createIOServer(port: number, options?: ServerOptions) {
+    const server = this.adapter!.createIOServer(port, {
+      ...options,
+      transports: ['websocket']
+    } as ServerOptions)
+    // Authentication
+    server.use(this.authenticateSocket.bind(this))
+    server.on('new_namespace', (namespace: Namespace) => {
+      // apply auth on all namespaces
+      namespace.use(this.authenticateSocket.bind(this))
+    })
+    this.logger.log(`Using ${server.of(USERS_WS.NAME_SPACE).adapter.constructor.name}`)
+    return server
+  }
+
+  async dispose(): Promise<void> {
+    if (this.adapter instanceof RedisAdapter) {
+      await this.adapter.disconnect()
+    }
+  }
+
+  async getAdapter() {
+    if (configuration.websocket.adapter === 'redis') {
+      try {
+        const redisIoAdapter = new RedisAdapter(this.app)
+        await redisIoAdapter.connect(configuration.websocket.redis)
+        return redisIoAdapter
+      } catch (e) {
+        this.logger.error(toErrorMessage(e))
+        throw e
+      }
+    } else {
+      if (cluster.isWorker) {
+        // setup connection with the primary process
+        return new ClusterAdapter(this.app)
+      } else {
+        this.logger.warn('Adapter Cluster only works in clustering mode', 'WEBSOCKET')
+        // do not exit for tests (e2e)
+      }
+    }
+  }
+
+  private async authenticateSocket(socket: Socket, next: (err?: Error) => void) {
+    const cookies = socket.request.headers.cookie ? this.fastify.parseCookie(socket.request.headers.cookie) : {}
+    const token = cookies[configuration.auth.token.ws.name]
+    if (!token) {
+      this.onAuthError('Authorization is missing', socket, next)
+      return
+    }
+    let payload: JwtPayload
+    try {
+      payload = this.jwtService.verify<JwtPayload>(token, { secret: configuration.auth.token.ws.secret })
+    } catch (e) {
+      this.onAuthError(toErrorMessage(e), socket, next)
+      return
+    }
+    if (!payload) {
+      this.onAuthError('Payload is missing', socket, next)
+      return
+    }
+    if (payload.tokenType !== TOKEN_TYPE.WS) {
+      this.onAuthError('Invalid token type', socket, next)
+      return
+    }
+    let user: UserModel | null
+    try {
+      user = await this.usersManager.fromAuthToken(new UserModel(payload.identity))
+    } catch (e) {
+      this.onAuthError(toErrorMessage(e), socket, next)
+      return
+    }
+    if (!user) {
+      this.onAuthError('User is unavailable', socket, next)
+      return
+    }
+    Object.assign(socket, { user })
+    // WS authentication only runs during the handshake, so disconnect the socket when its token
+    // expires to enforce the session boundary without another database query.
+    if (payload.exp * 1000 > Date.now()) {
+      // setTimeout caps delays at ~24.8 days, re-arm for a longer configured token lifetime
+      const maxDelay = 2147483647
+      let expiryTimer: ReturnType<typeof setTimeout>
+      const scheduleExpiry = () => {
+        const delay = payload.exp * 1000 - Date.now()
+        expiryTimer = delay > maxDelay ? setTimeout(scheduleExpiry, maxDelay) : setTimeout(() => socket.disconnect(true), delay)
+      }
+      scheduleExpiry()
+      socket.once('disconnect', () => clearTimeout(expiryTimer))
+    }
+    next()
+  }
+
+  private onAuthError(error: string, socket: Socket, next: (err?: Error) => void) {
+    this.logger.warn(
+      `${toErrorMessage(error)} - ${getClientAddress(socket)} ${socket.id} ${socket.handshake.url} ${socket.handshake.headers['user-agent']}`
+    )
+    next(new WsException('Unauthorized'))
+  }
+}

@@ -1,0 +1,34 @@
+@if (adapter().isOpen()) {
+  <div class="files-viewer-search">
+    <svg class="files-viewer-search-icon" [lucideIcon]="icons.LucideSearch"></svg>
+    <input
+      #searchInput
+      (keydown)="searchKeyDown($event)"
+      (ngModelChange)="queryChange($event)"
+      [ngModel]="query()"
+      autocomplete="off"
+      class="files-viewer-search-input"
+      type="search" />
+    <span class="files-viewer-search-count">{{ adapter().currentIndex() }} / {{ adapter().matchCount() }}</span>
+    <button
+      (click)="adapter().previous()"
+      [disabled]="!adapter().matchCount()"
+      class="btn btn-sm btn-custom files-viewer-search-button"
+      type="button">
+      <svg [lucideIcon]="icons.LucideChevronUp"></svg>
+    </button>
+    <button
+      (click)="adapter().next()"
+      [disabled]="!adapter().matchCount()"
+      class="btn btn-sm btn-custom files-viewer-search-button"
+      type="button">
+      <svg [lucideIcon]="icons.LucideChevronDown"></svg>
+    </button>
+    <button
+      (click)="adapter().close()"
+      class="btn btn-sm btn-custom files-viewer-search-button"
+      type="button">
+      <svg [lucideIcon]="icons.LucideX"></svg>
+    </button>
+  </div>
+}

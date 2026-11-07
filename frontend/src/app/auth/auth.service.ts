@@ -1,0 +1,427 @@
+import { HttpClient, HttpErrorResponse } from '@angular/common/http'
+import { inject, Injectable } from '@angular/core'
+import { Router } from '@angular/router'
+import { CLIENT_MISSING_ERROR, CLIENT_TOKEN_EXPIRED_ERROR } from '@sync-in-server/backend/src/applications/sync/constants/auth'
+import { API_SYNC_AUTH_COOKIE, API_SYNC_REGISTER_AUTH } from '@sync-in-server/backend/src/applications/sync/constants/routes'
+import type { SyncClientAuthDto } from '@sync-in-server/backend/src/applications/sync/dtos/sync-client-auth.dto'
+import type {
+  SyncClientAuthCookie,
+  SyncClientAuthenticatedRegistration,
+  SyncClientAuthRegistration
+} from '@sync-in-server/backend/src/applications/sync/interfaces/sync-client-auth.interface'
+import { API_ADMIN_IMPERSONATE_LOGOUT } from '@sync-in-server/backend/src/applications/users/constants/routes'
+import {
+  API_AUTH_LOGIN,
+  API_AUTH_LOGOUT,
+  API_AUTH_REFRESH,
+  API_AUTH_SETTINGS,
+  API_TWO_FA_LOGIN_VERIFY
+} from '@sync-in-server/backend/src/authentication/constants/routes'
+import type { LoginResponseDto } from '@sync-in-server/backend/src/authentication/dto/login-response.dto'
+import type { AuthOIDCSettings } from '@sync-in-server/backend/src/authentication/providers/oidc/auth-oidc.interfaces'
+import type { TwoFaResponseDto, TwoFaVerifyDto } from '@sync-in-server/backend/src/authentication/providers/two-fa/auth-two-fa.dtos'
+import { currentTimeStamp } from '@sync-in-server/backend/src/common/shared'
+import { RETRYABLE_CONNECTION_ERROR_CODES } from '@sync-in-server/backend/src/infrastructure/constants'
+import { catchError, finalize, map, Observable, of, throwError } from 'rxjs'
+import { switchMap, tap } from 'rxjs/operators'
+import { SERVICE_INTERRUPTION_ERROR, SERVICE_UNAVAILABLE_ERROR } from '../app.constants'
+import { USER_PATH } from '../applications/users/user.constants'
+import { UserService } from '../applications/users/user.service'
+import { EVENT } from '../electron/constants/events'
+import { Electron } from '../electron/electron.service'
+import { LayoutService } from '../layout/layout.service'
+import { StoreService } from '../store/store.service'
+import { AUTH_PATHS } from './auth.constants'
+import type { AuthOIDCQueryParams, AuthResult } from './auth.interface'
+import { AUTH_RATE_LIMIT_ERROR_MESSAGE, getAuthRetryAfter, isDesktopRateLimitError } from './auth.utils'
+
+@Injectable({
+  providedIn: 'root'
+})
+export class AuthService {
+  public returnUrl: string
+  public electron = inject(Electron)
+  private authSettings: AuthOIDCSettings | false = null
+  private readonly http = inject(HttpClient)
+  private readonly router = inject(Router)
+  private readonly store = inject(StoreService)
+  private readonly userService = inject(UserService)
+  private readonly layout = inject(LayoutService)
+
+  private _refreshExpiration = parseInt(localStorage.getItem('refresh_expiration') || '0', 10) || 0
+
+  get refreshExpiration(): number {
+    return this._refreshExpiration
+  }
+
+  set refreshExpiration(value: number) {
+    // allow 60 seconds for concurrent requests
+    this._refreshExpiration = value !== 0 ? value + 60 : value
+    localStorage.setItem('refresh_expiration', value.toString())
+  }
+
+  private _accessExpiration = parseInt(localStorage.getItem('access_expiration') || '0', 10) || 0
+
+  get accessExpiration(): number {
+    return this._accessExpiration
+  }
+
+  set accessExpiration(value: number) {
+    // allow 60 seconds for concurrent requests
+    this._accessExpiration = value !== 0 ? value + 60 : value
+    localStorage.setItem('access_expiration', value.toString())
+  }
+
+  login(login: string, password: string): Observable<AuthResult> {
+    return this.http.post<LoginResponseDto>(API_AUTH_LOGIN, { login, password }).pipe(
+      switchMap((r: LoginResponseDto) => {
+        // 2FA - first step (code page)
+        if (r.server.twoFaEnabled && r.user.twoFaEnabled) {
+          this.accessExpiration = r.token.access_2fa_expiration
+          this.refreshExpiration = this.accessExpiration
+          return of<AuthResult>({ success: true, twoFaEnabled: true, message: null })
+        }
+        // Desktop Client Login
+        if (this.electron.enabled) {
+          return this.electron.register(login, password)
+        }
+        // Web Login
+        this.initUserFromResponse(r)
+        return of<AuthResult>({ success: true, message: null })
+      }),
+      catchError((e: HttpErrorResponse) => {
+        console.error(e)
+        const retryAfter = getAuthRetryAfter(e)
+        return of<AuthResult>({
+          success: false,
+          message: e?.error?.message ?? e?.message,
+          retryAfter
+        })
+      })
+    )
+  }
+
+  logout(redirect = true, expired = false, errorMsg?: string) {
+    if (this.electron.enabled && errorMsg !== undefined) {
+      this.layout.sendNotification('error', SERVICE_INTERRUPTION_ERROR, errorMsg)
+      return
+    }
+    if (!errorMsg && (redirect || expired) && this.store.userImpersonate()) {
+      this.logoutImpersonateUser()
+      return
+    }
+    this.userService.disconnectWebSocket()
+    this.clearCookies()
+      .pipe(
+        finalize(() => {
+          this.accessExpiration = 0
+          this.refreshExpiration = 0
+          this.layout.clean()
+          this.store.clean()
+          if (redirect) {
+            this.router.navigate([AUTH_PATHS.BASE, AUTH_PATHS.LOGIN]).catch(console.error)
+          }
+          if (errorMsg) {
+            this.layout.sendNotification('error', SERVICE_INTERRUPTION_ERROR, errorMsg)
+          } else if (expired) {
+            this.layout.sendNotification('warning', 'Session has expired', 'Please sign in')
+          }
+        })
+      )
+      .subscribe({ error: (error: HttpErrorResponse) => console.error(error) })
+  }
+
+  initUserFromResponse(r: LoginResponseDto, impersonate = false) {
+    if (r !== null) {
+      this.accessExpiration = r.token.access_expiration
+      this.refreshExpiration = r.token.refresh_expiration
+      this.initUser(r, impersonate)
+    }
+  }
+
+  isLogged() {
+    return !this.refreshTokenHasExpired()
+  }
+
+  refreshToken(): Observable<boolean> {
+    return this.http.post<LoginResponseDto>(API_AUTH_REFRESH, null).pipe(
+      map((r) => {
+        this.initUserFromResponse(r)
+        return true
+      }),
+      catchError((e: HttpErrorResponse) => {
+        if (this.electron.enabled) {
+          if (this.isTemporaryHttpError(e)) {
+            return throwError(() => e)
+          }
+          return this.authDesktopClient()
+        }
+        this.logout(true, true)
+        return throwError(() => e)
+      })
+    )
+  }
+
+  checkUserAuthAndLoad(returnUrl: string, authFromOIDC?: AuthOIDCQueryParams): Observable<boolean> {
+    if (authFromOIDC) {
+      // At this point, the auth cookies are already stored in the session.
+      this.accessExpiration = parseInt(authFromOIDC.access_expiration)
+      this.refreshExpiration = parseInt(authFromOIDC.refresh_expiration)
+      if (this.electron.enabled) {
+        return this.authOIDCDesktopClient()
+      }
+    }
+    if (this.refreshTokenHasExpired()) {
+      if (this.electron.enabled) {
+        return this.authDesktopClient()
+      }
+      this.returnUrl = returnUrl.length > 1 ? returnUrl : null
+      this.logout()
+      return of(false)
+    } else if (!this.store.user.getValue()) {
+      return this.userService.loadUser().pipe(
+        tap((r: Omit<LoginResponseDto, 'token'>) => this.initUser(r)),
+        map(() => true),
+        catchError((e: HttpErrorResponse) => {
+          if (e.status === 401) {
+            this.logout()
+          } else {
+            console.warn(e)
+          }
+          return of(false)
+        })
+      )
+    }
+    return of(true)
+  }
+
+  loginWith2Fa(verify: TwoFaVerifyDto): Observable<TwoFaResponseDto> {
+    return this.http.post<TwoFaResponseDto>(API_TWO_FA_LOGIN_VERIFY, verify)
+  }
+
+  initUser(r: Partial<LoginResponseDto>, impersonate = false) {
+    this.userService.initUser(r.user, impersonate)
+    if (r.server) {
+      this.store.server.set(r.server)
+    }
+  }
+
+  getAuthSettings(): Observable<AuthOIDCSettings | false> {
+    // If OIDC authentication is not enabled, the route should return a 404.
+    if (this.authSettings !== null) return of(this.authSettings)
+    return this.http.get<AuthOIDCSettings>(API_AUTH_SETTINGS).pipe(
+      map((r): AuthOIDCSettings => {
+        this.authSettings = r
+        return r
+      }),
+      catchError((e: HttpErrorResponse) => {
+        console.error(e)
+        this.authSettings = false
+        return of(false as const)
+      })
+    )
+  }
+
+  private logoutImpersonateUser() {
+    this.http.post<LoginResponseDto>(API_ADMIN_IMPERSONATE_LOGOUT, null).subscribe({
+      next: (r: LoginResponseDto) => {
+        this.userService.disconnectWebSocket()
+        this.initUserFromResponse(r)
+        this.router.navigate([USER_PATH.BASE, USER_PATH.ACCOUNT]).catch(console.error)
+      },
+      error: (e: HttpErrorResponse) => {
+        console.error(e)
+        if (this.electron.enabled && this.isTemporaryHttpError(e)) {
+          return
+        }
+        this.store.userImpersonate.set(false)
+        this.logout(true, true)
+      }
+    })
+  }
+
+  private authDesktopClient(): Observable<boolean> {
+    return this.electron.authenticate().pipe(
+      switchMap((auth: SyncClientAuthCookie | SyncClientAuthDto) => {
+        if (this.isSyncClientAuthCookie(auth)) {
+          // Updated desktop already performed /auth/cookie and only returns the session payload.
+          return of(this.applyDesktopAuthCookie(auth))
+        }
+        // Older desktop fallback: Angular still receives the raw client credential and posts it itself.
+        return this.authLegacyDesktopClient(auth)
+      }),
+      catchError((e) => this.handleDesktopAuthError(e))
+    )
+  }
+
+  private authOIDCDesktopClient(): Observable<boolean> {
+    return this.electron.authenticate().pipe(
+      switchMap((auth: SyncClientAuthCookie | SyncClientAuthDto) => {
+        if (this.isSyncClientAuthCookie(auth)) {
+          // Existing desktop client was authenticated directly by the updated desktop.
+          return of(this.applyDesktopAuthCookie(auth))
+        }
+        if (!auth.clientId || auth.tokenHasExpired) {
+          // Older desktop fallback for registration/renewal after OIDC login.
+          return this.authLegacyOIDCDesktopClient(auth)
+        } else {
+          return this.authDesktopClient()
+        }
+      }),
+      catchError((e) => {
+        const message = this.desktopAuthErrorMessage(e)
+        if (message === CLIENT_MISSING_ERROR || message === CLIENT_TOKEN_EXPIRED_ERROR) {
+          // Updated desktop needs the authenticated browser session to register or renew its client token.
+          return this.electron.registerAuthenticatedClient().pipe(
+            switchMap((registration: SyncClientAuthenticatedRegistration) => {
+              console.debug(`${this.authOIDCDesktopClient.name} - desktop client registration stored for ${registration.clientId}`)
+              return this.authDesktopClient()
+            }),
+            catchError((registrationError) => {
+              const registrationErrorMessage = this.desktopAuthErrorMessage(registrationError)
+              console.error(`${this.authOIDCDesktopClient.name} - ${registrationErrorMessage}`)
+              if (this.handleRetryableDesktopAuthError(registrationError)) {
+                return of(false)
+              }
+              this.logout(true)
+              return of(false)
+            })
+          )
+        }
+        console.error(`${this.authOIDCDesktopClient.name} - ${message}`)
+        if (this.handleRetryableDesktopAuthError(e)) {
+          return of(false)
+        }
+        this.notifyDesktopRateLimit(e)
+        this.logout(true)
+        return of(false)
+      })
+    )
+  }
+
+  private authLegacyDesktopClient(auth: SyncClientAuthDto): Observable<boolean> {
+    // Transitional path for older desktops; remove once every supported desktop uses AUTHENTICATION_COOKIE.
+    if (!auth.clientId) {
+      console.debug(`${this.authDesktopClient.name} - client must be registered`)
+      this.logout(true)
+      return of(false)
+    }
+    return this.http.post<SyncClientAuthCookie>(API_SYNC_AUTH_COOKIE, auth).pipe(
+      map((r: SyncClientAuthCookie) => {
+        const authenticated = this.applyDesktopAuthCookie(r)
+        if (r?.client_token_update) {
+          this.electron.send(EVENT.SERVER.AUTHENTICATION_TOKEN_UPDATE, r.client_token_update)
+        }
+        return authenticated
+      }),
+      catchError((e: HttpErrorResponse) => {
+        const message = this.desktopAuthErrorMessage(e)
+        console.debug(`${this.authDesktopClient.name} - ${message}`)
+        if (this.isTemporaryHttpError(e)) {
+          return of(false)
+        }
+        if (message === CLIENT_TOKEN_EXPIRED_ERROR) {
+          this.electron.send(EVENT.SERVER.AUTHENTICATION_TOKEN_EXPIRED)
+        } else {
+          this.electron.send(EVENT.SERVER.AUTHENTICATION_FAILED)
+        }
+        this.logout(true, message === CLIENT_TOKEN_EXPIRED_ERROR)
+        return of(false)
+      })
+    )
+  }
+
+  private authLegacyOIDCDesktopClient(auth: SyncClientAuthDto): Observable<boolean> {
+    // Transitional path for older desktops; the frontend still completes /register/auth and sends the token back to desktop.
+    return this.http.post<SyncClientAuthRegistration>(API_SYNC_REGISTER_AUTH, auth).pipe(
+      switchMap((externalAuth: SyncClientAuthRegistration) =>
+        this.electron.externalRegister(externalAuth).pipe(
+          switchMap((success: boolean) => {
+            if (success) {
+              console.debug(`${this.authOIDCDesktopClient.name} - ${auth.clientId ? 'client was registered' : 'client token renewed'}`)
+              return this.authDesktopClient()
+            }
+            this.logout(true, true)
+            return of(false)
+          })
+        )
+      ),
+      catchError((e: HttpErrorResponse) => {
+        const message = this.desktopAuthErrorMessage(e)
+        console.error(`${this.authOIDCDesktopClient.name} - ${message}`)
+        if (this.handleRetryableDesktopAuthError(e)) {
+          return of(false)
+        }
+        this.logout(true)
+        return of(false)
+      })
+    )
+  }
+
+  private applyDesktopAuthCookie(r: SyncClientAuthCookie): boolean {
+    this.accessExpiration = r.token.access_expiration
+    this.refreshExpiration = r.token.refresh_expiration
+    this.initUser(r)
+    return true
+  }
+
+  private isSyncClientAuthCookie(auth: SyncClientAuthCookie | SyncClientAuthDto): auth is SyncClientAuthCookie {
+    return !!auth && typeof (auth as SyncClientAuthCookie).token === 'object'
+  }
+
+  private handleDesktopAuthError(e: unknown): Observable<boolean> {
+    const message = this.desktopAuthErrorMessage(e)
+    console.debug(`${this.authDesktopClient.name} - ${message}`)
+    if (this.handleRetryableDesktopAuthError(e)) {
+      return of(false)
+    }
+    this.notifyDesktopRateLimit(e)
+    if (message === CLIENT_TOKEN_EXPIRED_ERROR) {
+      this.electron.send(EVENT.SERVER.AUTHENTICATION_TOKEN_EXPIRED)
+    } else if (message !== CLIENT_MISSING_ERROR) {
+      this.electron.send(EVENT.SERVER.AUTHENTICATION_FAILED)
+    }
+    this.logout(true, message === CLIENT_TOKEN_EXPIRED_ERROR)
+    return of(false)
+  }
+
+  private desktopAuthErrorMessage(e: unknown): string {
+    if (isDesktopRateLimitError(e)) return AUTH_RATE_LIMIT_ERROR_MESSAGE
+
+    const rawMessage = (e as HttpErrorResponse)?.error?.message ?? (e as Error)?.message ?? e
+    const message = Array.isArray(rawMessage) ? rawMessage.join(', ') : String(rawMessage)
+    if (message.includes(CLIENT_TOKEN_EXPIRED_ERROR)) {
+      return CLIENT_TOKEN_EXPIRED_ERROR
+    }
+    if (message.includes(CLIENT_MISSING_ERROR)) {
+      return CLIENT_MISSING_ERROR
+    }
+    return message
+  }
+
+  private handleRetryableDesktopAuthError(e: unknown): boolean {
+    const code = (e as { code?: string })?.code
+    if (!code || !RETRYABLE_CONNECTION_ERROR_CODES.has(code)) return false
+
+    this.layout.sendNotification('error', SERVICE_INTERRUPTION_ERROR, SERVICE_UNAVAILABLE_ERROR)
+    return true
+  }
+
+  private isTemporaryHttpError(e: HttpErrorResponse): boolean {
+    return e.status === 0 || e.status === 503
+  }
+
+  private notifyDesktopRateLimit(e: unknown) {
+    if (isDesktopRateLimitError(e)) {
+      this.layout.sendNotification('error', 'Authentication', AUTH_RATE_LIMIT_ERROR_MESSAGE)
+    }
+  }
+
+  private refreshTokenHasExpired(): boolean {
+    return this.refreshExpiration === 0 || currentTimeStamp() >= this.refreshExpiration
+  }
+
+  private clearCookies() {
+    return this.http.post(API_AUTH_LOGOUT, null)
+  }
+}

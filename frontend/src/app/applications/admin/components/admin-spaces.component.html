@@ -1,0 +1,151 @@
+<!--Start Top Menu-->
+<div class="app-top-menu app-top-menu-tool-bar"
+     [attr.aria-label]="'Actions' | translate:locale.language"
+     role="toolbar">
+  <button (click)="openSpaceDialog(true)"
+          [attr.aria-label]="'New space' | translate:locale.language"
+          class="btn btn-default app-top-menu-tool-bar__action--quiet app-top-menu-tool-bar__action--breadcrumb-aligned"
+          [tooltip]="'New space' | translate:locale.language"
+          type="button">
+    <svg [lucideIcon]="icons.LucidePlus"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>New</span>
+  </button>
+  <button (click)="openSpaceDialog()"
+          [attr.aria-label]="'Edit space' | translate:locale.language"
+          [disabled]="!selected"
+          class="btn btn-default app-top-menu-tool-bar__action--quiet"
+          [tooltip]="'Edit space' | translate:locale.language"
+          type="button">
+    <svg [lucideIcon]="icons.LucidePencil"></svg>
+    <span class="app-top-menu-tool-bar__label" l10nTranslate>Edit</span>
+  </button>
+  <button (click)="openChildShareDialog()"
+          [attr.aria-label]="'Edit children shares' | translate:locale.language"
+          [disabled]="!selected?.counts.shares"
+          class="btn btn-default"
+          [tooltip]="'Edit children shares' | translate:locale.language"
+          type="button">
+    <svg [lucideIcon]="icons.SHARES"></svg>
+  </button>
+  <div class="d-flex align-items-center">
+    <button (click)="loadSpaces()"
+            [attr.aria-label]="'Refresh' | translate:locale.language"
+            class="d-none d-md-block btn btn-default"
+            [tooltip]="'Refresh' | translate:locale.language"
+            type="button">
+      <svg [lucideIcon]="icons.LucideRotateCw" [class]="loading ? 'icon-spin' : ''"></svg>
+    </button>
+  </div>
+</div>
+<!--End Top Menu-->
+<table class="app-table">
+  <thead>
+  <tr>
+    @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+      @if (th.value.show) {
+        <th (click)="sortBy(th.key)"
+            [style.width.%]="th.value.width"
+            [class.text-align-center]="th.value.textCenter"
+            [class.cursor-pointer]="th.value.sortable"
+            class="{{th.value.class}}"
+            l10nTranslate>
+          {{ th.value.label }}
+          @if (sortTable.sortParam.column === th.key) {
+            <svg [lucideIcon]="sortTable.sortParam.asc ? icons.LucideArrowDown : icons.LucideArrowUp"></svg>
+          }
+        </th>
+      }
+    }
+  </tr>
+  </thead>
+</table>
+<app-virtual-scroll (contextmenu)="onContextMenu($event)"
+                    [bufferAmount]="5"
+                    [items]="spaces | searchFilter:navbarSearch.viewFilter()">
+  <table class="app-table">
+    <tbody tabindex="-1">
+      @for (s of scrollView?.viewPortItems; track s.id) {
+        <tr (click)="onSelect(s)"
+            (contextmenu)="onTargetContextMenu($event, s)"
+            (appTap)="onSpaceActivate(s)"
+            [class.disabled]="!s.enabled"
+            [class.selected]="s.id === selected?.id">
+          @for (th of tableHeaders | keyvalue: originalOrderKeyValue; track th.key) {
+            @if (th.value.show) {
+              <td [style.width.%]="th.value.width"
+                  [class.text-align-center]="th.value.textCenter"
+                  class="{{th.value.class}}">
+                @switch (th.key) {
+                  @case ('name') {
+                    <div class="d-flex align-items-center">
+                      <span class="circle-primary-icon">
+                        <svg [lucideIcon]="icons.SPACES"></svg>
+                      </span>
+                      <div class="d-flex flex-column text-truncate">
+                        <span class="no-pointer-events text-file-name-preserve" draggable="false">{{ s.name }}</span>
+                        <span class="no-pointer-events text-muted fs-xs" draggable="false">{{ s.description }}</span>
+                      </div>
+                    </div>
+                  }
+                  @case ('managers') {
+                    <app-user-avatar-stack [users]="s.managers" [isMember]="true" [container]="'body'"></app-user-avatar-stack>
+                  }
+                  @case ('storage') {
+                    @if (s.storageUsage || s.storageQuota) {
+                      <app-storage-usage [item]="s"></app-storage-usage>
+                    }
+                  }
+                  @case ('members') {
+                    <app-badge-members [members]="s.counts"></app-badge-members>
+                  }
+                  @case ('info') {
+                    @if (s.counts.shares) {
+                      <span (click)="openChildShareDialog(s)" class="badge bg-purple cursor-pointer me-1" data-app-tap-ignore>
+                        <svg [lucideIcon]="icons.SHARES"></svg>
+                        {{ s.counts.shares }}
+                      </span>
+                    }
+                  }
+                  @case ('modified') {
+                    <span class="{{th.value.newly && s[th.value.newly] ? 'badge prop-newly-' + s[th.value.newly] : ''}}">
+                      <span>{{ s.hTimeAgo }}</span>
+                    </span>
+                  }
+                }
+              </td>
+            }
+          }
+        </tr>
+      }
+    </tbody>
+  </table>
+</app-virtual-scroll>
+<!--End Table Files Content-->
+<!--Start Foot Content-->
+<div class="app-foot-menu">
+  <span>{{ spaces.length }} {{ 'spaces' | translate:locale.language }}</span>
+  <div class="ms-auto">{{ storageUsage | toBytes }}</div>
+</div>
+<!--End Foot Content-->
+<!--Start Context Menu -->
+<context-menu #MainContextMenu>
+  <ng-template
+    (execute)="openSpaceDialog(true)" contextMenuItem>
+    <span l10nTranslate><svg [lucideIcon]="icons.LucidePlus"></svg>New space</span>
+  </ng-template>
+  <ng-template [divider]="true" contextMenuItem></ng-template>
+  <ng-template (execute)="loadSpaces()" contextMenuItem>
+    <span l10nTranslate><svg [lucideIcon]="icons.LucideRotateCw"></svg>Refresh</span>
+  </ng-template>
+</context-menu>
+<context-menu #TargetContextMenu>
+  <ng-template (execute)="openSpaceDialog()" contextMenuItem>
+    <span l10nTranslate><svg [lucideIcon]="icons.LucidePencil"></svg>Edit space</span>
+  </ng-template>
+  @if (!!selected?.counts.shares) {
+    <ng-template (execute)="openChildShareDialog()" contextMenuItem>
+      <span l10nTranslate><svg [lucideIcon]="icons.SHARES"></svg>Edit children shares</span>
+    </ng-template>
+  }
+</context-menu>
+<!--End Context Menu-->

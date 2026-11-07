@@ -1,0 +1,17 @@
+import type { FileEditorProviders } from '../../files/editors/file-editor-providers.interface.js'
+
+export interface SpaceLink {
+  share?: {
+    name: string
+    alias: string
+    hasParent: boolean
+    isDir: boolean
+    mtime: number
+    mime: string
+    size: number
+    permissions: string
+  } | null
+  space?: { name: string; alias: string } | null
+  owner?: { login?: string; fullName: string; avatar?: string } | null
+  fileEditors?: FileEditorProviders
+}

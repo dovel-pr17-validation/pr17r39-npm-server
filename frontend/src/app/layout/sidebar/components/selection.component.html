@@ -1,0 +1,31 @@
+<div class="sidebar-component-title app-top-menu-tool-bar justify-content-between position-relative">
+  <div class="sidebar-component-title-side"></div>
+  <div class="sidebar-component-title-label" l10nTranslate>Selection</div>
+  <div class="sidebar-component-title-side">
+    @if (selectionType() === SPACES_PATH.FILES && store.filesSelection().length > 1) {
+      <button (click)="clearSelection()"
+              class="btn btn-default"
+              type="button"
+              aria-label="Clear selection">
+        <svg [lucideIcon]="LucideX"></svg>
+      </button>
+    }
+  </div>
+</div>
+@switch (selectionType()) {
+  @case (SPACES_PATH.FILES) {
+    <app-files-selection [files]="store.filesSelection()"></app-files-selection>
+  }
+  @case (SPACES_PATH.SPACES) {
+    <app-space-selection [space]="store.spaceSelection()"></app-space-selection>
+  }
+  @case (SPACES_PATH.SHARED) {
+    <app-share-selection [share]="store.shareSelection()"></app-share-selection>
+  }
+  @case (SPACES_PATH.TRASHES) {
+    <app-trash-selection [trash]="store.trashSelection()"></app-trash-selection>
+  }
+  @case (SPACES_PATH.LINKS) {
+    <app-link-selection [link]="store.linkSelection()"></app-link-selection>
+  }
+}

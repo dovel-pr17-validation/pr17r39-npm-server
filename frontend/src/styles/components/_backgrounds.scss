@@ -1,0 +1,30 @@
+$background-variants: (
+  'bg-gray-dark': (tone: 'gray-dark-bg'),
+  'bg-purple': (tone: 'purple', important: true),
+  'bg-maroon': (tone: 'maroon'),
+  'bg-secondary-alt': (tone: 'secondary-alt-bg', text: black),
+  'bg-gray-light-important': (tone: 'gray-light', important: true)
+);
+
+@each $selector, $config in $background-variants {
+  .#{$selector} {
+    @if map-get($config, important) == true {
+      background-color: semantic-tone(map-get($config, tone)) !important;
+    } @else {
+      background-color: semantic-tone(map-get($config, tone));
+    }
+
+    @if map-get($config, text) != null {
+      color: map-get($config, text);
+    }
+  }
+}
+
+.bg-soft-warning {
+  background-color: rgba(semantic-tone('warning'), 0.6) !important;
+}
+
+.drag-over {
+  background-color: semantic-tone('secondary-alt-bg') !important;
+  color: black !important;
+}

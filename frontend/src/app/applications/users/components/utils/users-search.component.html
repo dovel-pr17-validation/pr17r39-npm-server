@@ -1,0 +1,119 @@
+<ng-template #searchMembers let-member="item">
+  <div class="d-flex w-100 overflow-hidden typeahead-option" role="button">
+    <div class="d-flex align-items-center text-truncate flex-shrink-0">
+      @if (member.isUser) {
+        <img alt="" class="avatar-base-img" height="32" width="32" [src]="member.avatarUrl" />
+      } @else {
+        <span class="{{member.isPersonalGroup ? 'circle-purple-icon' : 'circle-primary-icon'}}">
+          <svg [lucideIcon]="icons.GROUPS"></svg>
+        </span>
+      }
+    </div>
+    <div class="d-flex ms-2 pe-lg-5 flex-grow-1 overflow-hidden typeahead-option-text {{member.description ? 'flex-column align-items-start' : 'align-items-center'}}"
+         style="min-width: 0">
+      <div class="w-100 text-truncate typeahead-option-name" [innerHTML]="member.name | highlight: selection"></div>
+      @if (member.description) {
+        <span class="fs-xs me-lg-4 text-muted w-100 text-truncate typeahead-option-description"
+              [innerHTML]="member.description | highlight: selection"></span>
+      }
+    </div>
+    <div class="ms-auto ps-5 me-1 text-muted d-none d-lg-block fs-2xs align-self-center">
+      <span l10nTranslate>{{ member.type }}</span>
+    </div>
+  </div>
+</ng-template>
+@if (!hideInput) {
+  <div class="form-validation">
+    <input
+      #InputTypeHead
+      (typeaheadOnSelect)="onSelect($event)"
+      (typeaheadLoading)="onLoading()"
+      (typeaheadNoResults)="onNoResults()"
+      (typeaheadOnPreview)="onPreview()"
+      [(ngModel)]="selection"
+      [placeholder]="placeHolder | translate: locale.language"
+      [typeaheadItemTemplate]="searchMembers"
+      [typeaheadAsync]="true"
+      [typeaheadMinLength]="0"
+      [typeaheadSingleWords]="true"
+      [typeaheadOptionField]="'name'"
+      [typeaheadWaitMs]="100"
+      [typeaheadHideResultsOnBlur]="true"
+      [typeahead]="asyncSearchUsersOrGroups"
+      class="form-control mb-3 typeahead-input"
+    />
+  </div>
+}
+<div class="col-12 mt-1">
+  @for (member of members; track member.mid) {
+    <div class="{{rowBackgroundClass}} mb-1 px-3 py-2" style="border-radius: 4px">
+      <div
+        class="d-flex align-items-center text-truncate no-select user-search-member-row"
+        [class.user-search-member-row--with-permissions]="withPermissions">
+        <div class="d-flex align-items-center text-truncate w-100">
+          <div class="d-flex align-items-center text-truncate w-100">
+            @if (member.isUser) {
+              <img alt="" class="avatar-base-img" height="32" width="32" [src]="member.avatarUrl" />
+            } @else if (member.isLink) {
+              <span class="circle-primary-icon">
+                <svg [lucideIcon]="icons.LINKS"></svg>
+              </span>
+            } @else {
+              <span class="{{member.isPersonalGroup ? 'circle-purple-icon' : 'circle-primary-icon'}}">
+                <svg [lucideIcon]="icons.GROUPS"></svg>
+              </span>
+            }
+            <div class="d-flex flex-column text-truncate ms-2">
+              <div class="text-truncate">{{ member.name }}</div>
+              <div class="fs-xs text-truncate text-muted">
+                @if (member.description) {
+                  <span>{{ member.description }}</span>
+                } @else if (!member.linkId) {
+                  <span l10nTranslate>{{ member.type }}</span>
+                }
+              </div>
+            </div>
+          </div>
+          <div class="d-flex flex-column flex-shrink-0 fs-2xs text-muted ms-3">
+            <div class="d-flex justify-content-end" l10nTranslate>{{ member.isLink ? MEMBER_TYPE.LINK : member.type }}</div>
+            <div class="d-flex justify-content-end">{{ member.createdAt | amTimeAgo }}</div>
+          </div>
+        </div>
+        @if (editMode) {
+          <div class="d-flex no-select user-search-member-actions">
+            <div class="vr mx-2 user-search-member-actions__separator"></div>
+            @if (withPermissions) {
+              @for (p of member.hPerms| keyvalue: originalOrderKeyValue; track p.key) {
+                @if (!filterPermissions || (filterPermissions && allowedPermissions.indexOf($any(p.key))) > -1) {
+                  <button [(ngModel)]="member.hPerms[p.key]"
+                          (ngModelChange)="onPermissionChange(member)"
+                          btnCheckbox
+                          [tooltip]="SPACES_PERMISSIONS_TEXT[p.key].text | translate:locale.language"
+                          class="btn btn-custom"
+                          type="button">
+                    <svg [lucideIcon]="SPACES_PERMISSIONS_TEXT[p.key].icon"></svg>
+                  </button>
+                }
+              }
+              <div class="vr"  style="margin-left: 0.15rem; margin-right: 0.35rem"></div>
+            }
+            @if (editFunction) {
+              <button (click)="editFunction(member)"
+                      [tooltip]="'Edit' | translate:locale.language"
+                      class="btn btn-custom me-2"
+                      type="button">
+                <svg [lucideIcon]="icons.LucidePencil"></svg>
+              </button>
+            }
+            <button (click)="removeMember(member)"
+                    [tooltip]="'Remove' | translate:locale.language"
+                    class="btn btn-danger"
+                    type="button">
+              <svg [lucideIcon]="icons.LucideX"></svg>
+            </button>
+          </div>
+        }
+      </div>
+    </div>
+  }
+</div>

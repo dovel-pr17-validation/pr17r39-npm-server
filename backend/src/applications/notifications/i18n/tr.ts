@@ -1,0 +1,48 @@
+export const tr = {
+  'If you no longer wish to receive notifications, change your preferences directly from your user space.':
+    'Artık bildirim almak istemiyorsanız, kullanıcı alanınızdan doğrudan tercihlerinizi değiştirin.',
+  'Access it from': 'Buradan erişin',
+  Comment: 'Yorum',
+  commented: 'yorum yaptı',
+  'You receive this notification if you are the owner of the file or if you have also commented on this file':
+    'Dosyanın sahibiyseniz veya bu dosyaya yorum yaptıysanız bu bildirimi alırsınız.',
+  Space: 'Alan',
+  'from the space': 'alandan',
+  'to the space': 'alana',
+  'Access your spaces from': 'Alanlarınıza buradan erişin',
+  'Access this space from': 'Bu alana buradan erişin',
+  'You now have access to the space': 'Artık bu alana erişiminiz var',
+  'You no longer have access to the space': 'Artık bu alana erişiminiz yok',
+  'This space has been permanently deleted': 'Bu alan kalıcı olarak silindi',
+  anchored: 'sabitledi',
+  unanchored: 'sabitlemeyi kaldırdı',
+  Share: 'Paylaşım',
+  'shared with you': 'sizinle paylaştı',
+  'no longer share with you': 'artık sizinle paylaşmıyor',
+  'You now have access to the share': 'Artık paylaşıma erişiminiz var',
+  'You no longer have access to the share': 'Artık paylaşıma erişiminiz yok',
+  'You are no longer a member of the parent share, your child share has been deleted':
+    'Üst paylaşıma artık üye olmadığınız için alt paylaşımınız silindi',
+  'Access your shares from': 'Paylaşımlarınıza buradan erişin',
+  'Access password': 'Erişim parolası',
+  Sync: 'Eşitleme',
+  'Access your syncs from': 'Eşitlemelerinize buradan erişin',
+  'You are no longer synchronizing': 'Artık eşitleme yapmıyorsunuz',
+  'Unlock Request': 'Kilidi açma talebi',
+  'You receive this notification because you have a lock on this file.': 'Bu dosya üzerinde bir kilidiniz olduğu için bu bildirimi alıyorsunuz.',
+  'sends you a request to unlock the file': 'size dosyanın kilidini açma talebi gönderiyor',
+  'Security notification': 'Güvenlik bildirimi',
+  'Your account is temporarily locked for 15 minutes due to too many failed sign-in attempts':
+    'Çok fazla başarısız oturum açma denemesi nedeniyle hesabınız geçici olarak 15 dakika kilitlendi',
+  'You can try signing in again after 15 minutes. If you did not make these attempts, please contact your administrator.':
+    '15 dakika sonra tekrar oturum açmayı deneyebilirsiniz. Bu denemeleri siz yapmadıysanız yöneticinizle iletişime geçin.',
+  'Two-factor authentication (2FA) on your account has been disabled': 'Hesabınızda iki faktörlü kimlik doğrulama (2FA) devre dışı bırakıldı',
+  'Two-factor authentication (2FA) on your account has been enabled': 'Hesabınızda iki faktörlü kimlik doğrulama (2FA) etkinleştirildi',
+  'You received this notification because the security of your Sync-in account has changed. If you think this was a mistake, please review your security settings or contact your administrator.':
+    'Sync-in hesabınızın güvenliği değiştiği için bu bildirimi aldınız. Bunun bir hata olduğunu düşünüyorsanız güvenlik ayarlarınızı gözden geçirin veya yöneticinizle iletişime geçin.',
+  'Address IP': 'IP adresi',
+  Browser: 'Tarayıcı',
+  'New Version Available': 'Yeni sürüm mevcut',
+  'You receive this notification because you are the administrator of this server.': 'Bu bildirimi alıyorsunuz çünkü bu sunucunun yöneticisisiniz.',
+  'A new update is available': 'Yeni bir güncelleme mevcut'
+} as const

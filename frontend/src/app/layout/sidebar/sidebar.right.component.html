@@ -1,0 +1,43 @@
+<aside [class.control-sidebar-open]="visible" class="control-sidebar control-sidebar-{{theme}}">
+  @for (tab of tabs; track tab.label) {
+    <div class="{{tab.active ? 'd-block' : 'd-none'}}">
+      @if (tab.title) {
+        <div class="sidebar-title">
+          <div l10nTranslate>{{ tab.title }}</div>
+        </div>
+      }
+      @if (showComponents || tab.loadComponent) {
+        @for (component of tab.components; track component.name) {
+          @if (tab.active || tab.loadComponent) {
+            <div class="sidebar-component-content">
+              <ng-container *ngComponentOutlet="component"></ng-container>
+            </div>
+          }
+        }
+      }
+    </div>
+  }
+</aside>
+<div class="control-sidebar-menu">
+  <div class="sidebar-apps-icons">
+    <div class="menu">
+      @if (!networkIsOnline) {
+        <a class="bg-warning">
+          <svg [lucideIcon]="icons.LucideWifi" class="text-white"></svg>
+        </a>
+      }
+      @for (tab of tabs; track tab.label) {
+        @if (tab.icon && (!tab.showOnCount || tab.showOnCount && tab.count && (tab.count.value | async))) {
+          <a [class.mt-auto]="tab.firstOfLasts" [class.active]="visible && tab.active" (click)="setTabVisible(tab.label)">
+            <svg [lucideIcon]="tab.icon"></svg>
+            @if (tab.count && tab.count.value | async; as count) {
+              <span class="menu-badge">
+                <span class="badge bg-{{tab.count.level}}">{{ count }}</span>
+              </span>
+            }
+          </a>
+        }
+      }
+    </div>
+  </div>
+</div>

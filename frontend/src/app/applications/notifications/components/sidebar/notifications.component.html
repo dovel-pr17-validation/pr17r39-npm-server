@@ -1,0 +1,53 @@
+<div class="sidebar-component-title app-top-menu-tool-bar justify-content-between position-relative">
+  <div class="sidebar-component-title-side">
+    @if (store.notifications().length) {
+      <div class="badge bg-warning">{{ store.notifications().length }}</div>
+    }
+  </div>
+  <div class="sidebar-component-title-label" l10nTranslate>Notifications</div>
+  <div class="sidebar-component-title-side">
+    @if (store.notifications().length) {
+      <button (click)="removeAll()"
+              class="btn btn-default"
+              type="button">
+        <svg [lucideIcon]="icons.LucideTrash"></svg>
+      </button>
+    }
+  </div>
+</div>
+<div class="fs-sm p-2" appAutoResize>
+  @for (n of store.notifications(); track n.id) {
+    <div class="mb-1 app-small-card rounded no-select" [class.bg-soft-warning]="n.soonRead" #notificationsHtml>
+      <div class="d-flex px-2 pt-2 pb-1">
+        <app-user-avatar class="me-1" [user]="n.fromUser" [width]="24" [height]="24" [unknownUserAsInfo]="n.fromUser.id === -1"></app-user-avatar>
+        <div class="align-self-center">
+          @if (n.fromUser.id === -1) {
+            <b l10nTranslate>{{ n.fromUser.fullName }}</b>
+          } @else {
+            <b>{{ n.fromUser.fullName }}</b>
+          }
+        </div>
+        <div class="ms-auto align-self-center">
+          <i (click)="remove(n)" role="button" class="fs-md">
+            <svg [lucideIcon]="icons.LucideX"></svg>
+          </i>
+        </div>
+      </div>
+      <div class="pb-2 px-2">
+        <div><span l10nTranslate>{{ n.content.event }}</span>:&nbsp;<b class="cursor-pointer btn-link" (click)="goto(n)">{{ n.content.element }}</b>
+        </div>
+        <div class="d-flex fs-xs pt-1" [class.text-muted]="!n.soonRead">
+          <div>{{ n.createdAt | amTimeAgo }}</div>
+          <div class="ms-auto">
+            @if (n.appIcon) {
+              <svg [lucideIcon]="n.appIcon"></svg>
+            }
+            @if (n.mainElement) {
+              <span>&nbsp;{{ n.mainElement }}</span>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  }
+</div>

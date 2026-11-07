@@ -1,0 +1,63 @@
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.h1,
+.h2,
+.h3,
+.h4,
+.h5,
+.h6 {
+  font-weight: 400;
+}
+
+mark, .mark {
+  padding: 0 3px;
+}
+
+.no-pointer-events {
+  pointer-events: none;
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
+
+.no-select {
+  @include no-select-utility;
+}
+
+.no-select-pointer {
+  @include no-select-pointer-utility;
+}
+
+.overflow-wrap-and-whitespace {
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+}
+
+.is-invalid {
+  border-color: $danger !important;
+}
+
+.tooltip {
+  font-size: $font-size-xs;
+}
+
+.table-disable-hover,
+.table-disable-hover * {
+  pointer-events: none !important;
+}
+
+.tab-dialog {
+  > a {
+    padding: .35rem !important;
+  }
+}
+
+label {
+  @include no-select-utility;
+  font-weight: 500;
+}

@@ -1,0 +1,174 @@
+import { HttpErrorResponse } from '@angular/common/http'
+import { Component, inject } from '@angular/core'
+import { Router } from '@angular/router'
+import {
+  LucideAtSign,
+  LucideCircle,
+  LucideCirclePlus,
+  LucideCircleUserRound,
+  LucideClock,
+  LucideDynamicIcon,
+  LucideGitBranch,
+  LucideKeyRound,
+  LucideMapPin,
+  LucidePencil,
+  LucideRefreshCw,
+  LucideRotateCw,
+  LucideTrash
+} from '@lucide/angular'
+import { L10N_LOCALE, L10nLocale, L10nTranslateDirective, L10nTranslatePipe } from 'angular-l10n'
+import { BsModalRef } from 'ngx-bootstrap/modal'
+import { TooltipDirective } from 'ngx-bootstrap/tooltip'
+import { take } from 'rxjs/operators'
+import { PlatformIconComponent } from '../../../common/components/platform-icon.component'
+import { AutoResizeDirective } from '../../../common/directives/auto-resize.directive'
+import { TapDirective } from '../../../common/directives/tap.directive'
+import { TimeAgoPipe } from '../../../common/pipes/time-ago.pipe'
+import { TimeDateFormatPipe } from '../../../common/pipes/time-date-format.pipe'
+import { sortCollectionByNumber } from '../../../common/utils/sort'
+import { LayoutService } from '../../../layout/layout.service'
+import { USER_ICON, USER_PATH, USER_TITLE } from '../../users/user.constants'
+import { SyncClientModel } from '../models/sync-client.model'
+import { SyncPathModel } from '../models/sync-path.model'
+import { SyncService } from '../services/sync.service'
+import { SYNC_ICON, SYNC_PATH } from '../sync.constants'
+import { SyncClientDeleteDialogComponent } from './dialogs/sync-client-delete.dialog.component'
+import { SyncPathSettingsDialogComponent } from './dialogs/sync-path-settings.dialog.component'
+
+@Component({
+  selector: 'app-sync-clients',
+  imports: [
+    TooltipDirective,
+    L10nTranslatePipe,
+    LucideDynamicIcon,
+    PlatformIconComponent,
+    AutoResizeDirective,
+    TapDirective,
+    L10nTranslateDirective,
+    TimeDateFormatPipe,
+    TimeAgoPipe
+  ],
+  templateUrl: './sync-clients.component.html',
+  styleUrl: './sync-clients.component.scss'
+})
+export class SyncClientsComponent {
+  protected readonly locale = inject<L10nLocale>(L10N_LOCALE)
+  protected readonly icons = {
+    LucideRefreshCw,
+    LucideTrash,
+    CLIENT: SYNC_ICON.CLIENT,
+    LucideCircle,
+    LucideCircleUserRound,
+    LucideGitBranch,
+    LucideAtSign,
+    LucideClock,
+    LucideRotateCw,
+    LucideCirclePlus,
+    LucideMapPin,
+    LucidePencil,
+    LucideKeyRound
+  }
+  protected selected: SyncClientModel
+  protected selectedPath: SyncPathModel
+  protected clients: SyncClientModel[] = []
+  private readonly router = inject(Router)
+  private readonly layout = inject(LayoutService)
+  private readonly syncService = inject(SyncService)
+  private focusOnSelectId: string
+  private focusOnSelectPathId: number
+
+  constructor() {
+    this.layout.setBreadcrumbIcon(USER_ICON.CLIENTS)
+    this.layout.setBreadcrumbNav({
+      url: `/${USER_PATH.BASE}/${USER_PATH.CLIENTS}/${USER_TITLE.CLIENTS}`,
+      splicing: 2,
+      translating: true,
+      sameLink: true
+    })
+    const routeState = this.router.currentNavigation()?.extras.state as { clientId: string; pathId?: number }
+    if (routeState?.clientId) {
+      this.focusOnSelectId = routeState.clientId
+      this.focusOnSelectPathId = routeState.pathId
+    }
+    this.loadClients()
+  }
+
+  loadClients() {
+    this.onSelectClient()
+    this.onSelectPath()
+    this.syncService.getClients().subscribe({
+      next: (clients: SyncClientModel[]) => {
+        sortCollectionByNumber(clients, 'id', false)
+        this.clients = clients
+        if (this.focusOnSelectId) {
+          this.onSelectClient(this.clients.find((c) => c.id === this.focusOnSelectId))
+        }
+        if (this.focusOnSelectPathId && this.selected) {
+          this.onSelectPath(this.selected.paths.find((p) => p.id === this.focusOnSelectPathId))
+          this.focusOnSelectPathId = null
+        }
+      },
+      error: (e: HttpErrorResponse) => {
+        console.error(e)
+        this.layout.sendNotification('error', 'Clients', e.error.message)
+      }
+    })
+  }
+
+  onSelectClient(client?: SyncClientModel) {
+    this.selected = client || null
+  }
+
+  onSelectPath(syncPathModel?: SyncPathModel) {
+    this.selectedPath = syncPathModel || null
+  }
+
+  onDeleteClient() {
+    const modalRef: BsModalRef<SyncClientDeleteDialogComponent> = this.layout.openDialog(SyncClientDeleteDialogComponent, 'md', {
+      initialState: {
+        client: this.selected
+      } as SyncClientDeleteDialogComponent
+    })
+    modalRef.content.wasDeleted.pipe(take(1)).subscribe(() => this.loadClients())
+  }
+
+  gotoPath(path?: SyncPathModel, client?: SyncClientModel) {
+    if (!path) {
+      return
+    }
+    if (client) {
+      this.onSelectClient(client)
+    }
+    this.onSelectPath(path)
+    this.syncService.goToPath(path, false)
+  }
+
+  onEditPath(path?: SyncPathModel, client?: SyncClientModel) {
+    const selectedClient = client || this.selected
+    const selectedPath = path || this.selectedPath
+    if (!selectedClient || !selectedPath) {
+      return
+    }
+    this.onSelectClient(selectedClient)
+    this.onSelectPath(selectedPath)
+    if (selectedClient.isCurrentClient) {
+      this.router
+        .navigate([SYNC_PATH.BASE, SYNC_PATH.PATHS], {
+          state: {
+            id: selectedPath.id,
+            withSettings: true
+          }
+        })
+        .catch(console.error)
+    } else {
+      const modalRef: BsModalRef<SyncPathSettingsDialogComponent> = this.layout.openDialog(SyncPathSettingsDialogComponent, 'md', {
+        initialState: { syncPathSelected: selectedPath, syncClientSelected: selectedClient } as SyncPathSettingsDialogComponent
+      })
+      modalRef.content.mustRefresh.pipe(take(1)).subscribe(() => {
+        this.focusOnSelectId = selectedClient.id
+        this.focusOnSelectPathId = selectedPath.id
+        this.loadClients()
+      })
+    }
+  }
+}

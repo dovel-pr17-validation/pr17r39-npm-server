@@ -1,0 +1,100 @@
+<div class="wizard">
+  <div class="my-2">
+    <div class="d-flex {{selectedPath ? 'align-items-center' : 'align-items-start'}} justify-content-center fs-md" style="min-height: 30px">
+      @if (selectedPath) {
+        @if (selectedPath.icon) {
+          <span class="circle-{{selectedPath.iconClass}}-icon fs-md">
+            <svg [lucideIcon]="selectedPath.icon"></svg>
+          </span>
+        } @else {
+          <img [src]="selectedPath.mimeUrl" alt="" height="30">
+        }
+        <span class="text-truncate fw-500 ms-2">{{ selectedPath.name }}</span>
+      } @else {
+        <span l10nTranslate>Please select the server directory to sync, if it doesn't exist you can create it.</span>
+      }
+    </div>
+    <div class="app-top-menu app-top-menu-tool-bar px-0"
+         [attr.aria-label]="'Actions' | translate:locale.language"
+         role="toolbar">
+      <button (click)="onBack()"
+              [attr.aria-label]="'Back' | translate:locale.language"
+              [disabled]="!currentPath"
+              [tooltip]="'Back' | translate:locale.language"
+              class="btn btn-default"
+              type="button">
+        <svg [lucideIcon]="icons.LucideCircleArrowLeft"></svg>
+      </button>
+      <form class="d-flex align-items-center">
+        <div class="input-group">
+          <input (keyup.enter)="addDirectory()"
+                 [(ngModel)]="newDirectoryName"
+                 [disabled]="!canCreateDir"
+                 [ngModelOptions]="{standalone: true}"
+                 class="form-control"
+                 [placeholder]="'New folder' | translate:locale.language" type="text">
+          <button (click)="addDirectory()"
+                  [attr.aria-label]="'New folder' | translate:locale.language"
+                  [disabled]="!canCreateDir || !newDirectoryName?.trim()"
+                  [tooltip]="'New folder' | translate:locale.language"
+                  class="btn btn-default input-group-text"
+                  type="button">
+            <svg [lucideIcon]="icons.LucideFolderPlus"></svg>
+          </button>
+        </div>
+      </form>
+      <div class="text-warning ms-3 me-auto fs-sm">
+        @if (infoMsg) {
+          <span l10nTranslate>{{ infoMsg }}</span>
+        }
+      </div>
+    </div>
+    <table class="app-table wizard-nav-header">
+      <thead>
+      <tr>
+        @if (currentPath) {
+          <th class="text-truncate">{{ currentShowedPath }}</th>
+        } @else {
+          <th l10nTranslate>Double click to browse directories</th>
+        }
+      </tr>
+      </thead>
+    </table>
+    <div [resizeOffset]="215" appAutoResize [useMaxHeight]="false" class="wizard-nav-content">
+      <table class="app-table">
+        <tbody tabindex="-1">
+          @for (p of currentPaths(); track p.id) {
+            <tr (click)="onSelect(p)"
+                (dblclick)="browse(p.path)"
+                [class.selected]="p.selected">
+              <td>
+                <div class="d-flex align-items-center">
+                  @if (p.icon) {
+                    <span class="circle-{{p.iconClass}}-icon fs-md">
+                      <svg [lucideIcon]="p.icon"></svg>
+                    </span>
+                  } @else {
+                    <img [src]="p.mimeUrl" alt="" height="30">
+                  }
+                  <span class="ms-1">{{ p.name }}</span>
+                </div>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="mt-auto">
+    <div class="d-flex align-items-start wizard-actions">
+      <button (click)="onPrevious()" class="btn btn-default me-auto" type="button" l10nTranslate>
+        <svg [lucideIcon]="icons.LucideCircleArrowLeft"></svg>
+        Previous
+      </button>
+      <button (click)="onNext()" [disabled]="!selectedPath" class="btn btn-default ms-auto" type="button" l10nTranslate>
+        <svg [lucideIcon]="icons.LucideCircleArrowRight"></svg>
+        Next
+      </button>
+    </div>
+  </div>
+</div>

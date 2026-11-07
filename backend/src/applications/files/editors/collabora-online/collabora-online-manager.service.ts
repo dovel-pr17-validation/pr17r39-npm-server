@@ -1,0 +1,303 @@
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
+import { FastifyReply } from 'fastify'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { TOKEN_TYPE } from '../../../../authentication/interfaces/token.interface.js'
+import { toErrorMessage } from '../../../../common/errors.js'
+import { convertHumanTimeToSeconds } from '../../../../common/functions.js'
+import { configuration } from '../../../../configuration/config.environment.js'
+import { ContextManager } from '../../../../infrastructure/context/services/context-manager.service.js'
+import type { SpaceEnv } from '../../../spaces/models/space-env.model.js'
+import { canModifySpaceEnv } from '../../../spaces/utils/permissions.js'
+import type { UserModel } from '../../../users/models/user.model.js'
+import { getAvatarBase64 } from '../../../users/utils/avatar.js'
+import { DEPTH, LOCK_SCOPE } from '../../../webdav/constants/webdav.js'
+import { FILE_MODE } from '../../constants/operations.js'
+import { FileLockOptions } from '../../interfaces/file-lock.interface.js'
+import { FileLockProps } from '../../interfaces/file-props.interface.js'
+import { FileError } from '../../models/file-error.js'
+import { LockConflict } from '../../models/file-lock-error.js'
+import { FilesLockManager } from '../../services/files-lock-manager.service.js'
+import {
+  copyFileContent,
+  fileName,
+  fileSize,
+  genEtag,
+  genUniqHashFromFileDBProps,
+  isPathExists,
+  isPathIsDir,
+  removeFiles,
+  uniqueFilePathFromDir,
+  writeUploadFromStream
+} from '../../utils/files.js'
+import {
+  COLLABORA_APP_LOCK,
+  COLLABORA_HEADERS,
+  COLLABORA_LOCK_ACTION,
+  COLLABORA_ONLINE_EXTENSIONS,
+  COLLABORA_TOKEN_QUERY_PARAM_NAME,
+  COLLABORA_URI,
+  COLLABORA_WOPI_SRC_QUERY_PARAM_NAME
+} from './collabora-online.constants.js'
+import { CollaboraOnlineReqDto, CollaboraSaveDocumentDto } from './collabora-online.dtos.js'
+import type { CollaboraOnlineCheckFileInfo, FastifyCollaboraOnlineSpaceRequest, JwtPayloadCollaboraOnline } from './collabora-online.interface.js'
+import { API_COLLABORA_ONLINE_FILES } from './collabora-online.routes.js'
+import { FileEvent } from '../../events/file-events.js'
+import { ACTION } from '../../../../common/constants.js'
+import { createUploadStreamLimiter, parseContentLength } from '../../utils/upload-file.js'
+
+@Injectable()
+export class CollaboraOnlineManager {
+  private logger = new Logger(CollaboraOnlineManager.name)
+  private readonly maxUploadSize = configuration.applications.files.maxUploadSize
+  private readonly externalCollaboraOnlineServer = configuration.applications.files.editors.collabora.externalServer || null
+  private readonly expiration = convertHumanTimeToSeconds(configuration.auth.token.refresh.expiration)
+
+  constructor(
+    private readonly contextManager: ContextManager,
+    private readonly jwt: JwtService,
+    private readonly filesLockManager: FilesLockManager
+  ) {}
+
+  async getSettings(user: UserModel, space: SpaceEnv): Promise<CollaboraOnlineReqDto> {
+    await this.checkSpace(space)
+    const fileExtension = path.extname(space.realPath).slice(1)
+    if (!COLLABORA_ONLINE_EXTENSIONS.has(fileExtension)) {
+      throw new HttpException('Document not supported', HttpStatus.BAD_REQUEST)
+    }
+    let hasLock: false | FileLockProps = false
+    let mode: FILE_MODE = canModifySpaceEnv(space) ? FILE_MODE.EDIT : FILE_MODE.VIEW
+    if (mode === FILE_MODE.EDIT) {
+      // Check lock conflicts
+      try {
+        await this.filesLockManager.checkConflicts(space.dbFile, DEPTH.RESOURCE, {
+          userId: user.id,
+          app: COLLABORA_APP_LOCK,
+          lockScope: LOCK_SCOPE.SHARED
+        })
+      } catch (e) {
+        if (e instanceof LockConflict) {
+          hasLock = this.filesLockManager.convertLockToFileLockProps(e.lock)
+          mode = FILE_MODE.VIEW
+        } else {
+          this.logger.error({ tag: this.getSettings.name, msg: toErrorMessage(e) })
+          throw new HttpException('Unable to check file lock', HttpStatus.INTERNAL_SERVER_ERROR)
+        }
+      }
+    }
+    const dbFileHash = genUniqHashFromFileDBProps(space.dbFile)
+    const authToken: string = await this.genAuthToken(user, space, dbFileHash)
+    return { documentServerUrl: this.getDocumentUrl(dbFileHash, authToken), mode: mode, hasLock: hasLock }
+  }
+
+  async checkFileInfo(req: FastifyCollaboraOnlineSpaceRequest): Promise<CollaboraOnlineCheckFileInfo> {
+    const fStats = await fs.stat(req.space.realPath)
+    return {
+      BaseFileName: fileName(req.space.realPath),
+      Version: genEtag(null, req.space.realPath, false),
+      OwnerId: `${req.space.dbFile.ownerId || req.user.id}`,
+      Size: fStats.size,
+      LastModifiedTime: fStats.mtime.toISOString(),
+      UserId: `${req.user.id}`,
+      UserFriendlyName: `${req.user.fullName} (${req.user.email})`,
+      ReadOnly: false,
+      UserExtraInfo: { avatar: await getAvatarBase64(req.user.login) },
+      UserCanNotWriteRelative: true,
+      UserCanWrite: canModifySpaceEnv(req.space),
+      UserCanRename: false,
+      SupportsUpdate: true,
+      SupportsRename: false,
+      SupportsExport: true,
+      SupportsCoauth: true,
+      SupportsLocks: true,
+      SupportsGetLock: true
+    } satisfies CollaboraOnlineCheckFileInfo
+  }
+
+  async saveDocument(req: FastifyCollaboraOnlineSpaceRequest): Promise<CollaboraSaveDocumentDto> {
+    await this.checkSpace(req.space)
+    await this.checkTimeStampFromHeaders(req)
+    const tmpFilePath = await uniqueFilePathFromDir(path.join(os.tmpdir(), fileName(req.space.realPath)))
+    let contentLength: number | undefined
+    try {
+      try {
+        const fileLimiter = createUploadStreamLimiter(req.space, this.maxUploadSize).createFileLimiter()
+        contentLength = parseContentLength(req.headers['content-length'])
+        if (contentLength !== undefined) {
+          fileLimiter.assertKnownSize(contentLength)
+        }
+        await writeUploadFromStream(tmpFilePath, req.raw, { limiter: fileLimiter })
+      } catch (e) {
+        if (e instanceof FileError) {
+          throw new HttpException(e.message, e.httpCode)
+        }
+        throw new Error(`unable to save document : ${toErrorMessage(e)}`, { cause: e })
+      }
+      // try to verify the downloaded size
+      if (contentLength !== undefined && contentLength !== 0) {
+        const tmpFileSize = await fileSize(tmpFilePath)
+        if (tmpFileSize !== contentLength) {
+          this.logger.error({ tag: this.saveDocument.name, msg: `document size differs (${tmpFileSize} != ${contentLength})` })
+          throw new HttpException('Size Mismatch', HttpStatus.BAD_REQUEST)
+        }
+      } else if (contentLength === 0) {
+        this.logger.warn({ tag: this.saveDocument.name, msg: `content length is 0 : ${req.space.url}` })
+      }
+      // copy contents to avoid inode changes (dbFileHash in some cases)
+      try {
+        await copyFileContent(tmpFilePath, req.space.realPath)
+        // emit file event
+        FileEvent.emit('event', { user: req.user, space: req.space, action: ACTION.UPDATE, rPath: req.space.realPath, source: 'editor' })
+        const fStats = await fs.stat(req.space.realPath)
+        return { LastModifiedTime: fStats.mtime.toISOString() } satisfies CollaboraSaveDocumentDto
+      } catch (e) {
+        this.logger.error({ tag: this.saveDocument.name, msg: `unable to save document: ${toErrorMessage(e)}` })
+        throw new HttpException('Unable to save document', HttpStatus.INTERNAL_SERVER_ERROR)
+      }
+    } finally {
+      try {
+        await removeFiles(tmpFilePath)
+      } catch (e) {
+        this.logger.error({ tag: this.saveDocument.name, msg: `failed to remove temporary document ${tmpFilePath}: ${toErrorMessage(e)}` })
+      }
+    }
+  }
+
+  async manageLock(req: FastifyCollaboraOnlineSpaceRequest, res: FastifyReply) {
+    const lockAction = req.headers[COLLABORA_HEADERS.Action] as COLLABORA_LOCK_ACTION
+    switch (lockAction) {
+      case COLLABORA_LOCK_ACTION.LOCK: {
+        const reqLockToken = this.lockTokenFromHeaders(req)
+        const currentLock = await this.filesLockManager.isLockedWithToken(reqLockToken, req.space.dbFile.path)
+        if (currentLock) {
+          await this.filesLockManager.refreshLockTimeout(currentLock, this.expiration)
+          break
+        }
+        const [ok, fileLock] = await this.filesLockManager.create(
+          req.user,
+          req.space.dbFile,
+          COLLABORA_APP_LOCK,
+          DEPTH.RESOURCE,
+          {
+            lockRoot: null,
+            lockToken: reqLockToken,
+            lockScope: LOCK_SCOPE.SHARED // Collabora uses one lock for the session
+          } satisfies FileLockOptions,
+          this.expiration
+        )
+        if (!ok) {
+          this.lockConflict(res, fileLock.options!.lockToken)
+          return
+        }
+        break
+      }
+      case COLLABORA_LOCK_ACTION.UNLOCK: {
+        const reqLockToken = this.lockTokenFromHeaders(req)
+        const currentLock = await this.filesLockManager.isLockedWithToken(reqLockToken, req.space.dbFile.path)
+        if (currentLock) {
+          await this.filesLockManager.removeLock(currentLock.key)
+        } else {
+          throw new HttpException('Lock not found', HttpStatus.CONFLICT)
+        }
+        break
+      }
+      case COLLABORA_LOCK_ACTION.GET_LOCK: {
+        const lock = await this.filesLockManager.getLocksByPath(req.space.dbFile)
+        if (lock.length) {
+          res.header(COLLABORA_HEADERS.LockToken, lock[0].options!.lockToken)
+        }
+        break
+      }
+      case COLLABORA_LOCK_ACTION.REFRESH_LOCK: {
+        const reqLockToken = this.lockTokenFromHeaders(req)
+        const currentLock = await this.filesLockManager.isLockedWithToken(reqLockToken, req.space.dbFile.path)
+        if (currentLock) {
+          await this.filesLockManager.refreshLockTimeout(currentLock, this.expiration)
+        } else {
+          throw new HttpException('Lock not found', HttpStatus.CONFLICT)
+        }
+        break
+      }
+      default:
+        this.logger.warn({ tag: this.manageLock.name, msg: `Unknown lock action: ${lockAction}` })
+        throw new HttpException('Unknown lock action', HttpStatus.BAD_REQUEST)
+    }
+  }
+
+  private getDocumentUrl(dbFileHash: string, token: string): string {
+    const collaboraBase = this.externalCollaboraOnlineServer || this.contextManager.publicOriginUrl()
+    // Example:
+    // - external: https://collabora.domain.com
+    // - internal (via nginx proxy): https://domain.com/*
+
+    const editorUrl = new URL(COLLABORA_URI, collaboraBase)
+    // → /browser/dist/cool.html
+
+    const wopiSrcUrl = new URL(`${API_COLLABORA_ONLINE_FILES}/${dbFileHash}`, this.contextManager.publicOriginUrl())
+    // → https://domain.com/wopi/files/888
+
+    editorUrl.searchParams.set(COLLABORA_WOPI_SRC_QUERY_PARAM_NAME, wopiSrcUrl.toString())
+    editorUrl.searchParams.set(COLLABORA_TOKEN_QUERY_PARAM_NAME, token)
+
+    return editorUrl.toString()
+  }
+
+  private genAuthToken(user: UserModel, space: SpaceEnv, dbFileHash: string): Promise<string> {
+    // use refresh expiration to allow long sessions
+    return this.jwt.signAsync(
+      {
+        tokenType: TOKEN_TYPE.COLLABORA_ONLINE,
+        identity: {
+          id: user.id,
+          login: user.login,
+          email: user.email,
+          fullName: user.fullName,
+          language: user.language,
+          role: user.role,
+          applications: user.applications,
+          spaceUrl: space.url,
+          dbFileHash: dbFileHash
+        }
+      } satisfies Omit<JwtPayloadCollaboraOnline, 'exp'>,
+      {
+        secret: configuration.auth.token.access.secret,
+        expiresIn: this.expiration
+      }
+    )
+  }
+
+  private lockTokenFromHeaders(req: FastifyCollaboraOnlineSpaceRequest): string {
+    const lockToken = req.headers[COLLABORA_HEADERS.LockToken] as string
+    if (!lockToken) {
+      throw new HttpException('Lock token is required', HttpStatus.CONFLICT)
+    }
+    return lockToken
+  }
+
+  private lockConflict(res: FastifyReply, currentLockToken?: string | null) {
+    res.header(COLLABORA_HEADERS.LockToken, currentLockToken as string)
+    throw new HttpException('The file is locked', HttpStatus.CONFLICT)
+  }
+
+  private async checkTimeStampFromHeaders(req: FastifyCollaboraOnlineSpaceRequest) {
+    const timestamp = req.headers[COLLABORA_HEADERS.Timestamp] as string
+    if (!timestamp) {
+      return
+    }
+    const fStats = await fs.stat(req.space.realPath)
+    if (fStats.mtime.toISOString() !== timestamp) {
+      throw new HttpException({ LOOLStatusCode: 1010 }, HttpStatus.CONFLICT)
+    }
+  }
+
+  private async checkSpace(space: SpaceEnv) {
+    if (!(await isPathExists(space.realPath))) {
+      throw new HttpException('Document not found', HttpStatus.NOT_FOUND)
+    }
+    if (await isPathIsDir(space.realPath)) {
+      throw new HttpException('Document must be a file', HttpStatus.BAD_REQUEST)
+    }
+  }
+}

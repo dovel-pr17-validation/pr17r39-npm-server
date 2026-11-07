@@ -1,0 +1,862 @@
+import { toErrorMessage } from '../../../common/errors.js'
+import { Inject, Injectable, Logger } from '@nestjs/common'
+import { and, countDistinct, eq, isNotNull, isNull, max, ne, or, SQL, sql } from 'drizzle-orm'
+import { alias, type SelectedFields, union } from 'drizzle-orm/mysql-core'
+import { MySql2PreparedQuery, MySqlQueryResult } from 'drizzle-orm/mysql2'
+import { ACTION } from '../../../common/constants.js'
+import type { ConvertedDiffUpdate } from '../../../common/functions.js'
+import { popFromObject } from '../../../common/shared.js'
+import { CacheDecorator } from '../../../infrastructure/cache/cache.decorator.js'
+import { Cache } from '../../../infrastructure/cache/cache.service.js'
+import { DB_TOKEN_PROVIDER } from '../../../infrastructure/database/constants.js'
+import { type DBSchema } from '../../../infrastructure/database/interfaces/database.interface.js'
+import {
+  concatDistinctObjectsInArray,
+  convertToSelect,
+  convertToWhere,
+  dateTimeUTC,
+  dbCheckAffectedRows,
+  dbGetInsertedId,
+  dbParseJson
+} from '../../../infrastructure/database/utils.js'
+import { fileHasCommentsSubquerySQL } from '../../comments/schemas/comments.schema.js'
+import { FileDBProps } from '../../files/interfaces/file-db-props.interface.js'
+import { FileProps } from '../../files/interfaces/file-props.interface.js'
+import { filesFavorites } from '../../files/schemas/files-favorites.schema.js'
+import type { File } from '../../files/schemas/file.interface.js'
+import { filePathSQL, files } from '../../files/schemas/files.schema.js'
+import { FilesQueries } from '../../files/services/files-queries.service.js'
+import { links } from '../../links/schemas/links.schema.js'
+import { shares } from '../../shares/schemas/shares.schema.js'
+import { syncClients } from '../../sync/schemas/sync-clients.schema.js'
+import { syncPaths } from '../../sync/schemas/sync-paths.schema.js'
+import { GROUP_TYPE } from '../../users/constants/group.js'
+import { MEMBER_TYPE } from '../../users/constants/member.js'
+import { USER_ROLE } from '../../users/constants/user.js'
+import { Member } from '../../users/interfaces/member.interface.js'
+import { UserModel } from '../../users/models/user.model.js'
+import { groups } from '../../users/schemas/groups.schema.js'
+import { usersGroups } from '../../users/schemas/users-groups.schema.js'
+import { userFullNameSQL, users } from '../../users/schemas/users.schema.js'
+import { SPACE_ROLE } from '../constants/spaces.js'
+import type { SpaceMemberDto } from '../dto/create-or-update-space.dto.js'
+import type { SpaceMemberUpdate } from '../interfaces/space-diff.interface.js'
+import type { GetOrCreateSpaceFileOptions, SpaceBrowseDetails } from '../interfaces/space-files.interface.js'
+import { SpaceEnv } from '../models/space-env.model.js'
+import { SpaceProps } from '../models/space-props.model.js'
+import type { SpaceRootProps } from '../models/space-root-props.model.js'
+import type { SpaceMembers } from '../schemas/space-members.interface.js'
+import type { SpaceRoot } from '../schemas/space-root.interface.js'
+import type { Space } from '../schemas/space.interface.js'
+import { spacesMembers } from '../schemas/spaces-members.schema.js'
+import { spacesRoots } from '../schemas/spaces-roots.schema.js'
+import { spaceGroupConcatPermissions, spaces } from '../schemas/spaces.schema.js'
+
+@Injectable()
+export class SpacesQueries {
+  private readonly logger = new Logger(SpacesQueries.name)
+  private spacePermissionsQuery: MySql2PreparedQuery<any> | null = null
+  private spaceAndRootPermissionsQuery: MySql2PreparedQuery<any> | null = null
+  private spacesWithDetailsQuery: MySql2PreparedQuery<any> | null = null
+  private spacesQuery: MySql2PreparedQuery<any> | null = null
+  private spaceIdentitiesQuery: MySql2PreparedQuery<any> | null = null
+  private spaceQuery: MySql2PreparedQuery<any> | null = null
+  private spacesWithPermissionsQuery: MySql2PreparedQuery<any> | null = null
+  private spaceFromIdWithPermissionsQuery: MySql2PreparedQuery<any> | null = null
+  private spaceRootFilesQuery: MySql2PreparedQuery<any> | null = null
+
+  constructor(
+    @Inject(DB_TOKEN_PROVIDER) private readonly db: DBSchema,
+    public readonly cache: Cache,
+    private readonly filesQueries: FilesQueries
+  ) {}
+
+  spaceExistsForAlias(alias: string, excludedSpaceId?: number) {
+    return this.db.query.spaces.findFirst({
+      columns: { id: true },
+      where: excludedSpaceId === undefined ? eq(spaces.alias, alias) : and(eq(spaces.alias, alias), ne(spaces.id, excludedSpaceId))
+    })
+  }
+
+  spaceRootExistsForAlias(spaceId: number, rootAlias: string, excludedRootId?: number) {
+    return this.db.query.spacesRoots.findFirst({
+      columns: { id: true },
+      where:
+        excludedRootId === undefined
+          ? and(eq(spacesRoots.spaceId, spaceId), eq(spacesRoots.alias, rootAlias))
+          : and(eq(spacesRoots.spaceId, spaceId), eq(spacesRoots.alias, rootAlias), ne(spacesRoots.id, excludedRootId))
+    })
+  }
+
+  selectSpaces<K extends keyof Space>(fields: readonly K[], where: SQL[]): Promise<Pick<Space, K>[]> {
+    const select = convertToSelect(spaces, fields)
+    return this.db
+      .select(select)
+      .from(spaces)
+      .where(and(...where)) as Promise<Pick<Space, K>[]>
+  }
+
+  spacesQuotaPaths(spaceId?: number): Promise<(Pick<Space, 'id' | 'alias' | 'storageUsage' | 'storageQuota'> & { externalPaths: string[] })[]> {
+    return this.db
+      .select({
+        id: spaces.id,
+        alias: spaces.alias,
+        storageUsage: spaces.storageUsage,
+        storageQuota: spaces.storageQuota,
+        externalPaths: sql<string[]>`JSON_ARRAYAGG(${spacesRoots.externalPath})`.mapWith(dbParseJson).as('externalPaths')
+      })
+      .from(spaces)
+      .leftJoin(spacesRoots, and(eq(spacesRoots.spaceId, spaces.id), isNotNull(spacesRoots.externalPath)))
+      .where(spaceId ? eq(spaces.id, spaceId) : undefined)
+      .groupBy(spaces.id)
+  }
+
+  async userIsAdminOrSpaceManager(user: UserModel, spaceId: number, shareId?: number): Promise<boolean> {
+    const q = this.db
+      .select({
+        managerId: spacesMembers.userId,
+        ...(shareId ? { shareId: shares.id } : {})
+      })
+      .from(spaces)
+      .leftJoin(
+        spacesMembers,
+        and(eq(spacesMembers.spaceId, spaces.id), eq(spacesMembers.userId, user.id), eq(spacesMembers.role, SPACE_ROLE.IS_MANAGER))
+      )
+    if (shareId) {
+      q.innerJoin(shares, and(eq(shares.id, shareId), eq(shares.spaceId, spaces.id)))
+    }
+    const [r] = await q.where(and(eq(spaces.id, spaceId), or(isNotNull(spacesMembers.userId), eq(sql`${+user.isAdmin}`, 1)))).limit(1)
+    return !!r
+  }
+
+  async getSpaceAsAdminOrManager(user: UserModel, spaceId: number): Promise<SpaceProps | null> {
+    /* User must be an admin or the manager of the space */
+    if (!this.spaceQuery) {
+      const otherMembers: any = alias(spacesMembers, 'otherMembers')
+      const rootOwner: any = alias(users, 'rootOwner')
+      // fileOwner: avoid providing file path information for roots not owned by the current user
+      const fileOwner: any = alias(files, 'fileOwner')
+      const linkUsers: any = alias(users, 'linkUsers')
+      this.spaceQuery = this.db
+        .select({
+          id: spaces.id,
+          name: spaces.name,
+          alias: spaces.alias,
+          description: spaces.description,
+          enabled: spaces.enabled,
+          storageUsage: spaces.storageUsage,
+          storageQuota: spaces.storageQuota,
+          storageIndexing: spaces.storageIndexing,
+          createdAt: spaces.createdAt,
+          modifiedAt: spaces.modifiedAt,
+          disabledAt: spaces.disabledAt,
+          roots: concatDistinctObjectsInArray(spacesRoots.id, {
+            id: spacesRoots.id,
+            name: spacesRoots.name,
+            alias: spacesRoots.alias,
+            externalPath: spacesRoots.externalPath,
+            permissions: spacesRoots.permissions,
+            createdAt: dateTimeUTC(spacesRoots.createdAt),
+            owner: { id: rootOwner.id, login: rootOwner.login, fullName: userFullNameSQL(rootOwner), email: rootOwner.email },
+            // fileOwner: (hide if not owner), files: allow fields
+            file: { id: fileOwner.id, path: filePathSQL(fileOwner), mime: files.mime }
+          }),
+          users: concatDistinctObjectsInArray(users.id, {
+            id: users.id,
+            login: users.login,
+            name: userFullNameSQL(users),
+            type: sql`IF (${users.role} = ${USER_ROLE.GUEST}, ${MEMBER_TYPE.GUEST}, ${MEMBER_TYPE.USER})`,
+            spaceRole: otherMembers.role,
+            description: users.email,
+            permissions: otherMembers.permissions,
+            createdAt: dateTimeUTC(otherMembers.createdAt)
+          }),
+          groups: concatDistinctObjectsInArray(groups.id, {
+            id: groups.id,
+            name: groups.name,
+            type: sql`IF (${groups.type} = ${GROUP_TYPE.PERSONAL}, ${MEMBER_TYPE.PGROUP}, ${MEMBER_TYPE.GROUP})`,
+            spaceRole: sql`${SPACE_ROLE.IS_MEMBER}`,
+            description: groups.description,
+            permissions: otherMembers.permissions,
+            createdAt: dateTimeUTC(otherMembers.createdAt)
+          }),
+          links: concatDistinctObjectsInArray(linkUsers.id, {
+            id: linkUsers.id,
+            linkId: links.id,
+            name: links.name,
+            type: sql`${MEMBER_TYPE.USER}`,
+            spaceRole: sql`${SPACE_ROLE.IS_MEMBER}`,
+            description: links.email,
+            permissions: otherMembers.permissions,
+            createdAt: dateTimeUTC(otherMembers.createdAt)
+          })
+        } satisfies SelectedFields)
+        .from(spaces)
+        .leftJoin(
+          spacesMembers,
+          and(
+            eq(spacesMembers.spaceId, spaces.id),
+            eq(spacesMembers.userId, sql.placeholder('userId')),
+            eq(spacesMembers.role, SPACE_ROLE.IS_MANAGER)
+          )
+        )
+        .leftJoin(otherMembers, eq(otherMembers.spaceId, spaces.id))
+        .leftJoin(users, and(isNull(otherMembers.linkId), eq(otherMembers.userId, users.id)))
+        .leftJoin(linkUsers, and(isNotNull(otherMembers.linkId), eq(linkUsers.id, otherMembers.userId)))
+        .leftJoin(links, and(eq(links.userId, linkUsers.id), eq(links.id, otherMembers.linkId)))
+        .leftJoin(groups, eq(otherMembers.groupId, groups.id))
+        .leftJoin(spacesRoots, eq(spacesRoots.spaceId, spaces.id))
+        .leftJoin(files, eq(spacesRoots.fileId, files.id))
+        .leftJoin(rootOwner, eq(rootOwner.id, files.ownerId))
+        .leftJoin(fileOwner, and(eq(fileOwner.id, files.id), eq(fileOwner.ownerId, sql.placeholder('userId'))))
+        .where(and(eq(spaces.id, sql.placeholder('spaceId')), or(isNotNull(spacesMembers.userId), eq(sql.placeholder('isAdmin'), 1))))
+        .groupBy(spaces.id)
+        .limit(1)
+        .prepare()
+    }
+    const [space] = await this.spaceQuery.execute({ userId: user.id, spaceId, isAdmin: +user.isAdmin })
+    if (!space) {
+      return null
+    }
+    // merge members
+    space.members = [...popFromObject('users', space), ...popFromObject('groups', space), ...popFromObject('links', space)]
+    return new SpaceProps(space, user.id)
+  }
+
+  async createSpace(space: SpaceProps): Promise<number> {
+    return dbGetInsertedId(await this.db.insert(spaces).values(space))
+  }
+
+  async deleteSpace(spaceId: number, deleteNow = false): Promise<boolean> {
+    let r: MySqlQueryResult
+    if (deleteNow) {
+      r = await this.db.delete(spaces).where(eq(spaces.id, spaceId))
+    } else {
+      r = await this.db
+        .update(spaces)
+        .set({ enabled: false, disabledAt: new Date() } as Space)
+        .where(eq(spaces.id, spaceId))
+    }
+    return dbCheckAffectedRows(r, 1)
+  }
+
+  async updateSpace(id: number, set: Partial<Record<keyof Space, any>>): Promise<boolean> {
+    try {
+      dbCheckAffectedRows(await this.db.update(spaces).set(set).where(eq(spaces.id, id)), 1)
+      this.logger.verbose({ tag: this.updateSpace.name, msg: `space (${id}) was updated : ${JSON.stringify(set)}` })
+      return true
+    } catch (e) {
+      this.logger.error({ tag: this.updateSpace.name, msg: `space (${id}) was not updated : ${JSON.stringify(set)} : ${toErrorMessage(e)}` })
+      return false
+    }
+  }
+
+  async spaceRootFiles(userId: number, spaceId: number, details: SpaceBrowseDetails): Promise<FileProps[]> {
+    if (!this.spaceRootFilesQuery) {
+      const select: any = {
+        id: files.id,
+        path: filePathSQL(files),
+        isDir: files.isDir,
+        inTrash: files.inTrash,
+        size: files.size,
+        ctime: files.ctime,
+        mtime: files.mtime,
+        mime: files.mime,
+        root: {
+          id: spacesRoots.id,
+          alias: spacesRoots.alias,
+          name: spacesRoots.name,
+          externalPath: spacesRoots.externalPath,
+          permissions: spacesRoots.permissions,
+          owner: { id: users.id, login: users.login, email: users.email, fullName: userFullNameSQL(users) }
+        },
+        shares: sql`IF (${sql.placeholder('withDetails')}, ${concatDistinctObjectsInArray(shares.id, {
+          id: shares.id,
+          alias: shares.alias,
+          name: shares.name,
+          type: shares.type
+        })}, '[]')`.mapWith(dbParseJson),
+        syncs: sql`IF (${sql.placeholder('withSyncs')}, ${concatDistinctObjectsInArray(syncPaths.id, {
+          id: syncPaths.id,
+          clientId: syncClients.id,
+          clientName: sql`JSON_VALUE(${syncClients.info}, '$.node')`
+        })}, '[]')`.mapWith(dbParseJson),
+        hasComments: sql<boolean>`IF (${sql.placeholder('withDetails')}, ${fileHasCommentsSubquerySQL(files.id)}, 0)`.mapWith(Boolean),
+        isFavorite: isNotNull(filesFavorites.fileId).mapWith(Boolean)
+      } satisfies Partial<Record<keyof FileProps, any>>
+      this.spaceRootFilesQuery = this.db
+        .select(select)
+        .from(spacesRoots)
+        .leftJoin(files, eq(files.id, spacesRoots.fileId))
+        .leftJoin(users, eq(users.id, files.ownerId))
+        .leftJoin(
+          filesFavorites,
+          and(eq(sql.placeholder('withFavorites'), sql`1`), eq(filesFavorites.userId, sql.placeholder('userId')), eq(filesFavorites.fileId, files.id))
+        )
+        .leftJoin(
+          shares,
+          and(
+            eq(sql.placeholder('withDetails'), sql`1`),
+            eq(shares.ownerId, sql.placeholder('userId')),
+            isNull(shares.fileId),
+            isNull(shares.parentId),
+            eq(shares.spaceRootId, spacesRoots.id)
+          )
+        )
+        .leftJoin(syncClients, and(eq(sql.placeholder('withSyncs'), sql`1`), eq(syncClients.ownerId, sql.placeholder('userId'))))
+        .leftJoin(
+          syncPaths,
+          and(
+            eq(sql.placeholder('withSyncs'), sql`1`),
+            eq(syncPaths.clientId, syncClients.id),
+            eq(syncPaths.spaceId, sql.placeholder('spaceId')),
+            eq(syncPaths.spaceRootId, spacesRoots.id),
+            isNull(syncPaths.fileId)
+          )
+        )
+        .where(eq(spacesRoots.spaceId, sql.placeholder('spaceId')))
+        .groupBy(files.id, spacesRoots.id)
+        .prepare()
+    }
+    return this.spaceRootFilesQuery.execute({
+      userId,
+      spaceId,
+      withDetails: +!!details,
+      withFavorites: +(details?.favorites ?? false),
+      withSyncs: +(details?.syncs ?? false)
+    })
+  }
+
+  async getSpaceRoots(spaceId: number, userId?: number): Promise<SpaceRootProps[]> {
+    const where: SQL<any>[] = [eq(spacesRoots.spaceId, spaceId)]
+    if (userId) {
+      where.push(eq(files.ownerId, userId))
+    }
+    return (await this.db
+      .select({
+        id: spacesRoots.id,
+        alias: spacesRoots.alias,
+        name: spacesRoots.name,
+        permissions: spacesRoots.permissions,
+        createdAt: spacesRoots.createdAt,
+        ...(!userId && { owner: { id: files.ownerId } }),
+        file: {
+          id: files.id,
+          path: filePathSQL(files),
+          mime: files.mime
+        }
+      })
+      .from(spacesRoots)
+      .leftJoin(files, eq(files.id, spacesRoots.fileId))
+      .where(and(...where))) as SpaceRootProps[]
+  }
+
+  async getSpaceMemberIds(spaceId: number): Promise<{ groupIds: number[]; userIds: number[] }> {
+    const members: { userIds: number[]; groupIds: number[] } = { userIds: [], groupIds: [] }
+    for (const m of await this.db
+      .select({
+        userId: spacesMembers.userId,
+        groupId: spacesMembers.groupId
+      })
+      .from(spacesMembers)
+      .where(eq(spacesMembers.spaceId, spaceId))) {
+      if (m.userId) {
+        members.userIds.push(m.userId)
+      } else {
+        members.groupIds.push(m.groupId as number)
+      }
+    }
+    return members
+  }
+
+  async updateMembers(
+    spaceId: number,
+    add: SpaceMemberDto[],
+    update: SpaceMemberUpdate[],
+    remove: SpaceMemberDto[]
+  ): Promise<Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, { userIds: number[]; groupIds: number[] }>> {
+    // store status
+    const status: Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, { userIds: number[]; groupIds: number[] }> = {
+      [ACTION.ADD]: { userIds: [], groupIds: [] },
+      [ACTION.UPDATE]: { userIds: [], groupIds: [] },
+      [ACTION.DELETE]: { userIds: [], groupIds: [] }
+    }
+    // add
+    for (const m of add) {
+      try {
+        dbCheckAffectedRows(
+          await this.db.insert(spacesMembers).values({
+            spaceId: spaceId,
+            ...(m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? { userId: m.id } : { groupId: m.id }),
+            role: m.spaceRole,
+            permissions: m.permissions
+          } as SpaceMembers),
+          1
+        )
+        status[ACTION.ADD][`${m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? 'userIds' : 'groupIds'}`].push(m.id)
+        this.logger.debug({ tag: this.updateMembers.name, msg: `${m.type} (${m.id}) added to the space (${spaceId})` })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateMembers.name,
+          msg: `${m.type} (${m.id}) was not added to the space ${spaceId} ->  : ${toErrorMessage(e)}`
+        })
+      }
+    }
+    // update
+    for (const props of update) {
+      const m: SpaceMemberDto = popFromObject('object', props)
+      const spaceRole = popFromObject('spaceRole', props)
+      if (Number.isInteger(spaceRole)) {
+        props.role = spaceRole
+      }
+      try {
+        dbCheckAffectedRows(
+          await this.db
+            .update(spacesMembers)
+            .set(props)
+            .where(
+              and(
+                eq(spacesMembers.spaceId, spaceId),
+                eq(m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? spacesMembers.userId : spacesMembers.groupId, m.id)
+              )
+            )
+            .limit(1),
+          1
+        )
+        status[ACTION.UPDATE][`${m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? 'userIds' : 'groupIds'}`].push(m.id)
+        this.logger.debug({ tag: this.updateMembers.name, msg: `${m.type} (${m.id}) was updated on space (${spaceId}) : ${JSON.stringify(props)}` })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateMembers.name,
+          msg: `${m.type} (${m.id}) was not updated on space (${spaceId}) : ${JSON.stringify(props)} : ${toErrorMessage(e)}`
+        })
+      }
+    }
+    // remove
+    for (const m of remove) {
+      try {
+        dbCheckAffectedRows(
+          await this.db
+            .delete(spacesMembers)
+            .where(
+              and(
+                eq(spacesMembers.spaceId, spaceId),
+                eq(m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? spacesMembers.userId : spacesMembers.groupId, m.id)
+              )
+            ),
+          1
+        )
+        status[ACTION.DELETE][`${m.type === MEMBER_TYPE.USER || m.type === MEMBER_TYPE.GUEST ? 'userIds' : 'groupIds'}`].push(m.id)
+        this.logger.debug({ tag: this.updateMembers.name, msg: `${m.type} (${m.id}) removed from space (${spaceId})` })
+      } catch (e) {
+        this.logger.error({
+          tag: this.updateMembers.name,
+          msg: `${m.type} (${m.id}) was not removed from space (${spaceId}) : ${toErrorMessage(e)}`
+        })
+      }
+    }
+    return status
+  }
+
+  async updateSpaceRoots(
+    userId: number,
+    spaceId: number,
+    add: SpaceRootProps[],
+    update: ConvertedDiffUpdate<SpaceRootProps, 'name' | 'alias' | 'permissions'>[],
+    remove: SpaceRootProps[]
+  ): Promise<Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, SpaceRootProps[]>> {
+    // store status
+    const status = {} as Record<Exclude<ACTION, ACTION.DELETE_PERMANENTLY>, SpaceRootProps[]>
+    // add
+    for (const r of add) {
+      if (await this.addRoot(userId, spaceId, r)) {
+        ;(status[ACTION.ADD] ||= []).push(r)
+      }
+    }
+    // update
+    for (const props of update) {
+      const r: SpaceRootProps = popFromObject('object', props)
+      if (await this.updateRoot(props, { id: r.id })) {
+        ;(status[ACTION.UPDATE] ||= []).push(r)
+      }
+    }
+    // delete
+    for (const r of remove) {
+      if (await this.removeRoot(r.id)) {
+        ;(status[ACTION.DELETE] ||= []).push(r)
+      }
+    }
+    return status
+  }
+
+  @CacheDecorator()
+  async spaceIdentities(userId: number): Promise<Pick<Space, 'id' | 'alias' | 'name'>[]> {
+    if (!this.spaceIdentitiesQuery) {
+      const unionAlias = this.fromUserAndGroups({ id: spaces.id, alias: spaces.alias, name: spaces.name })
+      this.spaceIdentitiesQuery = this.db
+        .select({ id: unionAlias.id, alias: unionAlias.alias, name: unionAlias.name })
+        .from(unionAlias)
+        .groupBy(unionAlias.id, unionAlias.alias, unionAlias.name)
+        .prepare()
+    }
+    // `userId` is used in `fromUserAndGroups` function
+    return this.spaceIdentitiesQuery.execute({ userId })
+  }
+
+  @CacheDecorator()
+  async spaces(userId: number, withPermissions = false, fromId?: number): Promise<SpaceProps[]> {
+    let pQuery: MySql2PreparedQuery<any> | null
+    if (fromId) {
+      pQuery = this.spaceFromIdWithPermissionsQuery
+    } else if (withPermissions) {
+      pQuery = this.spacesWithPermissionsQuery
+    } else {
+      pQuery = this.spacesQuery
+    }
+    if (!pQuery) {
+      const selectUnion = {
+        id: spaces.id,
+        alias: spaces.alias,
+        name: spaces.name,
+        description: spaces.description,
+        enabled: spaces.enabled,
+        createdAt: spaces.createdAt,
+        modifiedAt: spaces.modifiedAt,
+        ...(withPermissions && { permissions: spacesMembers.permissions, role: spacesMembers.role })
+      } satisfies Partial<Record<keyof SpaceProps, any>>
+      const unionAlias = this.fromUserAndGroups(selectUnion)
+      const select = {
+        id: unionAlias.id,
+        alias: unionAlias.alias,
+        name: unionAlias.name,
+        description: unionAlias.description,
+        enabled: unionAlias.enabled,
+        createdAt: unionAlias.createdAt,
+        modifiedAt: unionAlias.modifiedAt,
+        ...(withPermissions && {
+          permissions: spaceGroupConcatPermissions(unionAlias.permissions),
+          role: max(unionAlias.role)
+        })
+      } satisfies Partial<Record<keyof SpaceProps, any>>
+      if (fromId) {
+        pQuery = this.db
+          .select(select)
+          .from(unionAlias)
+          .where(eq(unionAlias.id, sql.placeholder('fromId')))
+          .limit(1)
+          .prepare()
+        this.spaceFromIdWithPermissionsQuery = pQuery
+      } else {
+        pQuery = this.db.select(select).from(unionAlias).groupBy(unionAlias.id).prepare()
+        if (withPermissions) {
+          this.spacesWithPermissionsQuery = pQuery
+        } else {
+          this.spacesQuery = pQuery
+        }
+      }
+    }
+    // SpaceProps instance is required, if the user is a space manager, he must have all permissions
+    // `userId` is used in `fromUserAndGroups` function
+    return (await pQuery.execute({ userId, fromId })).map((s: Partial<SpaceProps>) => new SpaceProps(s))
+  }
+
+  async spacesWithDetails(userId: number): Promise<SpaceProps[]> {
+    if (!this.spacesWithDetailsQuery) {
+      const selectUnion = {
+        id: spaces.id,
+        alias: spaces.alias,
+        name: spaces.name,
+        description: spaces.description,
+        enabled: spaces.enabled,
+        permissions: spacesMembers.permissions,
+        role: spacesMembers.role,
+        createdAt: spaces.createdAt,
+        modifiedAt: spaces.modifiedAt,
+        disabledAt: spaces.disabledAt
+      } satisfies Partial<Record<keyof SpaceProps, any>>
+      const unionAlias = this.fromUserAndGroups(selectUnion)
+      const managers: any = alias(users, 'managers')
+      const select = {
+        id: unionAlias.id,
+        alias: unionAlias.alias,
+        name: unionAlias.name,
+        description: unionAlias.description,
+        enabled: unionAlias.enabled,
+        permissions: spaceGroupConcatPermissions(unionAlias.permissions),
+        role: max(unionAlias.role),
+        modifiedAt: unionAlias.modifiedAt,
+        createdAt: unionAlias.createdAt,
+        disabledAt: unionAlias.disabledAt,
+        members: concatDistinctObjectsInArray(managers.id, {
+          id: managers.id,
+          login: managers.login,
+          name: userFullNameSQL(managers),
+          description: managers.email,
+          type: sql`${MEMBER_TYPE.USER}`,
+          spaceRole: spacesMembers.role,
+          permissions: sql<string>`''`,
+          createdAt: dateTimeUTC(spacesMembers.createdAt)
+        } satisfies { [K in keyof Member]: any }),
+        counts: {
+          users: sql<number>`COUNT(DISTINCT(CASE WHEN ${spacesMembers.userId} IS NOT NULL AND ${spacesMembers.linkId} IS NULL THEN ${spacesMembers.userId} END))`,
+          groups: countDistinct(spacesMembers.groupId),
+          links: sql<number>`COUNT(DISTINCT(CASE WHEN ${spacesMembers.linkId} IS NOT NULL THEN ${spacesMembers.linkId} END))`,
+          roots: countDistinct(files.id),
+          shares: sql<number>`COUNT(DISTINCT(CASE WHEN ${shares.id} IS NOT NULL THEN ${shares.id} END))`
+        }
+      } satisfies Partial<Record<keyof SpaceProps, any>>
+      this.spacesWithDetailsQuery = this.db
+        .select(select)
+        .from(unionAlias)
+        .leftJoin(spacesMembers, eq(spacesMembers.spaceId, unionAlias.id))
+        .leftJoin(managers, and(eq(spacesMembers.userId, managers.id), eq(spacesMembers.role, SPACE_ROLE.IS_MANAGER)))
+        .leftJoin(spacesRoots, eq(spacesRoots.spaceId, unionAlias.id))
+        .leftJoin(files, and(eq(files.id, spacesRoots.fileId), eq(files.ownerId, sql.placeholder('userId'))))
+        .leftJoin(shares, and(eq(unionAlias.role, SPACE_ROLE.IS_MANAGER), eq(shares.spaceId, unionAlias.id)))
+        .groupBy(unionAlias.id)
+        .prepare()
+    }
+    const r: MySqlQueryResult = await this.spacesWithDetailsQuery.execute({ userId })
+    return r.map((s: Partial<SpaceProps>) => new SpaceProps(s))
+  }
+
+  async spacesAsAdmin(): Promise<SpaceProps[]> {
+    const managers: any = alias(users, 'managers')
+    const select = {
+      id: spaces.id,
+      alias: spaces.alias,
+      name: spaces.name,
+      description: spaces.description,
+      enabled: spaces.enabled,
+      storageQuota: spaces.storageQuota,
+      storageUsage: spaces.storageUsage,
+      modifiedAt: spaces.modifiedAt,
+      createdAt: spaces.createdAt,
+      disabledAt: spaces.disabledAt,
+      members: concatDistinctObjectsInArray(managers.id, {
+        id: managers.id,
+        login: managers.login,
+        name: userFullNameSQL(managers),
+        description: managers.email,
+        type: sql`${MEMBER_TYPE.USER}`,
+        spaceRole: spacesMembers.role,
+        permissions: sql<string>`''`,
+        createdAt: dateTimeUTC(spacesMembers.createdAt)
+      } satisfies { [K in keyof Member]: any }),
+      counts: {
+        users: sql<number>`COUNT(DISTINCT(CASE WHEN ${spacesMembers.userId} IS NOT NULL AND ${spacesMembers.linkId} IS NULL THEN ${spacesMembers.userId} END))`,
+        groups: countDistinct(spacesMembers.groupId),
+        links: sql<number>`COUNT(DISTINCT(CASE WHEN ${spacesMembers.linkId} IS NOT NULL THEN ${spacesMembers.linkId} END))`,
+        shares: sql<number>`COUNT(DISTINCT(CASE WHEN ${shares.id} IS NOT NULL THEN ${shares.id} END))`
+      }
+    } satisfies Partial<Record<keyof SpaceProps, any>>
+    const r = await this.db
+      .select(select)
+      .from(spaces)
+      .leftJoin(spacesMembers, eq(spacesMembers.spaceId, spaces.id))
+      .leftJoin(managers, and(eq(spacesMembers.userId, managers.id), eq(spacesMembers.role, SPACE_ROLE.IS_MANAGER)))
+      .leftJoin(shares, eq(shares.spaceId, spaces.id))
+      .groupBy(spaces.id)
+    return r.map((s) => new SpaceProps(s as Partial<SpaceProps>))
+  }
+
+  @CacheDecorator()
+  permissions(userId: number, spaceAlias: string, rootAlias: string | null): Promise<Partial<SpaceEnv> | null> {
+    return rootAlias ? this.spaceAndRootPermissions(userId, spaceAlias, rootAlias) : this.spacePermissions(userId, spaceAlias)
+  }
+
+  async addRoot(userId: number, spaceId: number, root: SpaceRootProps): Promise<boolean> {
+    const r: Partial<SpaceRoot> = { name: root.name, alias: root.alias, permissions: root.permissions, spaceId: spaceId }
+    if (root.externalPath) {
+      r.externalPath = root.externalPath
+    } else {
+      r.fileId = await this.getOrCreateUserFile(userId, root.file)
+    }
+    try {
+      dbCheckAffectedRows(await this.db.insert(spacesRoots).values(r as SpaceRoot), 1)
+      this.logger.debug({ tag: this.addRoot.name, msg: `*${root.alias}* (${root.id}) added` })
+      return true
+    } catch (e) {
+      this.logger.error({
+        tag: this.addRoot.name,
+        msg: `*${root.alias}* (${root.id}) was not added : ${JSON.stringify(root)} : ${toErrorMessage(e)}`
+      })
+      return false
+    }
+  }
+
+  async updateRoot(set: Partial<Record<keyof SpaceRoot, any>>, filters: Partial<Record<keyof SpaceRoot, any>>): Promise<boolean> {
+    const where: SQL[] = convertToWhere(spacesRoots, filters)
+    try {
+      dbCheckAffectedRows(
+        await this.db
+          .update(spacesRoots)
+          .set(set)
+          .where(and(...where))
+          .limit(1),
+        1
+      )
+      this.logger.debug({ tag: this.updateRoot.name, msg: `${JSON.stringify(filters)} was updated : ${JSON.stringify(set)}` })
+      return true
+    } catch (e) {
+      this.logger.error({
+        tag: this.updateRoot.name,
+        msg: `${JSON.stringify(filters)} was not updated : ${JSON.stringify(set)} : ${toErrorMessage(e)}`
+      })
+      return false
+    }
+  }
+
+  getUserFile(userId: number, fileId: number): Promise<Pick<File, 'id' | 'path'> | null> {
+    return this.filesQueries.getUserFile(userId, fileId)
+  }
+
+  getOrCreateUserFile(userId: number, file: FileProps): Promise<number> {
+    return this.filesQueries.getOrCreateUserFile(userId, file)
+  }
+
+  getOrCreateSpaceFile(fileId: number, file: FileProps, dbFile: FileDBProps, options: GetOrCreateSpaceFileOptions = {}): Promise<number> {
+    return this.filesQueries.getOrCreateSpaceFile(fileId, file, dbFile, options)
+  }
+
+  async clearCachePermissions(spaceAlias: string, rootAliases?: string[], userIds?: number[]) {
+    const uIds = userIds ?? ['*']
+    for (const uid of uIds) {
+      const basePattern = [this.constructor.name, this.permissions.name, uid, spaceAlias]
+      const patterns: string[] = []
+      if (rootAliases?.length) {
+        // clear cache on space root
+        rootAliases.forEach((rAlias: string) => patterns.push(this.cache.genSlugKey(...basePattern, rAlias)))
+      } else {
+        // clear cache on accessible space identities
+        patterns.push(this.cache.genSlugKey(this.constructor.name, this.spaceIdentities.name, uid))
+        // clear cache on spaces list
+        patterns.push(this.cache.genSlugKey(this.constructor.name, this.spaces.name, uid))
+        patterns.push(this.cache.genSlugKey(this.constructor.name, this.spaces.name, uid, '*'))
+        // clear cache on spaces and roots
+        patterns.push(this.cache.genSlugKey(...basePattern), this.cache.genSlugKey(...basePattern, '*'))
+      }
+      for (const p of patterns) {
+        const keys = await this.cache.keys(p)
+        if (keys.length) {
+          this.logger.verbose({ tag: this.clearCachePermissions.name, msg: `${JSON.stringify(keys)}` })
+          this.cache.mdel(keys).catch((e: Error) => this.logger.error({ tag: this.clearCachePermissions.name, msg: toErrorMessage(e) }))
+        }
+      }
+    }
+  }
+
+  private async removeRoot(id: number): Promise<boolean> {
+    try {
+      dbCheckAffectedRows(await this.db.delete(spacesRoots).where(eq(spacesRoots.id, id)), 1)
+      this.logger.debug({ tag: this.removeRoot.name, msg: `root (${id}) removed` })
+      return true
+    } catch (e) {
+      this.logger.error({ tag: this.removeRoot.name, msg: `root (${id}) was not deleted : ${toErrorMessage(e)}` })
+      return false
+    }
+  }
+
+  private async spacePermissions(userId: number, spaceAlias: string): Promise<Partial<SpaceEnv> | null> {
+    if (!this.spacePermissionsQuery) {
+      const selectUnion = {
+        id: spaces.id,
+        alias: spaces.alias,
+        name: spaces.name,
+        enabled: spaces.enabled,
+        permissions: spacesMembers.permissions,
+        role: spacesMembers.role
+      } satisfies Partial<Record<keyof SpaceEnv, any>>
+      const filters: SQL[] = [eq(spaces.alias, sql.placeholder('spaceAlias'))]
+      const unionAlias = this.fromUserAndGroups(selectUnion, filters)
+      const select = {
+        id: unionAlias.id,
+        alias: unionAlias.alias,
+        name: unionAlias.name,
+        enabled: unionAlias.enabled,
+        permissions: spaceGroupConcatPermissions(unionAlias.permissions),
+        role: max(unionAlias.role)
+      } satisfies Partial<Record<keyof SpaceEnv, any>>
+      this.spacePermissionsQuery = this.db.select(select).from(unionAlias).groupBy(unionAlias.id).limit(1).prepare()
+    }
+    // `userId` is used in `fromUserAndGroups` function
+    const r: MySqlQueryResult = await this.spacePermissionsQuery.execute({ userId, spaceAlias })
+    return r.length ? r.at(0) : null
+  }
+
+  private async spaceAndRootPermissions(userId: number, spaceAlias: string, rootAlias: string): Promise<Partial<SpaceEnv> | null> {
+    if (!this.spaceAndRootPermissionsQuery) {
+      const selectUnion = {
+        id: spaces.id,
+        alias: spaces.alias,
+        name: spaces.name,
+        enabled: spaces.enabled,
+        permissions: spacesMembers.permissions,
+        role: spacesMembers.role,
+        rootId: sql`${spacesRoots.id}`.as('rootId'),
+        rootAlias: sql`${spacesRoots.alias}`.as('rootAlias'),
+        rootName: sql`${spacesRoots.name}`.as('rootName'),
+        rootPermissions: sql`${spacesRoots.permissions}`.as('rootPermissions'),
+        rootOwnerId: files.ownerId,
+        rootOwnerLogin: users.login,
+        rootFileId: sql`${files.id}`.as('rootFileId'),
+        rootFilePath: filePathSQL(files).as('rootFilePath'),
+        rootFileInTrash: files.inTrash,
+        rootExternalPath: spacesRoots.externalPath
+      } satisfies SelectedFields
+      const filters: SQL[] = [eq(spaces.alias, sql.placeholder('spaceAlias'))]
+      const fromUser = this.fromUserQuery(selectUnion, filters).$dynamic()
+      const fromGroups = this.fromGroupsQuery(selectUnion, filters).$dynamic()
+      for (const q of [fromUser, fromGroups]) {
+        q.leftJoin(spacesRoots, and(eq(spacesRoots.spaceId, spacesMembers.spaceId), eq(spacesRoots.alias, sql.placeholder('rootAlias'))))
+          .leftJoin(files, eq(files.id, spacesRoots.fileId))
+          .leftJoin(users, eq(users.id, files.ownerId))
+      }
+      const unionAlias = union(fromUser, fromGroups).as('union_alias')
+      const select: any = {
+        id: unionAlias.id,
+        alias: unionAlias.alias,
+        name: unionAlias.name,
+        enabled: unionAlias.enabled,
+        permissions: spaceGroupConcatPermissions(unionAlias.permissions),
+        role: sql<SPACE_ROLE>`MAX(${unionAlias.role})`,
+        root: {
+          id: unionAlias.rootId,
+          alias: unionAlias.rootAlias,
+          name: unionAlias.rootName,
+          permissions: unionAlias.rootPermissions,
+          owner: { id: unionAlias.rootOwnerId, login: unionAlias.rootOwnerLogin },
+          file: { id: unionAlias.rootFileId, path: unionAlias.rootFilePath, inTrash: unionAlias.rootFileInTrash },
+          externalPath: unionAlias.rootExternalPath
+        }
+      } satisfies Partial<Record<keyof SpaceEnv, any>>
+      this.spaceAndRootPermissionsQuery = this.db.select(select).from(unionAlias).groupBy(unionAlias.id).limit(1).prepare()
+    }
+    // `userId` is used in `fromUserQuery` and `fromGroupsQuery` function
+    const r: MySqlQueryResult = await this.spaceAndRootPermissionsQuery.execute({ userId, spaceAlias, rootAlias })
+    return r.length ? r.at(0) : null
+  }
+
+  private fromUserAndGroups(select: Record<string, any>, filters: SQL[] = []) {
+    return union(this.fromUserQuery(select, filters), this.fromGroupsQuery(select, filters)).as('union_alias')
+  }
+
+  private fromUserQuery(select: Record<string, any>, filters: SQL[] = []) {
+    const where = [eq(spacesMembers.userId, sql.placeholder('userId')), ...filters]
+    return this.db
+      .select(select)
+      .from(spacesMembers)
+      .innerJoin(spaces, eq(spacesMembers.spaceId, spaces.id))
+      .where(and(...where))
+  }
+
+  private fromGroupsQuery(select: Record<string, any>, filters: SQL[] = []) {
+    const where = [eq(spacesMembers.groupId, usersGroups.groupId), ...filters]
+    return this.db
+      .select(select)
+      .from(spacesMembers)
+      .innerJoin(usersGroups, eq(usersGroups.userId, sql.placeholder('userId')))
+      .innerJoin(spaces, eq(spacesMembers.spaceId, spaces.id))
+      .where(and(...where))
+  }
+}

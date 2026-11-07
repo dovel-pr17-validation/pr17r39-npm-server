@@ -1,0 +1,28 @@
+import { Injectable, UnauthorizedException } from '@nestjs/common'
+import { AbstractStrategy, PassportStrategy } from '@nestjs/passport'
+import type { FastifyRequest } from 'fastify'
+import { PinoLogger } from 'nestjs-pino'
+import { Strategy } from 'passport-local'
+import type { UserModel } from '../../applications/users/models/user.model.js'
+import { AuthProvider } from '../providers/auth-providers.models.js'
+
+@Injectable()
+export class AuthLocalStrategy extends PassportStrategy(Strategy, 'local') implements AbstractStrategy {
+  constructor(
+    private readonly authProvider: AuthProvider,
+    private readonly logger: PinoLogger
+  ) {
+    super({ usernameField: 'login', passwordField: 'password', passReqToCallback: true })
+  }
+
+  async validate(req: FastifyRequest, loginOrEmail: string, password: string): Promise<UserModel> {
+    loginOrEmail = loginOrEmail.trim()
+    this.logger.assign({ user: loginOrEmail })
+    const user = await this.authProvider.validateUser(loginOrEmail, password, req.ip)
+    if (user) {
+      user.removePassword()
+      return user
+    }
+    throw new UnauthorizedException('Wrong login or password')
+  }
+}

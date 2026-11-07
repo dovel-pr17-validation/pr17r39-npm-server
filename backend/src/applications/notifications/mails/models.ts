@@ -1,0 +1,247 @@
+import { escapeUTF8 } from 'entities'
+import { ACTION } from '../../../common/constants.js'
+import { i18nLocale } from '../../../common/i18n.js'
+import { capitalizeString, SERVER_NAME } from '../../../common/shared.js'
+import { fileName } from '../../files/utils/files.js'
+import { UserModel } from '../../users/models/user.model.js'
+import { NOTIFICATION_APP } from '../constants/notifications.js'
+import { translateObject } from '../i18n/index.js'
+import type { NotificationContentFor } from '../interfaces/notification-properties.interface.js'
+import { defaultFooter, mailAuthor, mailEventOnElement, mailItalicContent, mailTemplate } from './templates.js'
+import { urlFromLink, urlFromSpace, urlFromSpaceFile, urlFromSync } from './urls.js'
+
+function mailActionLink(urlText: string, url?: string): string {
+  return `<br>${urlText}&nbsp;${url ? `<a href="${escapeUTF8(url)}">${SERVER_NAME}</a>` : SERVER_NAME}`
+}
+
+export function commentMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.COMMENTS>,
+  options: {
+    content: string
+    publicUrl?: string
+    author: UserModel
+  }
+): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Comment',
+    defaultFooter: defaultFooter,
+    footer: 'You receive this notification if you are the owner of the file or if you have also commented on this file',
+    urlText: 'Access it from',
+    event: notification.event
+  })
+
+  const content = `${mailAuthor(options.author)}${mailEventOnElement(tr.event, notification.element)}${mailItalicContent(options.content)}`
+
+  const notificationUrl = options.publicUrl ? urlFromSpaceFile(options.publicUrl, notification) : undefined
+  const footer = `${mailActionLink(tr.urlText, notificationUrl)}<br>${tr.footer}<br>${tr.defaultFooter}`
+
+  return [`${tr.title}: ${capitalizeString(notification.element)}`, mailTemplate(content, footer)]
+}
+
+export function spaceMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.SPACES>,
+  options: {
+    publicUrl?: string
+    action: ACTION
+  }
+): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Space',
+    defaultFooter: defaultFooter,
+    urlText: options.action === ACTION.ADD ? 'Access it from' : 'Access your spaces from',
+    event: notification.event
+  })
+
+  const spaceUrl = options.publicUrl ? urlFromSpace(options.publicUrl, options.action === ACTION.ADD ? notification.element : undefined) : undefined
+
+  const content = `${mailEventOnElement(tr.event, notification.element)}`
+
+  const footer = `${mailActionLink(tr.urlText, spaceUrl)}<br>${tr.defaultFooter}`
+
+  return [`${tr.title}: ${capitalizeString(notification.element)}`, mailTemplate(content, footer)]
+}
+
+export function spaceRootMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.SPACE_ROOTS>,
+  options: {
+    publicUrl?: string
+    author: UserModel
+    action: ACTION
+  }
+): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Space',
+    defaultFooter: defaultFooter,
+    urlText: options.action === ACTION.ADD ? 'Access it from' : 'Access this space from',
+    event: notification.event,
+    originEvent: options.action === ACTION.ADD ? 'to the space' : 'from the space'
+  })
+
+  const spaceName = fileName(notification.url)
+  const spaceRootUrl = options.publicUrl
+    ? options.action === ACTION.ADD
+      ? urlFromSpaceFile(options.publicUrl, notification)
+      : urlFromSpace(options.publicUrl, spaceName)
+    : undefined
+
+  const content = `${mailAuthor(options.author)}${mailEventOnElement(tr.event, notification.element)}&nbsp;${tr.originEvent}&nbsp;<b>${escapeUTF8(spaceName)}</b>`
+
+  const footer = `${mailActionLink(tr.urlText, spaceRootUrl)}<br>${tr.defaultFooter}`
+
+  return [`${tr.title}: ${capitalizeString(spaceName)}`, mailTemplate(content, footer)]
+}
+
+export function shareMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.SHARES>,
+  options: {
+    publicUrl?: string
+    author?: UserModel
+    action: ACTION
+  }
+): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Share',
+    defaultFooter: defaultFooter,
+    urlText: options.action === ACTION.ADD ? 'Access it from' : 'Access your shares from',
+    event: notification.event
+  })
+
+  const content = `${options.author ? mailAuthor(options.author) : ''}${mailEventOnElement(tr.event, notification.element)}`
+
+  const notificationUrl = options.publicUrl ? urlFromSpaceFile(options.publicUrl, notification) : undefined
+  const footer = `${mailActionLink(tr.urlText, notificationUrl)}<br>${tr.defaultFooter}`
+
+  return [`${tr.title}: ${capitalizeString(notification.element)}`, mailTemplate(content, footer)]
+}
+
+export function linkMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.LINKS>,
+  options: {
+    publicUrl?: string
+    author?: UserModel
+    action: ACTION
+    linkUUID: string
+    linkPassword?: string
+  }
+): [string, string] {
+  const tr = translateObject(language, {
+    title: options.action === ACTION.ADD ? 'Share' : 'Space',
+    passwordText: 'Access password',
+    urlText: 'Access it from',
+    event: notification.event
+  })
+
+  let content = `${options.author ? mailAuthor(options.author) : ''}${mailEventOnElement(tr.event, notification.element)}`
+
+  if (options.linkPassword) {
+    content += `<br><br>${tr.passwordText}:&nbsp;<div style="border:1px solid #000; padding:8px; display:inline-block;">${escapeUTF8(options.linkPassword)}</div>`
+  }
+
+  const notificationUrl = options.publicUrl ? urlFromLink(options.publicUrl, options.linkUUID) : undefined
+  const footer = mailActionLink(tr.urlText, notificationUrl)
+
+  return [`${tr.title}: ${capitalizeString(notification.element)}`, mailTemplate(content, footer)]
+}
+
+export function syncMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.SYNC>,
+  options: {
+    publicUrl?: string
+    action: ACTION
+  }
+): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Sync',
+    defaultFooter: defaultFooter,
+    urlText: options.action === ACTION.ADD ? 'Access it from' : 'Access your syncs from',
+    event: notification.event
+  })
+
+  const syncUrl = options.publicUrl ? urlFromSync(options.publicUrl) : undefined
+
+  const content = `${mailEventOnElement(tr.event, notification.element)}`
+
+  const footer = `${mailActionLink(tr.urlText, syncUrl)}<br>${tr.defaultFooter}`
+
+  return [`${tr.title}: ${capitalizeString(notification.element)}`, mailTemplate(content, footer)]
+}
+
+export function auth2FaMail(language: i18nLocale, notification: NotificationContentFor<NOTIFICATION_APP.AUTH_2FA>): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Security notification',
+    footer:
+      'You received this notification because the security of your Sync-in account has changed. If you think this was a mistake, please review your security settings or contact your administrator.',
+    event: notification.event,
+    addressIp: 'Address IP',
+    browser: 'Browser'
+  })
+
+  const content = `${escapeUTF8(tr.event)}<br><br>${tr.addressIp}:&nbsp;${escapeUTF8(notification.url)}<br>${tr.browser}:&nbsp;${escapeUTF8(notification.element)}`
+
+  const footer = `<br>${tr.footer}<br>`
+
+  return [tr.title, mailTemplate(content, footer)]
+}
+
+export function authLockedMail(language: i18nLocale, notification: NotificationContentFor<NOTIFICATION_APP.AUTH_LOCKED>): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Security notification',
+    footer: 'You can try signing in again after 15 minutes. If you did not make these attempts, please contact your administrator.',
+    event: notification.event,
+    addressIp: 'Address IP'
+  })
+
+  const content = `${escapeUTF8(tr.event)}<br><br>${tr.addressIp}:&nbsp;${escapeUTF8(notification.url)}<br>`
+
+  const footer = `<br>${tr.footer}<br>`
+
+  return [tr.title, mailTemplate(content, footer)]
+}
+
+export function requestUnlockMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.UNLOCK_REQUEST>,
+  options: {
+    publicUrl?: string
+    author: UserModel
+  }
+): [string, string] {
+  const tr = translateObject(language, {
+    title: 'Unlock Request',
+    defaultFooter: defaultFooter,
+    footer: 'You receive this notification because you have a lock on this file.',
+    urlText: 'Access it from',
+    event: notification.event
+  })
+
+  const content = `${options.author ? mailAuthor(options.author) : ''}${mailEventOnElement(tr.event, notification.element)}`
+
+  const notificationUrl = options.publicUrl ? urlFromSpaceFile(options.publicUrl, notification) : undefined
+  const footer = `${mailActionLink(tr.urlText, notificationUrl)}<br>${tr.footer}<br>${tr.defaultFooter}`
+
+  return [`${tr.title}: ${capitalizeString(notification.element)}`, mailTemplate(content, footer)]
+}
+
+export function serverUpdateAvailableMail(
+  language: i18nLocale,
+  notification: NotificationContentFor<NOTIFICATION_APP.UPDATE_AVAILABLE>
+): [string, string] {
+  const tr = translateObject(language, {
+    title: 'New Version Available',
+    defaultFooter: defaultFooter,
+    footer: 'You receive this notification because you are the administrator of this server.',
+    event: notification.event
+  })
+
+  const content = `${escapeUTF8(tr.event)}:&nbsp;<b><a href="${escapeUTF8(notification.externalUrl ?? '')}" target="_blank" rel="noopener">${escapeUTF8(notification.element)}</a></b>`
+
+  const footer = `<br>${tr.footer}<br>${tr.defaultFooter}`
+
+  return [`${SERVER_NAME} - ${tr.title}`, mailTemplate(content, footer)]
+}

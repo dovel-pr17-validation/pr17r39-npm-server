@@ -1,0 +1,47 @@
+import { TOKEN_TYPE } from '../interfaces/token.interface.js'
+import { API_AUTH_REFRESH, API_AUTH_WS, API_TWO_FA_LOGIN_VERIFY } from './routes.js'
+
+export const ACCESS_KEY = 'sync-in-access'
+export const REFRESH_KEY = 'sync-in-refresh'
+export const CSRF_KEY = 'sync-in-csrf'
+export const WS_KEY = 'sync-in-ws'
+
+export const TWO_FA_CODE_LENGTH = 6
+export const TWO_FA_VERIFY_EXPIRATION = '5m'
+export const TWO_FA_HEADER_CODE = 'sync-in-two-fa-code'
+export const TWO_FA_HEADER_PASSWORD = 'sync-in-two-fa-password'
+
+export const AUTH_RATE_LIMIT_OPTIONS = {
+  limit: 6,
+  ttl: 60_000,
+  blockDuration: 60_000
+} as const
+export const AUTH_WEBDAV_RATE_LIMIT_OPTIONS = {
+  limit: 60,
+  ttl: 60_000,
+  blockDuration: 60_000
+} as const
+export const AUTH_PASSWORD_WORK_RATE_LIMIT_OPTIONS = {
+  limit: 20,
+  ttl: 60_000,
+  blockDuration: 60_000
+} as const
+export const AUTH_RATE_LIMIT_ERROR_MESSAGE = 'Too many requests. Please try again later.'
+
+export const TOKEN_PATHS = {
+  [TOKEN_TYPE.ACCESS]: '/',
+  [TOKEN_TYPE.REFRESH]: API_AUTH_REFRESH,
+  [TOKEN_TYPE.WS]: API_AUTH_WS,
+  [TOKEN_TYPE.CSRF]: '/',
+  [TOKEN_TYPE.ACCESS_2FA]: API_TWO_FA_LOGIN_VERIFY,
+  [TOKEN_TYPE.CSRF_2FA]: '/'
+} as const
+
+export const TOKEN_TYPES = [TOKEN_TYPE.REFRESH, TOKEN_TYPE.ACCESS, TOKEN_TYPE.WS, TOKEN_TYPE.CSRF] as const
+export const TOKEN_2FA_TYPES = [TOKEN_TYPE.ACCESS_2FA, TOKEN_TYPE.CSRF_2FA] as const
+
+export const CSRF_ERROR = {
+  MISSING_JWT: 'Missing CSRF in JWT',
+  MISSING_HEADERS: 'Missing CSRF in headers',
+  MISMATCH: 'CSRF mismatch'
+} as const

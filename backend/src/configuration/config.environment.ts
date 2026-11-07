@@ -1,0 +1,148 @@
+import { join } from 'node:path'
+import { getDocumentTypes } from '../applications/files/constants/samples.js'
+import { FilesContentIndexingConfigSchema } from '../applications/files/files.config.js'
+import type { AuthTokenAccessConfig, AuthTokenRefreshConfig } from '../authentication/auth.config.js'
+import { ACCESS_KEY, CSRF_KEY, TWO_FA_VERIFY_EXPIRATION, WS_KEY } from '../authentication/constants/auth.js'
+import { TOKEN_TYPE } from '../authentication/interfaces/token.interface.js'
+import { ServerConfig } from './config.interfaces.js'
+import { ENVIRONMENT_PREFIX } from './config.constants.js'
+import { configLoader } from './config.loader.js'
+import { isConfigRecord } from './config.schema.js'
+import { type GlobalConfig, GlobalConfigSchema } from './config.validation.js'
+
+export const configuration: GlobalConfig = loadConfiguration()
+export const serverConfig: ServerConfig = {
+  twoFaEnabled: configuration.auth.mfa.totp.enabled,
+  mailServerEnabled: !!configuration.mail?.host,
+  files: {
+    editors: {
+      collabora: configuration.applications.files.editors.collabora.enabled,
+      drawio: configuration.applications.files.editors.drawio.enabled,
+      eurooffice: configuration.applications.files.editors.eurooffice.enabled,
+      onlyoffice: configuration.applications.files.editors.onlyoffice.enabled
+    },
+    sampleDocuments: getDocumentTypes(configuration.applications.files.sampleDocuments)
+  }
+}
+
+export function loadConfiguration(): GlobalConfig {
+  deprecatedFilesEditorsEnvConfig()
+  const config: GlobalConfig = configLoader()
+  // LOGGER
+  if (config.logger?.stdout === false) {
+    config.logger.colorize = false
+  }
+  // AUTHENTICATION
+  // CSRF & WS & 2FA settings
+  config.auth.token[TOKEN_TYPE.CSRF] = { ...config.auth.token[TOKEN_TYPE.REFRESH], name: CSRF_KEY } satisfies AuthTokenRefreshConfig
+  config.auth.token[TOKEN_TYPE.WS] = { ...config.auth.token[TOKEN_TYPE.REFRESH], name: WS_KEY } satisfies AuthTokenRefreshConfig
+  config.auth.token[TOKEN_TYPE.ACCESS_2FA] = {
+    ...config.auth.token[TOKEN_TYPE.ACCESS],
+    name: ACCESS_KEY,
+    expiration: TWO_FA_VERIFY_EXPIRATION
+  } satisfies AuthTokenAccessConfig
+  config.auth.token[TOKEN_TYPE.CSRF_2FA] = {
+    ...config.auth.token[TOKEN_TYPE.CSRF],
+    expiration: TWO_FA_VERIFY_EXPIRATION
+  } satisfies AuthTokenAccessConfig
+  // APPLICATIONS CONFIGURATION
+  // SPACES & FILES
+  if (!config.applications.files.dataPath) {
+    throw new Error('dataPath is not defined in environment.yaml')
+  }
+  config.applications.files.usersPath = join(config.applications.files.dataPath, 'users')
+  config.applications.files.spacesPath = join(config.applications.files.dataPath, 'spaces')
+  config.applications.files.linksPath = join(config.applications.files.dataPath, 'links')
+  // DEPRECATIONS
+  deprecatedServerTrustProxyConfig(config)
+  deprecatedFilesEditorsConfig(config)
+  deprecatedFilesContentIndexingConfig(config)
+
+  const result = GlobalConfigSchema.safeParse(config)
+  if (!result.success) {
+    const details = result.error.issues.map((issue) => {
+      const path = issue.path.map(String).join('.')
+      return path ? `${path}: ${issue.message}` : issue.message
+    })
+    throw new Error(`Invalid configuration in environment.yaml:\n- ${details.join('\n- ')}`)
+  }
+  return result.data
+}
+
+function deprecatedFilesEditorsEnvConfig(): void {
+  for (const editor of ['ONLYOFFICE', 'COLLABORA']) {
+    const deprecatedPrefix = `${ENVIRONMENT_PREFIX}APPLICATIONS_FILES_${editor}_`
+    const currentPrefix = `${ENVIRONMENT_PREFIX}APPLICATIONS_FILES_EDITORS_${editor}_`
+
+    for (const [deprecatedEnvKey, value] of Object.entries(process.env)) {
+      if (!deprecatedEnvKey.startsWith(deprecatedPrefix) || value === undefined) {
+        continue
+      }
+
+      const suffix = deprecatedEnvKey.slice(deprecatedPrefix.length)
+      const currentEnvKey = `${currentPrefix}${suffix}`
+      const alternateCurrentEnvKey = suffix.endsWith('_FILE') ? `${currentPrefix}${suffix.slice(0, -5)}` : `${currentEnvKey}_FILE`
+      const configuredCurrentEnvKey = [currentEnvKey, alternateCurrentEnvKey].find((key) => process.env[key] !== undefined)
+
+      if (configuredCurrentEnvKey) {
+        console.warn(`Ignoring deprecated environment variable: "${deprecatedEnvKey}" because "${configuredCurrentEnvKey}" is set.`)
+        continue
+      }
+
+      process.env[currentEnvKey] = value
+      console.warn(`Environment variable "${deprecatedEnvKey}" is deprecated. Please use "${currentEnvKey}" instead.`)
+    }
+  }
+}
+
+function deprecatedServerTrustProxyConfig(config: GlobalConfig): void {
+  if (typeof config.server?.trustProxy !== 'number') {
+    return
+  }
+
+  console.warn(
+    '[DEPRECATED][CONFIGURATION] Numeric server.trustProxy values will be removed in the next major version. ' +
+      'They now map to booleans (>= 1: true, < 1: false); use true/false or a trusted proxy IP/CIDR instead.'
+  )
+}
+
+function deprecatedFilesEditorsConfig(config: GlobalConfig): void {
+  const files: unknown = config.applications.files
+  if (!isConfigRecord(files)) return
+  const legacyEditors = ['onlyoffice', 'collabora'].filter((editor) => Object.prototype.hasOwnProperty.call(files, editor))
+
+  if (legacyEditors.length === 0) {
+    return
+  }
+
+  const configuredEditors = files['editors']
+  const editors = isConfigRecord(configuredEditors) ? configuredEditors : {}
+  files['editors'] = editors
+  for (const editor of legacyEditors) {
+    const legacyConfig = files[editor]
+    const currentConfig = editors[editor]
+    const editorConfig =
+      isConfigRecord(legacyConfig) && isConfigRecord(currentConfig) ? { ...legacyConfig, ...currentConfig } : (currentConfig ?? legacyConfig)
+    editors[editor] = editorConfig
+    delete files[editor]
+  }
+
+  console.warn(
+    '[DEPRECATED][CONFIGURATION] applications.files.onlyoffice and applications.files.collabora are deprecated and will be removed in a future version. ' +
+      'Please use applications.files.editors.onlyoffice and applications.files.editors.collabora instead.'
+  )
+}
+
+function deprecatedFilesContentIndexingConfig(config: GlobalConfig): void {
+  // applications.files.contentIndexing → applications.files.contentIndexing.enabled
+  if (typeof config.applications.files.contentIndexing !== 'boolean') {
+    return
+  }
+
+  const filesContentIndexingConfig = FilesContentIndexingConfigSchema.parse({ enabled: config.applications.files.contentIndexing })
+  config.applications.files.contentIndexing = filesContentIndexingConfig
+  console.warn(
+    '[DEPRECATED][CONFIGURATION] applications.files.contentIndexing is deprecated and will be removed in a future version. ' +
+      'Please use applications.files.contentIndexing.enabled instead.'
+  )
+}
